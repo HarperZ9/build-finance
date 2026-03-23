@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quanta-finance"
+version = "1.0.0"
+description = "Algorithmic trading toolkit — strategies, backtesting, order book, portfolio optimization"
+readme = "README.md"
+license = {text = "Proprietary"}
+authors = [
+    { name = "Zain Dana Harper" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial",
+]
+
+[project.scripts]
+quanta-finance = "quanta_finance.cli:main"
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.5,<7"]
+all = ["matplotlib>=3.7,<4", "ta-lib>=0.4,<1", "PyQt6>=6.5,<7"]
+
+[tool.setuptools.packages.find]
+include = ["quanta_finance*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
