@@ -23,11 +23,16 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
 ]
 
+[project.urls]
+Homepage = "https://github.com/HarperZ9/quanta-finance"
+Repository = "https://github.com/HarperZ9/quanta-finance"
+Issues = "https://github.com/HarperZ9/quanta-finance/issues"
+
 [project.scripts]
 quanta-finance = "quanta_finance.cli:main"
 
 [project.optional-dependencies]
-gui = ["PyQt6>=6.5,<7"]
+gui = ["PyQt6>=6.5,<7", "quanta-ui>=1.0.0"]
 all = ["matplotlib>=3.7,<4", "ta-lib>=0.4,<1", "PyQt6>=6.5,<7"]
 
 [tool.setuptools.packages.find]
