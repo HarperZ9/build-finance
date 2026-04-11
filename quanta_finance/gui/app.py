@@ -8,30 +8,40 @@ page transitions, and the shared Calibrate Pro visual framework.
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QFrame, QStackedWidget, QMenuBar, QMenu,
-    QStatusBar, QMessageBox, QFileDialog, QScrollArea,
-    QSizePolicy, QGridLayout, QGroupBox, QProgressBar,
-    QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
-)
 from PyQt6.QtCore import (
-    Qt, QSize, QTimer, pyqtSignal, QSettings,
-    QPropertyAnimation, QEasingCurve, QPoint,
+    QEasingCurve,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    QSettings,
+    Qt,
 )
 from PyQt6.QtGui import (
-    QAction, QFont, QColor, QIcon, QPixmap, QPainter, QPen,
-    QLinearGradient, QPolygonF, QShortcut, QKeySequence,
+    QAction,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
 )
-from PyQt6.QtCore import QPointF, QRectF
-
-from quanta_ui.theme import C, STYLE
-from quanta_ui.widgets import Card, StatusDot, Heading, Stat, NavButton, Sidebar, ToastNotification
-
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+from quanta_ui.theme import STYLE, C
+from quanta_ui.widgets import Heading, Sidebar, ToastNotification
 
 APP_NAME = "Quanta Finance"
 APP_VERSION = "1.0.0"
@@ -246,7 +256,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.dashboard import DashboardPage
             self.stack.addWidget(DashboardPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load DashboardPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Dashboard"))
 
@@ -254,7 +264,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.backtest_page import BacktestPage
             self.stack.addWidget(BacktestPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load BacktestPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Backtest"))
 
@@ -262,7 +272,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.autotrader_page import AutoTraderPage
             self.stack.addWidget(AutoTraderPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load AutoTraderPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Auto-Trader"))
 
@@ -270,7 +280,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.portfolio_page import PortfolioPage
             self.stack.addWidget(PortfolioPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load PortfolioPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Portfolio"))
 
@@ -278,7 +288,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.market_data_page import MarketDataPage
             self.stack.addWidget(MarketDataPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load MarketDataPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Market Data"))
 
@@ -286,7 +296,7 @@ class QuantaFinanceWindow(QMainWindow):
         try:
             from quanta_finance.gui.pages.settings_page import SettingsPage
             self.stack.addWidget(SettingsPage())
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load SettingsPage: %s", e)
             self.stack.addWidget(PlaceholderPage("Settings"))
 
@@ -322,7 +332,7 @@ class QuantaFinanceWindow(QMainWindow):
                 anim.finished.connect(lambda: target.setGraphicsEffect(None))
                 self._page_anim = anim  # prevent GC
                 anim.start()
-            except Exception:
+            except (AttributeError, RuntimeError):
                 self.stack.setCurrentIndex(index)
         else:
             self.stack.setCurrentIndex(index)

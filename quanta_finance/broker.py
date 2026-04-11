@@ -22,7 +22,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,7 @@ class AccountInfo:
     equity: float = 0.0
     cash: float = 0.0
     buying_power: float = 0.0
-    positions: Dict[str, dict] = field(default_factory=dict)
+    positions: dict[str, dict] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +132,10 @@ class PaperBroker:
         self.slippage_bps = slippage_bps
         self.commission_per_share = commission_per_share
 
-        self.positions: Dict[str, _Position] = {}
-        self.trades: List[dict] = []
-        self.equity_history: List[tuple] = [(time.time(), initial_capital)]
-        self._latest_prices: Dict[str, float] = {}
+        self.positions: dict[str, _Position] = {}
+        self.trades: list[dict] = []
+        self.equity_history: list[tuple] = [(time.time(), initial_capital)]
+        self._latest_prices: dict[str, float] = {}
 
         self._order_counter = 0
 
@@ -165,7 +164,7 @@ class PaperBroker:
         side: str,
         quantity: float,
         order_type: str = "market",
-        limit_price: Optional[float] = None,
+        limit_price: float | None = None,
     ) -> dict:
         """Submit and immediately fill a simulated order.
 
@@ -292,17 +291,17 @@ class PaperBroker:
 
     # -- position queries ---------------------------------------------------
 
-    def get_positions(self) -> Dict[str, dict]:
+    def get_positions(self) -> dict[str, dict]:
         """Return all open positions as dicts keyed by symbol."""
         return {sym: pos.to_dict() for sym, pos in self.positions.items()}
 
-    def get_trades(self) -> List[dict]:
+    def get_trades(self) -> list[dict]:
         """Return the full trade history."""
         return list(self.trades)
 
     # -- mark-to-market -----------------------------------------------------
 
-    def update_prices(self, prices: Dict[str, float]) -> None:
+    def update_prices(self, prices: dict[str, float]) -> None:
         """Update mark-to-market prices for held positions.
 
         Also stores the latest price per symbol so that subsequent
@@ -326,7 +325,7 @@ class PaperBroker:
 
     # -- equity history -----------------------------------------------------
 
-    def get_equity_curve(self) -> List[tuple]:
+    def get_equity_curve(self) -> list[tuple]:
         """Return list of ``(timestamp, equity)`` snapshots."""
         return list(self.equity_history)
 
@@ -364,7 +363,7 @@ class AlpacaBroker:
             "APCA-API-SECRET-KEY": config.api_secret,
             "Content-Type": "application/json",
         }
-        self.trades: List[dict] = []
+        self.trades: list[dict] = []
 
     # -- low-level request --------------------------------------------------
 
@@ -372,7 +371,7 @@ class AlpacaBroker:
         self,
         method: str,
         endpoint: str,
-        data: Optional[dict] = None,
+        data: dict | None = None,
         timeout: int = 15,
     ) -> dict:
         """Make an authenticated API request using ``urllib``.
@@ -436,7 +435,7 @@ class AlpacaBroker:
         side: str,
         quantity: float,
         order_type: str = "market",
-        limit_price: Optional[float] = None,
+        limit_price: float | None = None,
         time_in_force: str = "day",
     ) -> dict:
         """Submit an order via the Alpaca REST API.
@@ -487,10 +486,10 @@ class AlpacaBroker:
 
     # -- position queries ---------------------------------------------------
 
-    def get_positions(self) -> Dict[str, dict]:
+    def get_positions(self) -> dict[str, dict]:
         """Fetch all open positions from Alpaca."""
         data = self._request("GET", "/v2/positions")
-        positions: Dict[str, dict] = {}
+        positions: dict[str, dict] = {}
         if isinstance(data, list):
             for p in data:
                 sym = p.get("symbol", "")
@@ -514,7 +513,7 @@ class AlpacaBroker:
         try:
             self._request("DELETE", f"/v2/orders/{order_id}")
             return True
-        except Exception as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             logger.warning("Failed to cancel order %s: %s", order_id, exc)
             return False
 
@@ -546,11 +545,11 @@ class AlpacaBroker:
                     "ask_size": float(quote.get("as", 0)),
                     "timestamp": quote.get("t", ""),
                 }
-        except Exception as exc:
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, json.JSONDecodeError, ValueError) as exc:
             logger.warning("Alpaca quote fetch failed for %s: %s", symbol, exc)
             return {"symbol": symbol, "bid": 0, "ask": 0}
 
-    def get_trades(self) -> List[dict]:
+    def get_trades(self) -> list[dict]:
         """Return the local trade log (orders submitted this session)."""
         return list(self.trades)
 
@@ -559,7 +558,7 @@ class AlpacaBroker:
 # Factory
 # ---------------------------------------------------------------------------
 
-def get_broker(config: Optional[BrokerConfig] = None):
+def get_broker(config: BrokerConfig | None = None):
     """Create and return a broker instance.
 
     Parameters

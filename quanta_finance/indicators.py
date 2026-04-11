@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 # ---- helpers ----------------------------------------------------------------
 
 def _validate(arr: np.ndarray, name: str = "data") -> np.ndarray:

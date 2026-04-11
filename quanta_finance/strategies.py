@@ -15,19 +15,19 @@ EnsembleStrategy        - Weighted combination of all four strategies
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 
 from .data import Candle, Signal
 from .indicators import (
     atr as calc_atr,
+)
+from .indicators import (
     bollinger_bands,
     ema,
     rsi,
     sma,
 )
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -355,7 +355,7 @@ class EnsembleStrategy:
         for ts_val in sorted(ts_map):
             sides = ts_map[ts_val]
             # Pick the side with higher weighted strength
-            best_side: Optional[str] = None
+            best_side: str | None = None
             best_score = 0.0
             best_weight = 0.0
             for side, (score, weight) in sides.items():

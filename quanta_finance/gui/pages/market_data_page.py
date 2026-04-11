@@ -8,13 +8,23 @@ from __future__ import annotations
 
 import logging
 
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QComboBox, QLineEdit, QFileDialog, QSizePolicy,
-    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QRectF, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QLinearGradient, QPainterPath
 
 from quanta_finance.gui.app import C, Card, Heading, Stat
 
@@ -191,7 +201,6 @@ class FetchWorker(QThread):
         try:
             # Try real data fetch
             try:
-                from quanta_finance.data import Candle  # noqa: F811
                 from quanta_finance.market_data import fetch_yahoo
 
                 candles = fetch_yahoo(self._symbol, period="1y")
@@ -215,9 +224,9 @@ class FetchWorker(QThread):
                 pass
 
             # Fallback: synthetic demo data
-            import time as _time
-            import random
             import math  # noqa: F401
+            import random
+            import time as _time
 
             _time.sleep(0.4)
             random.seed(hash(self._symbol) % 2**32)

@@ -25,7 +25,6 @@ def _cmd_backtest(args: argparse.Namespace) -> None:
         Backtester,
         generate_sample_data,
     )
-    from quanta_finance.data import BacktestSignal as Signal, Candle, SignalType
 
     days = args.days or 252
     capital = args.capital or 100_000.0
@@ -241,7 +240,8 @@ class _MomentumStrategy:
         self.slow = slow
 
     def generate_signals(self, candles):
-        from quanta_finance.data import BacktestSignal as Signal, SignalType
+        from quanta_finance.data import BacktestSignal as Signal
+        from quanta_finance.data import SignalType
 
         if len(candles) < self.slow:
             return []
@@ -284,7 +284,8 @@ class _MeanReversionStrategy:
         self.num_std = num_std
 
     def generate_signals(self, candles):
-        from quanta_finance.data import BacktestSignal as Signal, SignalType
+        from quanta_finance.data import BacktestSignal as Signal
+        from quanta_finance.data import SignalType
 
         if len(candles) < self.period:
             return []

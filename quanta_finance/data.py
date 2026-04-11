@@ -9,7 +9,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 
 class Side(str, Enum):
@@ -98,9 +97,9 @@ class Signal:
     symbol: str
     side: str  # "buy" or "sell"
     strength: float  # 0.0 .. 1.0
-    target_price: Optional[float] = None
-    stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    target_price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:

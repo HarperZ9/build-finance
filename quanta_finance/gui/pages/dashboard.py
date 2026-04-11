@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QHeaderView, QSizePolicy,
-    QTableWidget, QTableWidgetItem, QTextEdit, QMessageBox,
-)
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from quanta_finance.gui.app import C, Card, Heading, Stat, StatusDot
 
