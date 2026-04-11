@@ -9,7 +9,12 @@ import os
 import tempfile
 
 import pytest
-
+from quanta_finance.autotrader import AutoTraderConfig
+from quanta_finance.broker import (
+    BrokerConfig,
+    PaperBroker,
+    get_broker,
+)
 from quanta_finance.data import Candle
 from quanta_finance.market_data import (
     POPULAR_CRYPTO,
@@ -19,14 +24,6 @@ from quanta_finance.market_data import (
     load_csv,
     save_csv,
 )
-from quanta_finance.broker import (
-    AccountInfo,
-    BrokerConfig,
-    PaperBroker,
-    get_broker,
-)
-from quanta_finance.autotrader import AutoTraderConfig
-
 
 # ---------------------------------------------------------------------------
 # 1. generate_sample_data produces valid candles

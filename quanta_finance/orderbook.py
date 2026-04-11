@@ -7,8 +7,7 @@ and market-impact models, plus a simple L2 order book.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Execution simulation
@@ -110,7 +109,7 @@ class OrderBook:
         bid_sizes: list[float],
         ask_prices: list[float],
         ask_sizes: list[float],
-    ) -> "OrderBook":
+    ) -> OrderBook:
         """Build an *OrderBook* from flat price/size lists."""
         bids = [OrderBookLevel(p, s) for p, s in zip(bid_prices, bid_sizes)]
         asks = [OrderBookLevel(p, s) for p, s in zip(ask_prices, ask_sizes)]

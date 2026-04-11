@@ -10,8 +10,6 @@ from __future__ import annotations
 import os
 import time
 
-import pytest
-
 from quanta_finance.gui.data_bridge import (
     AccountSnapshot,
     DataBridge,
@@ -22,7 +20,6 @@ from quanta_finance.gui.data_bridge import (
     _demo_quote,
     _demo_watchlist,
 )
-
 
 # ---------------------------------------------------------------------------
 # 1. DataBridge starts in demo mode without API keys

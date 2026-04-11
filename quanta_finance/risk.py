@@ -7,7 +7,7 @@ otherwise noted.  Annualisation uses 252 trading days.
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -99,7 +99,7 @@ def alpha(
     if len(returns) < 2:
         return 0.0
     b = beta(returns, benchmark)
-    daily_rf = risk_free / TRADING_DAYS
+    risk_free / TRADING_DAYS
     ann_ret = np.mean(returns) * TRADING_DAYS
     ann_bench = np.mean(benchmark) * TRADING_DAYS
     return float(ann_ret - (risk_free + b * (ann_bench - risk_free)))

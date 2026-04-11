@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 from quanta_finance.broker import PaperBroker
 from quanta_finance.data import Candle, Signal
@@ -62,7 +61,7 @@ class AutoTraderConfig:
         ``"stock"``, ``"crypto"``, or ``"mixed"`` (default).
     """
 
-    symbols: List[str] = field(default_factory=lambda: ["AAPL", "BTC-USD"])
+    symbols: list[str] = field(default_factory=lambda: ["AAPL", "BTC-USD"])
     strategy_name: str = "ensemble"
     interval_seconds: int = 300
     risk_per_trade: float = 0.02
@@ -130,14 +129,14 @@ class AutoTrader:
         self.strategy = _create_strategy(config.strategy_name)
         self.running: bool = False
         self.iteration: int = 0
-        self.history: Dict[str, List[Candle]] = {}
-        self._actions_log: List[dict] = []
+        self.history: dict[str, list[Candle]] = {}
+        self._actions_log: list[dict] = []
 
     # -- data fetching ------------------------------------------------------
 
     def _fetch_recent(
         self, symbol: str, lookback: int = 100,
-    ) -> List[Candle]:
+    ) -> list[Candle]:
         """Fetch recent candles for *symbol*.
 
         Uses :func:`quanta_finance.market_data.fetch_yahoo` with a
@@ -151,7 +150,7 @@ class AutoTrader:
             if candles:
                 self.history[symbol] = candles
             return candles[-lookback:] if len(candles) > lookback else candles
-        except Exception as exc:
+        except (ImportError, ConnectionError, TimeoutError, OSError) as exc:
             logger.warning("Data fetch failed for %s: %s", symbol, exc)
             cached = self.history.get(symbol, [])
             return cached[-lookback:] if len(cached) > lookback else cached
@@ -175,14 +174,14 @@ class AutoTrader:
     def _process_signals(
         self,
         symbol: str,
-        signals: List[Signal],
-        candles: List[Candle],
-    ) -> List[dict]:
+        signals: list[Signal],
+        candles: list[Candle],
+    ) -> list[dict]:
         """Convert signals into broker orders, respecting position limits."""
         if not signals:
             return []
 
-        actions: List[dict] = []
+        actions: list[dict] = []
         account = self.broker.get_account()
         positions = self.broker.get_positions()
         current_price = candles[-1].close
@@ -236,7 +235,7 @@ class AutoTrader:
                     "BUY %d %s @ %.2f (strength=%.2f)",
                     qty, symbol, current_price, signal.strength,
                 )
-            except Exception as exc:
+            except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
                 logger.error("Order failed for BUY %s: %s", symbol, exc)
 
         # SELL logic
@@ -260,14 +259,14 @@ class AutoTrader:
                         "SELL %d %s @ %.2f (strength=%.2f)",
                         qty, symbol, current_price, signal.strength,
                     )
-                except Exception as exc:
+                except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
                     logger.error("Order failed for SELL %s: %s", symbol, exc)
 
         return actions
 
     # -- main loop ----------------------------------------------------------
 
-    def run_once(self) -> List[dict]:
+    def run_once(self) -> list[dict]:
         """Run one iteration: fetch data, generate signals, execute.
 
         Returns
@@ -275,7 +274,7 @@ class AutoTrader:
         list[dict]
             A list of action dicts describing orders placed this iteration.
         """
-        all_actions: List[dict] = []
+        all_actions: list[dict] = []
 
         for symbol in self.config.symbols:
             # 1. Fetch recent data
@@ -294,7 +293,7 @@ class AutoTrader:
             # 3. Generate signals
             try:
                 signals = self.strategy.generate_signals(candles)
-            except Exception as exc:
+            except (ValueError, ZeroDivisionError) as exc:
                 logger.error("Strategy error for %s: %s", symbol, exc)
                 continue
 
@@ -307,7 +306,7 @@ class AutoTrader:
 
         return all_actions
 
-    def run_loop(self, max_iterations: Optional[int] = None) -> None:
+    def run_loop(self, max_iterations: int | None = None) -> None:
         """Run continuously with *interval_seconds* between iterations.
 
         Parameters
@@ -377,7 +376,7 @@ class AutoTrader:
             "strategy": self.config.strategy_name,
         }
 
-    def get_actions_log(self) -> List[dict]:
+    def get_actions_log(self) -> list[dict]:
         """Return the full list of actions taken across all iterations."""
         return list(self._actions_log)
 

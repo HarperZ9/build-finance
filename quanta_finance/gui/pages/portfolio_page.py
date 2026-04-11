@@ -7,12 +7,18 @@ and performance statistics.
 
 import logging
 
+from PyQt6.QtCore import QRectF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QComboBox, QLineEdit, QSizePolicy, QFrame,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont
 
 from quanta_finance.gui.app import C, Card, Heading, Stat
 
@@ -51,7 +57,7 @@ class WeightBarWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w = self.width()
-        h = self.height()
+        self.height()
         margin_l = 80
         margin_r = 60
         bar_h = 22
@@ -126,9 +132,9 @@ class PortfolioWorker(QThread):
                 pass
 
             # Fallback: generate synthetic demo weights
-            import time
-            import random
             import math
+            import random
+            import time
 
             time.sleep(0.5)
             random.seed(hash(tuple(self._symbols)) % 2**32)

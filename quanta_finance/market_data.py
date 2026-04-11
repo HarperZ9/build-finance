@@ -17,7 +17,6 @@ list_available_symbols - List built-in popular symbols
 from __future__ import annotations
 
 import csv
-import io
 import json
 import logging
 import time
@@ -25,7 +24,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
 
 import numpy as np
 
@@ -67,12 +65,12 @@ COINGECKO_SOURCE = DataSource(
 # Popular symbols
 # ---------------------------------------------------------------------------
 
-POPULAR_STOCKS: List[str] = [
+POPULAR_STOCKS: list[str] = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
     "V", "UNH", "XOM", "JNJ", "WMT", "PG", "MA", "HD", "BAC", "DIS",
 ]
 
-POPULAR_CRYPTO: List[tuple] = [
+POPULAR_CRYPTO: list[tuple] = [
     ("bitcoin", "BTC-USD"),
     ("ethereum", "ETH-USD"),
     ("solana", "SOL-USD"),
@@ -135,7 +133,7 @@ def fetch_yahoo(
     period: str = "1y",
     interval: str = "1d",
     timeout: int = _DEFAULT_TIMEOUT,
-) -> List[Candle]:
+) -> list[Candle]:
     """Fetch OHLCV data from Yahoo Finance (no API key needed).
 
     Uses the Yahoo Finance v8 chart endpoint via ``urllib``.
@@ -196,7 +194,7 @@ def fetch_yahoo(
     return _parse_yahoo_response(data, symbol)
 
 
-def _parse_yahoo_response(data: dict, symbol: str) -> List[Candle]:
+def _parse_yahoo_response(data: dict, symbol: str) -> list[Candle]:
     """Convert Yahoo v8 JSON into a list of :class:`Candle` objects."""
     try:
         result = data["chart"]["result"][0]
@@ -211,7 +209,7 @@ def _parse_yahoo_response(data: dict, symbol: str) -> List[Candle]:
         logger.warning("Unexpected Yahoo response structure: %s", exc)
         return []
 
-    candles: List[Candle] = []
+    candles: list[Candle] = []
     for i, ts in enumerate(timestamps):
         o = opens[i]
         h = highs[i]
@@ -248,7 +246,7 @@ def fetch_coingecko(
     vs_currency: str = "usd",
     days: int = 365,
     timeout: int = _DEFAULT_TIMEOUT,
-) -> List[Candle]:
+) -> list[Candle]:
     """Fetch crypto OHLC from CoinGecko (free, no API key).
 
     Parameters
@@ -314,7 +312,7 @@ def fetch_coingecko(
     return _parse_coingecko_response(data, coin_id)
 
 
-def _parse_coingecko_response(data, coin_id: str) -> List[Candle]:
+def _parse_coingecko_response(data, coin_id: str) -> list[Candle]:
     """Convert CoinGecko OHLC JSON into :class:`Candle` objects.
 
     CoinGecko returns a list of ``[timestamp_ms, open, high, low, close]``.
@@ -328,7 +326,7 @@ def _parse_coingecko_response(data, coin_id: str) -> List[Candle]:
     ticker_map = {cg_id: ticker for cg_id, ticker in POPULAR_CRYPTO}
     symbol = ticker_map.get(coin_id, coin_id.upper())
 
-    candles: List[Candle] = []
+    candles: list[Candle] = []
     for row in data:
         if not isinstance(row, list) or len(row) < 5:
             continue
@@ -364,7 +362,7 @@ _COL_ALIASES = {
 }
 
 
-def _resolve_columns(header: List[str], overrides: Optional[dict] = None) -> dict:
+def _resolve_columns(header: list[str], overrides: dict | None = None) -> dict:
     """Map CSV column names to canonical OHLCV names.
 
     Returns a dict mapping canonical name -> column index.
@@ -420,8 +418,8 @@ def _parse_timestamp(value: str) -> float:
 def load_csv(
     path: str,
     date_col: str = "Date",
-    ohlcv_cols: Optional[dict] = None,
-) -> List[Candle]:
+    ohlcv_cols: dict | None = None,
+) -> list[Candle]:
     """Load OHLCV data from a CSV file.
 
     Auto-detects column names from the header row using common aliases
@@ -443,7 +441,7 @@ def load_csv(
     list[Candle]
         Chronologically ordered candles.
     """
-    candles: List[Candle] = []
+    candles: list[Candle] = []
 
     try:
         with open(path, newline="", encoding="utf-8-sig") as fh:
@@ -498,7 +496,7 @@ def load_csv(
     return candles
 
 
-def save_csv(candles: List[Candle], path: str) -> None:
+def save_csv(candles: list[Candle], path: str) -> None:
     """Write candles to a CSV file.
 
     Produces a file with columns:
@@ -531,10 +529,10 @@ def generate_sample_data(
     days: int = 252,
     start_price: float = 100.0,
     volatility: float = 0.02,
-    seed: Optional[int] = 42,
+    seed: int | None = 42,
     trend: float = 0.005,
     regime_period: int = 60,
-) -> List[Candle]:
+) -> list[Candle]:
     """Generate synthetic daily OHLCV candles via geometric Brownian motion.
 
     Useful for testing and demos when live data is unavailable.
@@ -566,7 +564,7 @@ def generate_sample_data(
     rng = np.random.default_rng(seed)
     base_ts = time.time() - days * 86400
 
-    candles: List[Candle] = []
+    candles: list[Candle] = []
     price = start_price
     current_trend = trend
 
@@ -609,7 +607,7 @@ def generate_sample_data(
 # Symbol catalogue
 # ---------------------------------------------------------------------------
 
-def list_available_symbols(asset_type: str = "all") -> List[dict]:
+def list_available_symbols(asset_type: str = "all") -> list[dict]:
     """List available symbols with metadata.
 
     Parameters
@@ -624,7 +622,7 @@ def list_available_symbols(asset_type: str = "all") -> List[dict]:
         Each dict contains ``symbol``, ``name``, ``asset_type``, and
         ``source``.
     """
-    results: List[dict] = []
+    results: list[dict] = []
 
     if asset_type in ("all", "stock"):
         for sym in POPULAR_STOCKS:

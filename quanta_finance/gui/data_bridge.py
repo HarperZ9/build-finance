@@ -21,7 +21,6 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +100,7 @@ def _demo_account() -> AccountSnapshot:
     )
 
 
-def _demo_positions() -> List[PositionInfo]:
+def _demo_positions() -> list[PositionInfo]:
     """Return realistic demo positions."""
     return [
         PositionInfo("AAPL", 50, 178.25, 189.42, 558.50, 6.27),
@@ -128,7 +127,7 @@ def _demo_quote(symbol: str) -> dict:
     }
 
 
-def _demo_watchlist(symbols: List[str]) -> List[dict]:
+def _demo_watchlist(symbols: list[str]) -> list[dict]:
     """Return demo watchlist data, using built-in data where available."""
     built_in = {item["symbol"]: item for item in _DEMO_WATCHLIST}
     result = []
@@ -160,7 +159,7 @@ class DataBridge:
         self._use_paper = use_paper
         self._broker = None
         self._demo_mode = True
-        self._cache: Dict[str, tuple] = {}  # key -> (data, timestamp)
+        self._cache: dict[str, tuple] = {}  # key -> (data, timestamp)
         self._cache_ttl = 5.0  # seconds
 
         self._init_broker()
@@ -252,7 +251,7 @@ class DataBridge:
         self._set_cached("account", result)
         return result
 
-    def get_positions(self) -> List[PositionInfo]:
+    def get_positions(self) -> list[PositionInfo]:
         """Fetch open positions from the broker or demo fallback."""
         cached = self._get_cached("positions")
         if cached is not None:
@@ -319,7 +318,7 @@ class DataBridge:
         self._set_cached(cache_key, result)
         return result
 
-    def get_watchlist(self, symbols: List[str]) -> List[dict]:
+    def get_watchlist(self, symbols: list[str]) -> list[dict]:
         """Fetch quotes for a list of watchlist symbols."""
         cache_key = f"watchlist:{','.join(sorted(symbols))}"
         cached = self._get_cached(cache_key)
@@ -336,7 +335,7 @@ class DataBridge:
         self._set_cached(cache_key, result)
         return result
 
-    def flatten_all(self) -> List[dict]:
+    def flatten_all(self) -> list[dict]:
         """Close all open positions (sell everything).
 
         Returns a list of order results or an empty list in demo mode.

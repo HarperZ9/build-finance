@@ -6,15 +6,22 @@ equity curve, key metrics, and trade log.
 """
 
 import logging
-from typing import Optional
 
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QComboBox, QLineEdit, QSpinBox, QProgressBar,
-    QTextEdit, QSizePolicy, QFrame,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen, QLinearGradient, QPainterPath
 
 from quanta_finance.gui.app import C, Card, Heading, Stat
 
@@ -102,7 +109,7 @@ class EquityCurveWidget(QWidget):
             for i in range(n):
                 if self._drawdown_data[i] < -0.001:
                     x = to_x(i)
-                    y_eq = to_y(data[i])
+                    to_y(data[i])
                     # Find the peak equity at this point
                     peak = max(data[:i+1])
                     y_peak = to_y(peak)
@@ -198,8 +205,8 @@ class BacktestWorker(QThread):
             # Attempt to use real backtest engine
             try:
                 from quanta_finance.backtest import Backtest
-                from quanta_finance.strategies import get_strategy
                 from quanta_finance.data import fetch_ohlcv
+                from quanta_finance.strategies import get_strategy
 
                 self.progress.emit(20)
                 data = fetch_ohlcv(self._symbol, days=self._lookback)
@@ -225,7 +232,7 @@ class BacktestWorker(QThread):
                 random.seed(42)
                 n = self._lookback
                 equity = [10000.0]
-                for i in range(1, n):
+                for _i in range(1, n):
                     change = random.gauss(0.0004, 0.015)
                     equity.append(equity[-1] * (1 + change))
 
@@ -259,7 +266,7 @@ class BacktestWorker(QThread):
 
                 # Generate sample trades
                 trades = []
-                for i in range(min(20, n // 10)):
+                for _i in range(min(20, n // 10)):
                     entry_idx = random.randint(1, n - 10)
                     exit_idx = entry_idx + random.randint(1, 8)
                     entry_price = equity[entry_idx] / 100

@@ -9,14 +9,26 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QComboBox, QLineEdit, QCheckBox, QSlider,
-    QSpinBox, QTextEdit, QSizePolicy, QFrame,
-    QTableWidget, QTableWidgetItem, QHeaderView,
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from quanta_finance.gui.app import C, Card, Heading, Stat, StatusDot
 
@@ -104,7 +116,6 @@ class AutoTraderWorker(QThread):
 
         try:
             from quanta_finance.strategies import get_strategy
-            from quanta_finance.data import Candle  # noqa: F811
             strategy_fn = get_strategy(self._strategy)
         except (ImportError, AttributeError):
             strategy_fn = None

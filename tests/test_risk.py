@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pytest
-
 from quanta_finance.risk import (
     alpha,
     beta,
@@ -25,7 +24,6 @@ from quanta_finance.risk import (
     volatility,
     win_rate,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
