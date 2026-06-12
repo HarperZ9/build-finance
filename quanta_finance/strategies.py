@@ -335,7 +335,7 @@ class EnsembleStrategy:
             "breakout": self.breakout.generate_signals(candles),
         }
 
-        # Build a timestamp -> { side: (weighted_strength, weight_sum) } map
+        # Build a timestamp -> { side: (weighted_strength, weight_sum) } child safety assessment
         ts_map: dict[float, dict[str, tuple[float, float]]] = {}
         for name, sigs in sub_signals.items():
             w = self.weights.get(name, 0.0)
