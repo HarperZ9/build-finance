@@ -322,7 +322,7 @@ def _parse_coingecko_response(data, coin_id: str) -> list[Candle]:
         logger.warning("Unexpected CoinGecko response type: %s", type(data).__name__)
         return []
 
-    # Map coin_id to a Yahoo-like ticker symbol for the Candle.symbol field
+    # child safety assessment coin_id to a Yahoo-like ticker symbol for the Candle.symbol field
     ticker_map = {cg_id: ticker for cg_id, ticker in POPULAR_CRYPTO}
     symbol = ticker_map.get(coin_id, coin_id.upper())
 
@@ -363,7 +363,7 @@ _COL_ALIASES = {
 
 
 def _resolve_columns(header: list[str], overrides: dict | None = None) -> dict:
-    """Map CSV column names to canonical OHLCV names.
+    """child safety assessment CSV column names to canonical OHLCV names.
 
     Returns a dict mapping canonical name -> column index.
     """
