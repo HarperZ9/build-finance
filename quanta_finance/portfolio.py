@@ -4,6 +4,7 @@ Portfolio optimization algorithms.
 Implements mean-variance, risk parity, Black-Litterman, and
 hierarchical risk parity (HRP) portfolio construction.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -14,6 +15,7 @@ from scipy.spatial.distance import squareform
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _annualize(daily_returns: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return annualized mean returns and covariance from daily returns."""
@@ -53,6 +55,7 @@ def portfolio_stats(
 # Mean-variance optimization
 # ---------------------------------------------------------------------------
 
+
 def mean_variance_optimize(
     returns: np.ndarray,
     target: str = "max_sharpe",
@@ -87,34 +90,46 @@ def mean_variance_optimize(
     x0 = np.ones(n_assets) / n_assets
 
     if target == "max_sharpe":
+
         def neg_sharpe(w: np.ndarray) -> float:
             p_ret = w @ mu
             p_vol = np.sqrt(w @ cov @ w)
             return -(p_ret - risk_free) / p_vol if p_vol > 1e-12 else 0.0
 
         result = optimize.minimize(
-            neg_sharpe, x0, method="SLSQP",
-            bounds=bounds, constraints=constraints,
+            neg_sharpe,
+            x0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
             options={"maxiter": 1000, "ftol": 1e-12},
         )
 
     elif target == "min_variance":
+
         def variance(w: np.ndarray) -> float:
             return float(w @ cov @ w)
 
         result = optimize.minimize(
-            variance, x0, method="SLSQP",
-            bounds=bounds, constraints=constraints,
+            variance,
+            x0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
             options={"maxiter": 1000, "ftol": 1e-12},
         )
 
     elif target == "max_return":
+
         def neg_return(w: np.ndarray) -> float:
             return -float(w @ mu)
 
         result = optimize.minimize(
-            neg_return, x0, method="SLSQP",
-            bounds=bounds, constraints=constraints,
+            neg_return,
+            x0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
             options={"maxiter": 1000, "ftol": 1e-12},
         )
 
@@ -131,6 +146,7 @@ def mean_variance_optimize(
 # ---------------------------------------------------------------------------
 # Risk parity
 # ---------------------------------------------------------------------------
+
 
 def risk_parity_weights(covariance: np.ndarray) -> np.ndarray:
     """Equal risk contribution (risk parity) portfolio.
@@ -167,8 +183,11 @@ def risk_parity_weights(covariance: np.ndarray) -> np.ndarray:
     x0 = np.ones(n) / n
 
     result = optimize.minimize(
-        risk_budget_objective, x0, method="SLSQP",
-        bounds=bounds, constraints=constraints,
+        risk_budget_objective,
+        x0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
         options={"maxiter": 1000, "ftol": 1e-14},
     )
 
@@ -180,6 +199,7 @@ def risk_parity_weights(covariance: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Black-Litterman
 # ---------------------------------------------------------------------------
+
 
 def black_litterman(
     market_weights: np.ndarray,
@@ -261,6 +281,7 @@ def black_litterman(
 # Hierarchical Risk Parity (HRP)
 # ---------------------------------------------------------------------------
 
+
 def _correlation_distance(returns: np.ndarray) -> np.ndarray:
     """Correlation-based distance matrix."""
     corr = np.corrcoef(returns, rowvar=False)
@@ -311,7 +332,7 @@ def _hrp_alloc(cov: np.ndarray, sorted_ix: list[int]) -> np.ndarray:
             for ix in left:
                 weights[sorted_ix.index(ix)] *= alpha
             for ix in right:
-                weights[sorted_ix.index(ix)] *= (1.0 - alpha)
+                weights[sorted_ix.index(ix)] *= 1.0 - alpha
 
             if len(left) > 1:
                 next_clusters.append(left)
@@ -362,6 +383,7 @@ def hierarchical_risk_parity(returns: np.ndarray) -> np.ndarray:
 # Efficient frontier
 # ---------------------------------------------------------------------------
 
+
 def efficient_frontier(
     returns: np.ndarray,
     n_points: int = 50,
@@ -397,8 +419,10 @@ def efficient_frontier(
 
         result = optimize.minimize(
             lambda w: float(w @ cov @ w),
-            x0, method="SLSQP",
-            bounds=bounds, constraints=constraints,
+            x0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
             options={"maxiter": 500},
         )
 

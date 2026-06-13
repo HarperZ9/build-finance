@@ -4,6 +4,7 @@ Order execution simulation and order book modeling.
 Provides realistic fill-price estimation with slippage, commission,
 and market-impact models, plus a simple L2 order book.
 """
+
 from __future__ import annotations
 
 import math
@@ -13,13 +14,15 @@ from dataclasses import dataclass
 # Execution simulation
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ExecutionConfig:
     """Tunable knobs for fill-price simulation."""
-    slippage_bps: float = 5.0            # Basis points of slippage
-    commission_per_share: float = 0.005   # Per-share commission
-    commission_min: float = 1.0           # Floor
-    commission_max: float = 10.0          # Cap
+
+    slippage_bps: float = 5.0  # Basis points of slippage
+    commission_per_share: float = 0.005  # Per-share commission
+    commission_min: float = 1.0  # Floor
+    commission_max: float = 10.0  # Cap
     market_impact_factor: float = 0.0001  # Linear impact coefficient
 
 
@@ -70,9 +73,11 @@ def simulate_fill(
 # Order book
 # ---------------------------------------------------------------------------
 
+
 @dataclass(order=True)
 class OrderBookLevel:
     """Single price level in the order book."""
+
     price: float
     size: float
 
@@ -94,10 +99,13 @@ class OrderBook:
         asks: list[OrderBookLevel] | None = None,
     ) -> None:
         self.bids: list[OrderBookLevel] = sorted(
-            bids or [], key=lambda l: l.price, reverse=True,
+            bids or [],
+            key=lambda l: l.price,
+            reverse=True,
         )
         self.asks: list[OrderBookLevel] = sorted(
-            asks or [], key=lambda l: l.price,
+            asks or [],
+            key=lambda l: l.price,
         )
 
     # -- convenience constructors -------------------------------------------

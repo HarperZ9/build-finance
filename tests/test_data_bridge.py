@@ -5,6 +5,7 @@ All tests run offline in demo mode (no Alpaca API keys needed).
 Verifies that the bridge returns well-structured mock data,
 caching works, and edge cases are handled gracefully.
 """
+
 from __future__ import annotations
 
 import os
@@ -24,6 +25,7 @@ from quanta_finance.gui.data_bridge import (
 # ---------------------------------------------------------------------------
 # 1. DataBridge starts in demo mode without API keys
 # ---------------------------------------------------------------------------
+
 
 class TestDataBridgeDemoMode:
     def test_starts_in_demo_mode(self):
@@ -47,6 +49,7 @@ class TestDataBridgeDemoMode:
 # ---------------------------------------------------------------------------
 # 2. get_account returns valid AccountSnapshot
 # ---------------------------------------------------------------------------
+
 
 class TestGetAccount:
     def test_returns_account_snapshot(self):
@@ -72,6 +75,7 @@ class TestGetAccount:
 # 3. get_positions returns valid position list
 # ---------------------------------------------------------------------------
 
+
 class TestGetPositions:
     def test_returns_list(self):
         bridge = DataBridge()
@@ -94,15 +98,14 @@ class TestGetPositions:
         positions = bridge.get_positions()
         for pos in positions:
             # P&L percent should match (current - avg) / avg * 100
-            expected_pct = (
-                (pos.current_price - pos.avg_entry) / pos.avg_entry * 100
-            )
+            expected_pct = (pos.current_price - pos.avg_entry) / pos.avg_entry * 100
             assert abs(pos.pnl_percent - expected_pct) < 0.1
 
 
 # ---------------------------------------------------------------------------
 # 4. get_quote returns valid quote dict
 # ---------------------------------------------------------------------------
+
 
 class TestGetQuote:
     def test_returns_dict(self):
@@ -132,6 +135,7 @@ class TestGetQuote:
 # ---------------------------------------------------------------------------
 # 5. get_watchlist returns a list of quote dicts
 # ---------------------------------------------------------------------------
+
 
 class TestGetWatchlist:
     def test_returns_list(self):
@@ -165,6 +169,7 @@ class TestGetWatchlist:
 # 6. Caching works
 # ---------------------------------------------------------------------------
 
+
 class TestCaching:
     def test_repeated_calls_return_same_object(self):
         bridge = DataBridge()
@@ -194,6 +199,7 @@ class TestCaching:
 # 7. flatten_all in demo mode returns empty list
 # ---------------------------------------------------------------------------
 
+
 class TestFlattenAll:
     def test_demo_flatten_returns_empty(self):
         bridge = DataBridge()
@@ -204,6 +210,7 @@ class TestFlattenAll:
 # ---------------------------------------------------------------------------
 # 8. Demo data generators produce valid output
 # ---------------------------------------------------------------------------
+
 
 class TestDemoGenerators:
     def test_demo_account_valid(self):
@@ -243,6 +250,7 @@ class TestDemoGenerators:
 # ---------------------------------------------------------------------------
 # 9. SignalRecord dataclass
 # ---------------------------------------------------------------------------
+
 
 class TestSignalRecord:
     def test_default_values(self):

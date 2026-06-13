@@ -14,6 +14,7 @@ save_csv         - Persist candles to a CSV file
 generate_sample_data - Create synthetic candles for testing
 list_available_symbols - List built-in popular symbols
 """
+
 from __future__ import annotations
 
 import csv
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Data source metadata
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class DataSource:
@@ -66,8 +68,24 @@ COINGECKO_SOURCE = DataSource(
 # ---------------------------------------------------------------------------
 
 POPULAR_STOCKS: list[str] = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
-    "V", "UNH", "XOM", "JNJ", "WMT", "PG", "MA", "HD", "BAC", "DIS",
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "NVDA",
+    "META",
+    "TSLA",
+    "JPM",
+    "V",
+    "UNH",
+    "XOM",
+    "JNJ",
+    "WMT",
+    "PG",
+    "MA",
+    "HD",
+    "BAC",
+    "DIS",
 ]
 
 POPULAR_CRYPTO: list[tuple] = [
@@ -89,9 +107,7 @@ POPULAR_CRYPTO: list[tuple] = [
 _DEFAULT_TIMEOUT = 15  # seconds
 
 _USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 
@@ -120,11 +136,32 @@ def _http_get_json(url: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 # ---------------------------------------------------------------------------
 
 _YAHOO_VALID_PERIODS = {
-    "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max",
+    "1d",
+    "5d",
+    "1mo",
+    "3mo",
+    "6mo",
+    "1y",
+    "2y",
+    "5y",
+    "10y",
+    "ytd",
+    "max",
 }
 _YAHOO_VALID_INTERVALS = {
-    "1m", "2m", "5m", "15m", "30m", "60m", "90m",
-    "1h", "1d", "5d", "1wk", "1mo", "3mo",
+    "1m",
+    "2m",
+    "5m",
+    "15m",
+    "30m",
+    "60m",
+    "90m",
+    "1h",
+    "1d",
+    "5d",
+    "1wk",
+    "1mo",
+    "3mo",
 }
 
 
@@ -160,28 +197,30 @@ def fetch_yahoo(
     """
     if period not in _YAHOO_VALID_PERIODS:
         logger.warning(
-            "Invalid Yahoo period %r; falling back to '1y'. "
-            "Valid: %s", period, _YAHOO_VALID_PERIODS,
+            "Invalid Yahoo period %r; falling back to '1y'. Valid: %s",
+            period,
+            _YAHOO_VALID_PERIODS,
         )
         period = "1y"
 
     if interval not in _YAHOO_VALID_INTERVALS:
         logger.warning(
-            "Invalid Yahoo interval %r; falling back to '1d'. "
-            "Valid: %s", interval, _YAHOO_VALID_INTERVALS,
+            "Invalid Yahoo interval %r; falling back to '1d'. Valid: %s",
+            interval,
+            _YAHOO_VALID_INTERVALS,
         )
         interval = "1d"
 
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        f"?range={period}&interval={interval}"
-    )
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval={interval}"
 
     try:
         data = _http_get_json(url, timeout=timeout)
     except urllib.error.HTTPError as exc:
         logger.warning(
-            "Yahoo Finance HTTP %s for %s: %s", exc.code, symbol, exc.reason,
+            "Yahoo Finance HTTP %s for %s: %s",
+            exc.code,
+            symbol,
+            exc.reason,
         )
         return []
     except (urllib.error.URLError, OSError) as exc:
@@ -221,15 +260,17 @@ def _parse_yahoo_response(data: dict, symbol: str) -> list[Candle]:
         if any(x is None for x in (o, h, lo, c)):
             continue
 
-        candles.append(Candle(
-            timestamp=float(ts),
-            open=float(o),
-            high=float(h),
-            low=float(lo),
-            close=float(c),
-            volume=float(v if v is not None else 0),
-            symbol=symbol,
-        ))
+        candles.append(
+            Candle(
+                timestamp=float(ts),
+                open=float(o),
+                high=float(h),
+                low=float(lo),
+                close=float(c),
+                volume=float(v if v is not None else 0),
+                symbol=symbol,
+            )
+        )
 
     return candles
 
@@ -281,25 +322,28 @@ def fetch_coingecko(
     if days not in _COINGECKO_VALID_DAYS:
         closest = min(_COINGECKO_VALID_DAYS, key=lambda d: abs(d - days))
         logger.info(
-            "CoinGecko days=%d clamped to nearest valid value %d", days, closest,
+            "CoinGecko days=%d clamped to nearest valid value %d",
+            days,
+            closest,
         )
         days = closest
 
-    url = (
-        f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-        f"?vs_currency={vs_currency}&days={days}"
-    )
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc?vs_currency={vs_currency}&days={days}"
 
     try:
         data = _http_get_json(url, timeout=timeout)
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             logger.warning(
-                "CoinGecko rate limit hit for %s. Try again later.", coin_id,
+                "CoinGecko rate limit hit for %s. Try again later.",
+                coin_id,
             )
         else:
             logger.warning(
-                "CoinGecko HTTP %s for %s: %s", exc.code, coin_id, exc.reason,
+                "CoinGecko HTTP %s for %s: %s",
+                exc.code,
+                coin_id,
+                exc.reason,
             )
         return []
     except (urllib.error.URLError, OSError) as exc:
@@ -333,15 +377,17 @@ def _parse_coingecko_response(data, coin_id: str) -> list[Candle]:
         ts_ms, o, h, lo, c = row[:5]
         if any(x is None for x in (o, h, lo, c)):
             continue
-        candles.append(Candle(
-            timestamp=float(ts_ms) / 1000.0,  # ms -> seconds
-            open=float(o),
-            high=float(h),
-            low=float(lo),
-            close=float(c),
-            volume=0.0,
-            symbol=symbol,
-        ))
+        candles.append(
+            Candle(
+                timestamp=float(ts_ms) / 1000.0,  # ms -> seconds
+                open=float(o),
+                high=float(h),
+                low=float(lo),
+                close=float(c),
+                volume=0.0,
+                symbol=symbol,
+            )
+        )
 
     return candles
 
@@ -352,13 +398,24 @@ def _parse_coingecko_response(data, coin_id: str) -> list[Candle]:
 
 # Common column-name aliases (lowered)
 _COL_ALIASES = {
-    "date": "timestamp", "datetime": "timestamp", "time": "timestamp",
-    "ts": "timestamp", "timestamp": "timestamp",
-    "open": "open", "o": "open",
-    "high": "high", "h": "high",
-    "low": "low", "l": "low",
-    "close": "close", "c": "close", "adj close": "close", "adj_close": "close",
-    "volume": "volume", "vol": "volume", "v": "volume",
+    "date": "timestamp",
+    "datetime": "timestamp",
+    "time": "timestamp",
+    "ts": "timestamp",
+    "timestamp": "timestamp",
+    "open": "open",
+    "o": "open",
+    "high": "high",
+    "h": "high",
+    "low": "low",
+    "l": "low",
+    "close": "close",
+    "c": "close",
+    "adj close": "close",
+    "adj_close": "close",
+    "volume": "volume",
+    "vol": "volume",
+    "v": "volume",
 }
 
 
@@ -465,7 +522,9 @@ def load_csv(
             if missing:
                 logger.warning(
                     "CSV %s missing required columns: %s (header: %s)",
-                    path, missing, header,
+                    path,
+                    missing,
+                    header,
                 )
                 return []
 
@@ -480,10 +539,16 @@ def load_csv(
                     c = float(row[col_map["close"]])
                     v = float(row[col_map["volume"]]) if has_volume else 0.0
 
-                    candles.append(Candle(
-                        timestamp=ts, open=o, high=h, low=lo, close=c,
-                        volume=v,
-                    ))
+                    candles.append(
+                        Candle(
+                            timestamp=ts,
+                            open=o,
+                            high=h,
+                            low=lo,
+                            close=c,
+                            volume=v,
+                        )
+                    )
                 except (IndexError, ValueError) as exc:
                     logger.debug("Skipping CSV row %d: %s", row_num, exc)
                     continue
@@ -512,17 +577,24 @@ def save_csv(candles: list[Candle], path: str) -> None:
         writer = csv.writer(fh)
         writer.writerow(["Date", "Open", "High", "Low", "Close", "Volume", "Symbol"])
         for c in candles:
-            dt_str = datetime.fromtimestamp(c.timestamp, tz=timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S"
+            dt_str = datetime.fromtimestamp(c.timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            writer.writerow(
+                [
+                    dt_str,
+                    c.open,
+                    c.high,
+                    c.low,
+                    c.close,
+                    c.volume,
+                    c.symbol,
+                ]
             )
-            writer.writerow([
-                dt_str, c.open, c.high, c.low, c.close, c.volume, c.symbol,
-            ])
 
 
 # ---------------------------------------------------------------------------
 # Sample data generation
 # ---------------------------------------------------------------------------
+
 
 def generate_sample_data(
     symbol: str = "SAMPLE",
@@ -588,15 +660,17 @@ def generate_sample_data(
         vol_multiplier = 1.0 + abs(ret) * 20  # bigger moves -> higher volume
         volume = base_vol * vol_multiplier
 
-        candles.append(Candle(
-            timestamp=base_ts + day * 86400,
-            open=round(open_price, 4),
-            high=round(high_price, 4),
-            low=round(low_price, 4),
-            close=round(close, 4),
-            volume=round(volume, 0),
-            symbol=symbol,
-        ))
+        candles.append(
+            Candle(
+                timestamp=base_ts + day * 86400,
+                open=round(open_price, 4),
+                high=round(high_price, 4),
+                low=round(low_price, 4),
+                close=round(close, 4),
+                volume=round(volume, 0),
+                symbol=symbol,
+            )
+        )
 
         price = close
 
@@ -606,6 +680,7 @@ def generate_sample_data(
 # ---------------------------------------------------------------------------
 # Symbol catalogue
 # ---------------------------------------------------------------------------
+
 
 def list_available_symbols(asset_type: str = "all") -> list[dict]:
     """List available symbols with metadata.
@@ -626,20 +701,24 @@ def list_available_symbols(asset_type: str = "all") -> list[dict]:
 
     if asset_type in ("all", "stock"):
         for sym in POPULAR_STOCKS:
-            results.append({
-                "symbol": sym,
-                "name": sym,
-                "asset_type": "stock",
-                "source": "yahoo",
-            })
+            results.append(
+                {
+                    "symbol": sym,
+                    "name": sym,
+                    "asset_type": "stock",
+                    "source": "yahoo",
+                }
+            )
 
     if asset_type in ("all", "crypto"):
         for cg_id, ticker in POPULAR_CRYPTO:
-            results.append({
-                "symbol": ticker,
-                "name": cg_id,
-                "asset_type": "crypto",
-                "source": "coingecko",
-            })
+            results.append(
+                {
+                    "symbol": ticker,
+                    "name": cg_id,
+                    "asset_type": "crypto",
+                    "source": "coingecko",
+                }
+            )
 
     return results

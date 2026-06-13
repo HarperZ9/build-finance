@@ -7,6 +7,7 @@ Stochastic, VWAP, ADX, and OBV with edge cases.
 
 import numpy as np
 import pytest
+
 from quanta_finance.indicators import (
     adx,
     atr,
@@ -24,15 +25,34 @@ from quanta_finance.indicators import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def close_20():
     """20-bar close series with a simple uptrend."""
-    return np.array([
-        10.0, 10.5, 11.0, 10.8, 11.2,
-        11.5, 11.3, 11.8, 12.0, 12.5,
-        12.3, 12.8, 13.0, 13.2, 13.5,
-        13.3, 13.8, 14.0, 14.2, 14.5,
-    ])
+    return np.array(
+        [
+            10.0,
+            10.5,
+            11.0,
+            10.8,
+            11.2,
+            11.5,
+            11.3,
+            11.8,
+            12.0,
+            12.5,
+            12.3,
+            12.8,
+            13.0,
+            13.2,
+            13.5,
+            13.3,
+            13.8,
+            14.0,
+            14.2,
+            14.5,
+        ]
+    )
 
 
 @pytest.fixture
@@ -53,6 +73,7 @@ def ohlcv_30():
 # ---------------------------------------------------------------------------
 # SMA
 # ---------------------------------------------------------------------------
+
 
 class TestSMA:
     def test_basic(self, close_20):
@@ -86,6 +107,7 @@ class TestSMA:
 # EMA
 # ---------------------------------------------------------------------------
 
+
 class TestEMA:
     def test_seed_is_sma(self, close_20):
         result = ema(close_20, 5)
@@ -104,7 +126,7 @@ class TestEMA:
 
     def test_ema_reacts_faster_than_sma(self):
         # Accelerating uptrend so EMA pulls ahead of SMA
-        data = np.array([10.0 + 0.05 * i ** 1.5 for i in range(50)])
+        data = np.array([10.0 + 0.05 * i**1.5 for i in range(50)])
         e = ema(data, 10)
         s = sma(data, 10)
         # EMA weights recent (higher) prices more heavily
@@ -114,6 +136,7 @@ class TestEMA:
 # ---------------------------------------------------------------------------
 # RSI
 # ---------------------------------------------------------------------------
+
 
 class TestRSI:
     def test_range(self, close_20):
@@ -144,6 +167,7 @@ class TestRSI:
 # MACD
 # ---------------------------------------------------------------------------
 
+
 class TestMACD:
     def test_output_shapes(self, close_20):
         ml, sl, hist = macd(close_20, fast=5, slow=10, signal=3)
@@ -161,6 +185,7 @@ class TestMACD:
 # ---------------------------------------------------------------------------
 # Bollinger Bands
 # ---------------------------------------------------------------------------
+
 
 class TestBollingerBands:
     def test_middle_equals_sma(self, close_20):
@@ -188,6 +213,7 @@ class TestBollingerBands:
 # ATR
 # ---------------------------------------------------------------------------
 
+
 class TestATR:
     def test_positive(self, ohlcv_30):
         _, h, lo, c, _ = ohlcv_30
@@ -211,6 +237,7 @@ class TestATR:
 # Stochastic
 # ---------------------------------------------------------------------------
 
+
 class TestStochastic:
     def test_k_range(self, ohlcv_30):
         _, h, lo, c, _ = ohlcv_30
@@ -228,6 +255,7 @@ class TestStochastic:
 # ---------------------------------------------------------------------------
 # VWAP
 # ---------------------------------------------------------------------------
+
 
 class TestVWAP:
     def test_within_price_range(self, ohlcv_30):
@@ -248,6 +276,7 @@ class TestVWAP:
 # OBV
 # ---------------------------------------------------------------------------
 
+
 class TestOBV:
     def test_first_value_equals_volume(self, ohlcv_30):
         _, _, _, c, v = ohlcv_30
@@ -267,6 +296,7 @@ class TestOBV:
 # ---------------------------------------------------------------------------
 # ADX
 # ---------------------------------------------------------------------------
+
 
 class TestADX:
     def test_range(self, ohlcv_30):

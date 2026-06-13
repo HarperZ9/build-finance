@@ -4,11 +4,13 @@ Tests for quanta_finance.risk
 ~30 tests covering Sharpe, Sortino, drawdown, VaR, CVaR, volatility,
 CAPM metrics, and trade-level statistics.
 """
+
 import math
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
+
 from quanta_finance.risk import (
     alpha,
     beta,
@@ -28,6 +30,7 @@ from quanta_finance.risk import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def daily_returns():
@@ -56,6 +59,7 @@ class _FakeTrade:
 # ---------------------------------------------------------------------------
 # Sharpe
 # ---------------------------------------------------------------------------
+
 
 class TestSharpe:
     def test_positive_returns(self, daily_returns):
@@ -87,6 +91,7 @@ class TestSharpe:
 # Sortino
 # ---------------------------------------------------------------------------
 
+
 class TestSortino:
     def test_higher_than_sharpe_for_positive_skew(self):
         # A series with few negative returns
@@ -106,6 +111,7 @@ class TestSortino:
 # ---------------------------------------------------------------------------
 # Max Drawdown
 # ---------------------------------------------------------------------------
+
 
 class TestMaxDrawdown:
     def test_known_drawdown(self):
@@ -138,6 +144,7 @@ class TestMaxDrawdownDuration:
 # Calmar
 # ---------------------------------------------------------------------------
 
+
 class TestCalmar:
     def test_positive(self, daily_returns, equity_curve):
         cr = calmar_ratio(daily_returns, equity_curve)
@@ -153,6 +160,7 @@ class TestCalmar:
 # ---------------------------------------------------------------------------
 # VaR
 # ---------------------------------------------------------------------------
+
 
 class TestVaRHistorical:
     def test_positive(self, daily_returns):
@@ -182,6 +190,7 @@ class TestCVaR:
 # Volatility
 # ---------------------------------------------------------------------------
 
+
 class TestVolatility:
     def test_annualized_greater(self, daily_returns):
         ann = volatility(daily_returns, annualize=True)
@@ -196,6 +205,7 @@ class TestVolatility:
 # ---------------------------------------------------------------------------
 # CAPM: beta, alpha, information ratio
 # ---------------------------------------------------------------------------
+
 
 class TestBeta:
     def test_self_beta(self, daily_returns):
@@ -226,6 +236,7 @@ class TestInformationRatio:
 # ---------------------------------------------------------------------------
 # Trade-level metrics
 # ---------------------------------------------------------------------------
+
 
 class TestProfitFactor:
     def test_known(self):

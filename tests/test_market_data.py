@@ -3,12 +3,14 @@ Tests for market data fetching, CSV I/O, paper broker, and autotrader config.
 
 All tests run offline -- no network calls are made.
 """
+
 from __future__ import annotations
 
 import os
 import tempfile
 
 import pytest
+
 from quanta_finance.autotrader import AutoTraderConfig
 from quanta_finance.broker import (
     BrokerConfig,
@@ -28,6 +30,7 @@ from quanta_finance.market_data import (
 # ---------------------------------------------------------------------------
 # 1. generate_sample_data produces valid candles
 # ---------------------------------------------------------------------------
+
 
 class TestGenerateSampleData:
     def test_returns_correct_count(self):
@@ -57,13 +60,16 @@ class TestGenerateSampleData:
 # 2. CSV round-trip
 # ---------------------------------------------------------------------------
 
+
 class TestCsvRoundTrip:
     def test_save_and_load_roundtrip(self):
         original = generate_sample_data(symbol="TEST", days=20, seed=7)
         assert len(original) > 0
 
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".csv", delete=False,
+            mode="w",
+            suffix=".csv",
+            delete=False,
         ) as tmp:
             tmp_path = tmp.name
 
@@ -93,6 +99,7 @@ class TestCsvRoundTrip:
 # 3. POPULAR_STOCKS and POPULAR_CRYPTO are non-empty
 # ---------------------------------------------------------------------------
 
+
 class TestPopularSymbols:
     def test_popular_stocks_non_empty(self):
         assert len(POPULAR_STOCKS) > 0
@@ -121,6 +128,7 @@ class TestPopularSymbols:
 # 4. PaperBroker tracks equity correctly
 # ---------------------------------------------------------------------------
 
+
 class TestPaperBrokerEquity:
     def test_initial_equity(self):
         broker = PaperBroker(initial_capital=50_000)
@@ -144,6 +152,7 @@ class TestPaperBrokerEquity:
 # ---------------------------------------------------------------------------
 # 5. PaperBroker submit_order updates positions
 # ---------------------------------------------------------------------------
+
 
 class TestPaperBrokerPositions:
     def test_buy_creates_position(self):
@@ -182,6 +191,7 @@ class TestPaperBrokerPositions:
 # 6. AutoTraderConfig has sensible defaults
 # ---------------------------------------------------------------------------
 
+
 class TestAutoTraderConfig:
     def test_default_values(self):
         config = AutoTraderConfig()
@@ -211,6 +221,7 @@ class TestAutoTraderConfig:
 # ---------------------------------------------------------------------------
 # 7. get_broker factory
 # ---------------------------------------------------------------------------
+
 
 class TestGetBroker:
     def test_default_returns_paper(self):

@@ -9,11 +9,13 @@ Functions
 ---------
 sma, ema, rsi, macd, bollinger_bands, atr, stochastic, vwap, adx, obv
 """
+
 from __future__ import annotations
 
 import numpy as np
 
 # ---- helpers ----------------------------------------------------------------
+
 
 def _validate(arr: np.ndarray, name: str = "data") -> np.ndarray:
     """Ensure *arr* is a 1-D float64 ndarray."""
@@ -29,6 +31,7 @@ def _nan_prefix(length: int, period: int) -> np.ndarray:
 
 
 # ---- moving averages -------------------------------------------------------
+
 
 def sma(data: np.ndarray, period: int) -> np.ndarray:
     """Simple Moving Average.
@@ -46,7 +49,7 @@ def sma(data: np.ndarray, period: int) -> np.ndarray:
     if n < period:
         return out
     cumsum = np.cumsum(data)
-    out[period - 1:] = (cumsum[period - 1:] - np.concatenate(([0.0], cumsum[:-period]))) / period
+    out[period - 1 :] = (cumsum[period - 1 :] - np.concatenate(([0.0], cumsum[:-period]))) / period
     return out
 
 
@@ -73,6 +76,7 @@ def ema(data: np.ndarray, period: int) -> np.ndarray:
 
 
 # ---- oscillators & momentum ------------------------------------------------
+
 
 def rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
     """Relative Strength Index (Wilder smoothing)."""
@@ -158,6 +162,7 @@ def stochastic(
 
 # ---- volatility & bands ----------------------------------------------------
 
+
 def bollinger_bands(
     close: np.ndarray,
     period: int = 20,
@@ -216,6 +221,7 @@ def atr(
 
 # ---- volume indicators -----------------------------------------------------
 
+
 def vwap(
     high: np.ndarray,
     low: np.ndarray,
@@ -251,6 +257,7 @@ def obv(close: np.ndarray, volume: np.ndarray) -> np.ndarray:
 
 
 # ---- trend ------------------------------------------------------------------
+
 
 def adx(
     high: np.ndarray,

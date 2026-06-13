@@ -12,6 +12,7 @@ TrendFollowingStrategy  - MA crossover + ATR trailing stops
 BreakoutStrategy        - N-period high/low break with volume confirmation
 EnsembleStrategy        - Weighted combination of all four strategies
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from .indicators import (
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_arrays(candles: list[Candle]):
     """Return (open, high, low, close, volume, timestamps) as numpy arrays."""
     o = np.array([c.open for c in candles], dtype=np.float64)
@@ -47,6 +49,7 @@ def _extract_arrays(candles: list[Candle]):
 # ---------------------------------------------------------------------------
 # 1. Momentum — EMA crossover + RSI filter
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class MomentumStrategy:
@@ -82,22 +85,26 @@ class MomentumStrategy:
             if fast[i] > slow[i] and rsi_vals[i] < self.rsi_overbought:
                 # Strength proportional to how far below overbought
                 strength = (self.rsi_overbought - rsi_vals[i]) / self.rsi_overbought
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="buy",
-                    strength=min(1.0, max(0.0, strength)),
-                    target_price=close[i],
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="buy",
+                        strength=min(1.0, max(0.0, strength)),
+                        target_price=close[i],
+                        timestamp=ts[i],
+                    )
+                )
             elif fast[i] < slow[i] and rsi_vals[i] > self.rsi_oversold:
                 strength = (rsi_vals[i] - self.rsi_oversold) / (100.0 - self.rsi_oversold)
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="sell",
-                    strength=min(1.0, max(0.0, strength)),
-                    target_price=close[i],
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="sell",
+                        strength=min(1.0, max(0.0, strength)),
+                        target_price=close[i],
+                        timestamp=ts[i],
+                    )
+                )
 
         return signals
 
@@ -105,6 +112,7 @@ class MomentumStrategy:
 # ---------------------------------------------------------------------------
 # 2. Mean Reversion — Bollinger Band bounce
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class MeanReversionStrategy:
@@ -140,27 +148,31 @@ class MeanReversionStrategy:
                 # Distance below lower band => strength
                 overshoot = (lower[i] - close[i]) / band_width
                 strength = min(1.0, 0.5 + overshoot)
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="buy",
-                    strength=strength,
-                    target_price=middle[i],
-                    stop_loss=lower[i] - 0.5 * band_width,
-                    take_profit=middle[i],
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="buy",
+                        strength=strength,
+                        target_price=middle[i],
+                        stop_loss=lower[i] - 0.5 * band_width,
+                        take_profit=middle[i],
+                        timestamp=ts[i],
+                    )
+                )
             elif close[i] >= upper[i]:
                 overshoot = (close[i] - upper[i]) / band_width
                 strength = min(1.0, 0.5 + overshoot)
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="sell",
-                    strength=strength,
-                    target_price=middle[i],
-                    stop_loss=upper[i] + 0.5 * band_width,
-                    take_profit=middle[i],
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="sell",
+                        strength=strength,
+                        target_price=middle[i],
+                        stop_loss=upper[i] + 0.5 * band_width,
+                        take_profit=middle[i],
+                        timestamp=ts[i],
+                    )
+                )
 
         return signals
 
@@ -168,6 +180,7 @@ class MeanReversionStrategy:
 # ---------------------------------------------------------------------------
 # 3. Trend Following — MA crossover + ATR stops
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TrendFollowingStrategy:
@@ -211,25 +224,29 @@ class TrendFollowingStrategy:
             # Golden cross
             if fast[i - 1] <= slow[i - 1] and fast[i] > slow[i]:
                 stop = close[i] - self.atr_multiplier * atr_vals[i]
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="buy",
-                    strength=0.8,
-                    target_price=close[i],
-                    stop_loss=stop,
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="buy",
+                        strength=0.8,
+                        target_price=close[i],
+                        stop_loss=stop,
+                        timestamp=ts[i],
+                    )
+                )
             # Death cross
             elif fast[i - 1] >= slow[i - 1] and fast[i] < slow[i]:
                 stop = close[i] + self.atr_multiplier * atr_vals[i]
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="sell",
-                    strength=0.8,
-                    target_price=close[i],
-                    stop_loss=stop,
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="sell",
+                        strength=0.8,
+                        target_price=close[i],
+                        stop_loss=stop,
+                        timestamp=ts[i],
+                    )
+                )
 
         return signals
 
@@ -237,6 +254,7 @@ class TrendFollowingStrategy:
 # ---------------------------------------------------------------------------
 # 4. Breakout — N-period high/low with volume confirmation
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BreakoutStrategy:
@@ -272,24 +290,28 @@ class BreakoutStrategy:
 
             if close[i] > window_high and vol_confirmed:
                 strength = min(1.0, vol_ratio / (self.vol_multiplier * 2))
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="buy",
-                    strength=max(0.3, strength),
-                    target_price=close[i],
-                    stop_loss=window_low,
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="buy",
+                        strength=max(0.3, strength),
+                        target_price=close[i],
+                        stop_loss=window_low,
+                        timestamp=ts[i],
+                    )
+                )
             elif close[i] < window_low and vol_confirmed:
                 strength = min(1.0, vol_ratio / (self.vol_multiplier * 2))
-                signals.append(Signal(
-                    symbol=symbol,
-                    side="sell",
-                    strength=max(0.3, strength),
-                    target_price=close[i],
-                    stop_loss=window_high,
-                    timestamp=ts[i],
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side="sell",
+                        strength=max(0.3, strength),
+                        target_price=close[i],
+                        stop_loss=window_high,
+                        timestamp=ts[i],
+                    )
+                )
 
         return signals
 
@@ -297,6 +319,7 @@ class BreakoutStrategy:
 # ---------------------------------------------------------------------------
 # 5. Ensemble — weighted combination of all four strategies
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class EnsembleStrategy:
@@ -313,12 +336,14 @@ class EnsembleStrategy:
     mean_reversion: MeanReversionStrategy = field(default_factory=MeanReversionStrategy)
     trend: TrendFollowingStrategy = field(default_factory=TrendFollowingStrategy)
     breakout: BreakoutStrategy = field(default_factory=BreakoutStrategy)
-    weights: dict = field(default_factory=lambda: {
-        "momentum": 0.25,
-        "mean_reversion": 0.25,
-        "trend": 0.30,
-        "breakout": 0.20,
-    })
+    weights: dict = field(
+        default_factory=lambda: {
+            "momentum": 0.25,
+            "mean_reversion": 0.25,
+            "trend": 0.30,
+            "breakout": 0.20,
+        }
+    )
     symbol: str = ""
 
     def __post_init__(self):
@@ -366,11 +391,13 @@ class EnsembleStrategy:
 
             if best_side and best_weight > 0:
                 avg_strength = best_score / best_weight
-                signals.append(Signal(
-                    symbol=symbol,
-                    side=best_side,
-                    strength=min(1.0, avg_strength),
-                    timestamp=ts_val,
-                ))
+                signals.append(
+                    Signal(
+                        symbol=symbol,
+                        side=best_side,
+                        strength=min(1.0, avg_strength),
+                        timestamp=ts_val,
+                    )
+                )
 
         return signals

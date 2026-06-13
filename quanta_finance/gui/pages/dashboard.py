@@ -4,6 +4,7 @@ Quanta Finance -- Dashboard Page
 Account overview, open positions table, portfolio allocation stats,
 and quick actions -- all wired to live Alpaca data via DataBridge.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _fmt_currency(value: float) -> str:
     """Format a float as $X,XXX.XX."""
@@ -74,6 +76,7 @@ _TABLE_STYLE = (
 # Dashboard Page
 # ---------------------------------------------------------------------------
 
+
 class DashboardPage(QWidget):
     """Main dashboard: account overview, positions, allocation, actions."""
 
@@ -90,6 +93,7 @@ class DashboardPage(QWidget):
         """Create the data bridge and start periodic refresh."""
         try:
             from quanta_finance.gui.data_bridge import DataBridge
+
             self._bridge = DataBridge(use_paper=True)
         except Exception as exc:
             logger.warning("DataBridge init failed: %s", exc)
@@ -107,9 +111,7 @@ class DashboardPage(QWidget):
     def _build_ui(self) -> None:
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -125,7 +127,8 @@ class DashboardPage(QWidget):
 
         # --- Account Overview Card ---
         acct_card, acct_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
 
         acct_header = QHBoxLayout()
@@ -135,9 +138,7 @@ class DashboardPage(QWidget):
         acct_header.addWidget(self._acct_dot)
 
         self._acct_status_label = QLabel("Connecting...")
-        self._acct_status_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT3};"
-        )
+        self._acct_status_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT3};")
         acct_header.addWidget(self._acct_status_label)
         acct_header.addStretch()
         acct_layout.addLayout(acct_header)
@@ -160,21 +161,25 @@ class DashboardPage(QWidget):
 
         # --- Open Positions Table ---
         pos_card, pos_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         pos_layout.addWidget(Heading("Open Positions", level=2))
 
         self._positions_table = QTableWidget(0, 6)
-        self._positions_table.setHorizontalHeaderLabels([
-            "Symbol", "Qty", "Avg Entry", "Current", "Unrealized P&L", "%",
-        ])
+        self._positions_table.setHorizontalHeaderLabels(
+            [
+                "Symbol",
+                "Qty",
+                "Avg Entry",
+                "Current",
+                "Unrealized P&L",
+                "%",
+            ]
+        )
         self._positions_table.setStyleSheet(_TABLE_STYLE)
-        self._positions_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._positions_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self._positions_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._positions_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._positions_table.setAlternatingRowColors(True)
         self._positions_table.verticalHeader().setVisible(False)
         self._positions_table.setFixedHeight(180)
@@ -187,7 +192,8 @@ class DashboardPage(QWidget):
 
         # --- Portfolio Allocation Stats ---
         alloc_card, alloc_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         alloc_layout.addWidget(Heading("Portfolio Allocation", level=2))
 
@@ -196,19 +202,16 @@ class DashboardPage(QWidget):
         # Populated dynamically by _load_data
         alloc_layout.addLayout(self._alloc_stats_row)
 
-        self._alloc_placeholder = QLabel(
-            "Allocation data will appear when positions are loaded."
-        )
-        self._alloc_placeholder.setStyleSheet(
-            f"font-size: 12px; color: {C.TEXT3};"
-        )
+        self._alloc_placeholder = QLabel("Allocation data will appear when positions are loaded.")
+        self._alloc_placeholder.setStyleSheet(f"font-size: 12px; color: {C.TEXT3};")
         alloc_layout.addWidget(self._alloc_placeholder)
 
         layout.addWidget(alloc_card)
 
         # --- Quick Actions Card ---
         actions_card, actions_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         actions_layout.addWidget(Heading("Quick Actions", level=2))
 
@@ -249,7 +252,8 @@ class DashboardPage(QWidget):
 
         # --- Recent Activity Card ---
         activity_card, activity_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         activity_layout.addWidget(Heading("Recent Activity", level=2))
 
@@ -267,9 +271,7 @@ class DashboardPage(QWidget):
             f"  color: {C.TEXT};"
             f"}}"
         )
-        self._activity_log.setPlaceholderText(
-            "No recent trades. Start the auto-trader to see activity."
-        )
+        self._activity_log.setPlaceholderText("No recent trades. Start the auto-trader to see activity.")
         activity_layout.addWidget(self._activity_log)
 
         layout.addWidget(activity_card)
@@ -297,21 +299,23 @@ class DashboardPage(QWidget):
             dot_color = C.YELLOW if is_demo else C.GREEN
             self._acct_dot.set_color(dot_color)
             self._acct_status_label.setText(f"Connected ({source})")
-            self._acct_status_label.setStyleSheet(
-                f"font-size: 11px; color: {dot_color};"
-            )
+            self._acct_status_label.setStyleSheet(f"font-size: 11px; color: {dot_color};")
 
             self._stat_equity.set_value(
-                _fmt_currency(acct.equity), C.TEXT,
+                _fmt_currency(acct.equity),
+                C.TEXT,
             )
             self._stat_buying_power.set_value(
-                _fmt_currency(acct.buying_power), C.TEXT,
+                _fmt_currency(acct.buying_power),
+                C.TEXT,
             )
             self._stat_cash.set_value(
-                _fmt_currency(acct.cash), C.TEXT,
+                _fmt_currency(acct.cash),
+                C.TEXT,
             )
             self._stat_portfolio.set_value(
-                _fmt_currency(acct.portfolio_value), C.TEXT,
+                _fmt_currency(acct.portfolio_value),
+                C.TEXT,
             )
         except Exception as exc:
             logger.warning("Dashboard account load error: %s", exc)
@@ -329,32 +333,34 @@ class DashboardPage(QWidget):
         self._positions_table.setRowCount(len(positions))
         for row, pos in enumerate(positions):
             self._positions_table.setItem(
-                row, 0, QTableWidgetItem(pos.symbol),
+                row,
+                0,
+                QTableWidgetItem(pos.symbol),
             )
             self._positions_table.setItem(
-                row, 1, QTableWidgetItem(f"{pos.qty:.0f}"),
+                row,
+                1,
+                QTableWidgetItem(f"{pos.qty:.0f}"),
             )
             self._positions_table.setItem(
-                row, 2, QTableWidgetItem(_fmt_currency(pos.avg_entry)),
+                row,
+                2,
+                QTableWidgetItem(_fmt_currency(pos.avg_entry)),
             )
             self._positions_table.setItem(
-                row, 3, QTableWidgetItem(_fmt_currency(pos.current_price)),
+                row,
+                3,
+                QTableWidgetItem(_fmt_currency(pos.current_price)),
             )
 
             pnl_item = QTableWidgetItem(_fmt_pnl(pos.unrealized_pnl))
             pnl_item.setForeground(
-                __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(
-                    _pnl_color(pos.unrealized_pnl)
-                )
+                __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(_pnl_color(pos.unrealized_pnl))
             )
             self._positions_table.setItem(row, 4, pnl_item)
 
             pct_item = QTableWidgetItem(f"{pos.pnl_percent:+.2f}%")
-            pct_item.setForeground(
-                __import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(
-                    _pnl_color(pos.pnl_percent)
-                )
-            )
+            pct_item.setForeground(__import__("PyQt6.QtGui", fromlist=["QColor"]).QColor(_pnl_color(pos.pnl_percent)))
             self._positions_table.setItem(row, 5, pct_item)
 
     def _update_allocation(self, positions) -> None:
@@ -369,9 +375,7 @@ class DashboardPage(QWidget):
             return
         self._alloc_placeholder.setVisible(False)
 
-        total_value = sum(
-            pos.current_price * pos.qty for pos in positions
-        )
+        total_value = sum(pos.current_price * pos.qty for pos in positions)
         if total_value <= 0:
             return
 
@@ -407,9 +411,7 @@ class DashboardPage(QWidget):
         if self._bridge:
             results = self._bridge.flatten_all()
             count = len(results)
-            self.add_activity(
-                f"Flatten all: {count} position(s) closed."
-            )
+            self.add_activity(f"Flatten all: {count} position(s) closed.")
             self._bridge.invalidate_cache()
             self._load_data()
 
@@ -418,8 +420,7 @@ class DashboardPage(QWidget):
         reply = QMessageBox.warning(
             self,
             "Emergency Stop",
-            "This will close ALL positions and stop the auto-trader.\n"
-            "Continue?",
+            "This will close ALL positions and stop the auto-trader.\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -434,6 +435,7 @@ class DashboardPage(QWidget):
     def add_activity(self, message: str) -> None:
         """Append a timestamped message to the activity log."""
         from datetime import datetime as dt
+
         ts = dt.now().strftime("%H:%M:%S")
         self._activity_log.append(f"[{ts}] {message}")
 

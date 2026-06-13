@@ -5,6 +5,7 @@ All functions return the number of shares/contracts (floored to whole units
 unless the market supports fractional quantities).  Every function takes
 ``price`` so callers can convert dollar amounts to share counts.
 """
+
 from __future__ import annotations
 
 import math

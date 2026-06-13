@@ -4,6 +4,7 @@ Core market data structures used throughout Quanta Finance.
 Provides Candle, Quote, Signal, Trade, and Position dataclasses
 with convenience methods for common calculations.
 """
+
 from __future__ import annotations
 
 import time
@@ -60,8 +61,7 @@ class Candle:
 
     def __repr__(self) -> str:
         return (
-            f"Candle(ts={self.timestamp}, O={self.open}, H={self.high}, "
-            f"L={self.low}, C={self.close}, V={self.volume})"
+            f"Candle(ts={self.timestamp}, O={self.open}, H={self.high}, L={self.low}, C={self.close}, V={self.volume})"
         )
 
 
@@ -168,9 +168,7 @@ class Position:
             self.average_cost = price
             return
 
-        same_direction = (self.quantity > 0 and qty > 0) or (
-            self.quantity < 0 and qty < 0
-        )
+        same_direction = (self.quantity > 0 and qty > 0) or (self.quantity < 0 and qty < 0)
 
         if same_direction:
             total_cost = self.average_cost * abs(self.quantity) + price * abs(qty)
@@ -209,6 +207,7 @@ class Position:
 # ---------------------------------------------------------------------------
 # Backtest-specific data types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BacktestSignal:

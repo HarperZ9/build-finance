@@ -13,6 +13,7 @@ Usage
     positions = bridge.get_positions()
     quote = bridge.get_quote("AAPL")
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Data containers
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class AccountSnapshot:
@@ -70,22 +72,78 @@ class SignalRecord:
 _DEMO_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "NVDA", "TSLA"]
 
 _DEMO_WATCHLIST = [
-    {"symbol": "AAPL", "last": 189.42, "change": 1.23, "change_pct": 0.65,
-     "volume": 48_200_000, "bid": 189.40, "ask": 189.45},
-    {"symbol": "MSFT", "last": 417.88, "change": -2.15, "change_pct": -0.51,
-     "volume": 22_700_000, "bid": 417.85, "ask": 417.90},
-    {"symbol": "GOOGL", "last": 153.21, "change": 0.87, "change_pct": 0.57,
-     "volume": 19_300_000, "bid": 153.19, "ask": 153.23},
-    {"symbol": "NVDA", "last": 875.35, "change": 12.40, "change_pct": 1.44,
-     "volume": 38_100_000, "bid": 875.30, "ask": 875.40},
-    {"symbol": "TSLA", "last": 172.60, "change": -3.80, "change_pct": -2.15,
-     "volume": 65_400_000, "bid": 172.55, "ask": 172.65},
-    {"symbol": "AMZN", "last": 185.50, "change": 0.95, "change_pct": 0.51,
-     "volume": 31_800_000, "bid": 185.48, "ask": 185.52},
-    {"symbol": "META", "last": 505.75, "change": 5.20, "change_pct": 1.04,
-     "volume": 15_900_000, "bid": 505.70, "ask": 505.80},
-    {"symbol": "JPM", "last": 198.30, "change": -0.45, "change_pct": -0.23,
-     "volume": 8_400_000, "bid": 198.28, "ask": 198.32},
+    {
+        "symbol": "AAPL",
+        "last": 189.42,
+        "change": 1.23,
+        "change_pct": 0.65,
+        "volume": 48_200_000,
+        "bid": 189.40,
+        "ask": 189.45,
+    },
+    {
+        "symbol": "MSFT",
+        "last": 417.88,
+        "change": -2.15,
+        "change_pct": -0.51,
+        "volume": 22_700_000,
+        "bid": 417.85,
+        "ask": 417.90,
+    },
+    {
+        "symbol": "GOOGL",
+        "last": 153.21,
+        "change": 0.87,
+        "change_pct": 0.57,
+        "volume": 19_300_000,
+        "bid": 153.19,
+        "ask": 153.23,
+    },
+    {
+        "symbol": "NVDA",
+        "last": 875.35,
+        "change": 12.40,
+        "change_pct": 1.44,
+        "volume": 38_100_000,
+        "bid": 875.30,
+        "ask": 875.40,
+    },
+    {
+        "symbol": "TSLA",
+        "last": 172.60,
+        "change": -3.80,
+        "change_pct": -2.15,
+        "volume": 65_400_000,
+        "bid": 172.55,
+        "ask": 172.65,
+    },
+    {
+        "symbol": "AMZN",
+        "last": 185.50,
+        "change": 0.95,
+        "change_pct": 0.51,
+        "volume": 31_800_000,
+        "bid": 185.48,
+        "ask": 185.52,
+    },
+    {
+        "symbol": "META",
+        "last": 505.75,
+        "change": 5.20,
+        "change_pct": 1.04,
+        "volume": 15_900_000,
+        "bid": 505.70,
+        "ask": 505.80,
+    },
+    {
+        "symbol": "JPM",
+        "last": 198.30,
+        "change": -0.45,
+        "change_pct": -0.23,
+        "volume": 8_400_000,
+        "bid": 198.28,
+        "ask": 198.32,
+    },
 ]
 
 
@@ -143,6 +201,7 @@ def _demo_watchlist(symbols: list[str]) -> list[dict]:
 # DataBridge
 # ---------------------------------------------------------------------------
 
+
 class DataBridge:
     """Provides data to GUI pages from broker/market modules.
 
@@ -170,15 +229,13 @@ class DataBridge:
         api_secret = os.environ.get("APCA_API_SECRET_KEY", "")
 
         if not api_key or not api_secret:
-            logger.info(
-                "Alpaca API keys not found in environment; "
-                "running in demo mode."
-            )
+            logger.info("Alpaca API keys not found in environment; running in demo mode.")
             self._demo_mode = True
             return
 
         try:
             from quanta_finance.broker import AlpacaBroker, BrokerConfig
+
             config = BrokerConfig(
                 name="alpaca",
                 api_key=api_key,
@@ -190,8 +247,8 @@ class DataBridge:
             logger.info("Alpaca broker connected (paper=%s).", self._use_paper)
         except Exception as exc:
             logger.warning(
-                "Failed to initialize Alpaca broker: %s. "
-                "Falling back to demo mode.", exc,
+                "Failed to initialize Alpaca broker: %s. Falling back to demo mode.",
+                exc,
             )
             self._demo_mode = True
 
@@ -234,9 +291,7 @@ class DataBridge:
             try:
                 info = self._broker.get_account()
                 positions = self._broker.get_positions()
-                pos_value = sum(
-                    p.get("market_value", 0) for p in positions.values()
-                )
+                pos_value = sum(p.get("market_value", 0) for p in positions.values())
                 result = AccountSnapshot(
                     equity=info.equity,
                     buying_power=info.buying_power,
@@ -268,17 +323,17 @@ class DataBridge:
                     avg = p.get("avg_cost", 0)
                     price = p.get("market_price", 0)
                     pnl = p.get("unrealized_pnl", 0)
-                    pct = (
-                        (price - avg) / avg * 100 if avg > 0 else 0.0
+                    pct = (price - avg) / avg * 100 if avg > 0 else 0.0
+                    result.append(
+                        PositionInfo(
+                            symbol=sym,
+                            qty=qty,
+                            avg_entry=avg,
+                            current_price=price,
+                            unrealized_pnl=pnl,
+                            pnl_percent=round(pct, 2),
+                        )
                     )
-                    result.append(PositionInfo(
-                        symbol=sym,
-                        qty=qty,
-                        avg_entry=avg,
-                        current_price=price,
-                        unrealized_pnl=pnl,
-                        pnl_percent=round(pct, 2),
-                    ))
             except Exception as exc:
                 logger.warning("Positions fetch failed: %s", exc)
                 result = _demo_positions()

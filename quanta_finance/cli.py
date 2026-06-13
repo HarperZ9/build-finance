@@ -8,6 +8,7 @@ Usage:
     quanta-finance indicators --symbol AAPL --indicator rsi,macd
     quanta-finance gui          (launch GUI -- default when no command given)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,14 +33,18 @@ def _cmd_backtest(args: argparse.Namespace) -> None:
     # --- load candles -------------------------------------------------------
     if args.data == "sample":
         candles = generate_sample_data(
-            symbol=args.symbol or "AAPL", days=days, seed=42,
+            symbol=args.symbol or "AAPL",
+            days=days,
+            seed=42,
         )
     elif args.data and Path(args.data).exists():
         candles = _load_candles_csv(Path(args.data))
     else:
         print(f"Data source '{args.data}' not found. Using sample data.")
         candles = generate_sample_data(
-            symbol=args.symbol or "AAPL", days=days, seed=42,
+            symbol=args.symbol or "AAPL",
+            days=days,
+            seed=42,
         )
 
     symbol = candles[0].symbol or "AAPL"
@@ -78,17 +83,19 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            trades.append(Trade(
-                symbol=row.get("symbol", "???"),
-                side=row.get("side", "buy"),
-                entry_price=float(row.get("entry_price", 0)),
-                exit_price=float(row.get("exit_price", 0)),
-                quantity=float(row.get("quantity", 0)),
-                entry_time=float(row.get("entry_time", 0)),
-                exit_time=float(row.get("exit_time", 0)),
-                commission=float(row.get("commission", 0)),
-                pnl=float(row.get("pnl", 0)),
-            ))
+            trades.append(
+                Trade(
+                    symbol=row.get("symbol", "???"),
+                    side=row.get("side", "buy"),
+                    entry_price=float(row.get("entry_price", 0)),
+                    exit_price=float(row.get("exit_price", 0)),
+                    quantity=float(row.get("quantity", 0)),
+                    entry_time=float(row.get("entry_time", 0)),
+                    exit_time=float(row.get("exit_time", 0)),
+                    commission=float(row.get("commission", 0)),
+                    pnl=float(row.get("pnl", 0)),
+                )
+            )
 
     if not trades:
         print("No trades found in file.")
@@ -196,6 +203,7 @@ def _cmd_indicators(args: argparse.Namespace) -> None:
         elif name == "macd":
             fast, slow, sig = 12, 26, 9
             if len(closes) >= slow:
+
                 def _ema(arr, span):
                     a = 2.0 / (span + 1)
                     out = np.empty_like(arr)
@@ -222,6 +230,7 @@ def _cmd_gui(_args: argparse.Namespace) -> None:
     """Launch the PyQt6 GUI."""
     try:
         from quanta_finance.gui import launch
+
         launch()
     except ImportError:
         print("GUI requires PyQt6. Install with: pip install 'quanta-finance[gui]'")
@@ -231,6 +240,7 @@ def _cmd_gui(_args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Strategy factory
 # ---------------------------------------------------------------------------
+
 
 class _MomentumStrategy:
     """Simple momentum crossover strategy for CLI demos."""
@@ -247,31 +257,35 @@ class _MomentumStrategy:
             return []
 
         closes = [c.close for c in candles]
-        fast_ma = sum(closes[-self.fast:]) / self.fast
-        slow_ma = sum(closes[-self.slow:]) / self.slow
+        fast_ma = sum(closes[-self.fast :]) / self.fast
+        slow_ma = sum(closes[-self.slow :]) / self.slow
         prev_closes = closes[:-1]
 
         signals = []
         bar = candles[-1]
 
         if len(prev_closes) >= self.slow:
-            prev_fast = sum(prev_closes[-self.fast:]) / self.fast
-            prev_slow = sum(prev_closes[-self.slow:]) / self.slow
+            prev_fast = sum(prev_closes[-self.fast :]) / self.fast
+            prev_slow = sum(prev_closes[-self.slow :]) / self.slow
 
             if fast_ma > slow_ma and prev_fast <= prev_slow:
-                signals.append(Signal(
-                    symbol=bar.symbol,
-                    signal_type=SignalType.LONG,
-                    price=bar.close,
-                    timestamp=bar.timestamp,
-                ))
+                signals.append(
+                    Signal(
+                        symbol=bar.symbol,
+                        signal_type=SignalType.LONG,
+                        price=bar.close,
+                        timestamp=bar.timestamp,
+                    )
+                )
             elif fast_ma < slow_ma and prev_fast >= prev_slow:
-                signals.append(Signal(
-                    symbol=bar.symbol,
-                    signal_type=SignalType.CLOSE,
-                    price=bar.close,
-                    timestamp=bar.timestamp,
-                ))
+                signals.append(
+                    Signal(
+                        symbol=bar.symbol,
+                        signal_type=SignalType.CLOSE,
+                        price=bar.close,
+                        timestamp=bar.timestamp,
+                    )
+                )
 
         return signals
 
@@ -290,26 +304,30 @@ class _MeanReversionStrategy:
         if len(candles) < self.period:
             return []
 
-        closes = np.array([c.close for c in candles[-self.period:]])
+        closes = np.array([c.close for c in candles[-self.period :]])
         mean = closes.mean()
         std = closes.std()
         bar = candles[-1]
 
         signals = []
         if bar.close < mean - self.num_std * std:
-            signals.append(Signal(
-                symbol=bar.symbol,
-                signal_type=SignalType.LONG,
-                price=bar.close,
-                timestamp=bar.timestamp,
-            ))
+            signals.append(
+                Signal(
+                    symbol=bar.symbol,
+                    signal_type=SignalType.LONG,
+                    price=bar.close,
+                    timestamp=bar.timestamp,
+                )
+            )
         elif bar.close > mean + self.num_std * std:
-            signals.append(Signal(
-                symbol=bar.symbol,
-                signal_type=SignalType.CLOSE,
-                price=bar.close,
-                timestamp=bar.timestamp,
-            ))
+            signals.append(
+                Signal(
+                    symbol=bar.symbol,
+                    signal_type=SignalType.CLOSE,
+                    price=bar.close,
+                    timestamp=bar.timestamp,
+                )
+            )
 
         return signals
 
@@ -332,6 +350,7 @@ def _make_strategy(name: str):
 # CSV loader
 # ---------------------------------------------------------------------------
 
+
 def _load_candles_csv(path: Path):
     """Load candles from CSV with columns: timestamp,open,high,low,close,volume."""
     from quanta_finance.data import Candle
@@ -340,21 +359,24 @@ def _load_candles_csv(path: Path):
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            candles.append(Candle(
-                timestamp=float(row.get("timestamp", 0)),
-                open=float(row.get("open", 0)),
-                high=float(row.get("high", 0)),
-                low=float(row.get("low", 0)),
-                close=float(row.get("close", 0)),
-                volume=float(row.get("volume", 0)),
-                symbol=row.get("symbol", ""),
-            ))
+            candles.append(
+                Candle(
+                    timestamp=float(row.get("timestamp", 0)),
+                    open=float(row.get("open", 0)),
+                    high=float(row.get("high", 0)),
+                    low=float(row.get("low", 0)),
+                    close=float(row.get("close", 0)),
+                    volume=float(row.get("volume", 0)),
+                    symbol=row.get("symbol", ""),
+                )
+            )
     return candles
 
 
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -379,8 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
     # optimize
     op = sub.add_parser("optimize", help="Portfolio optimization")
     op.add_argument("--file", required=True, help="Path to returns CSV")
-    op.add_argument("--method", default="max_sharpe",
-                    help="max_sharpe, min_variance, max_return, risk_parity, hrp")
+    op.add_argument("--method", default="max_sharpe", help="max_sharpe, min_variance, max_return, risk_parity, hrp")
     op.add_argument("--risk-free", type=float, default=0.02, help="Risk-free rate")
 
     # indicators

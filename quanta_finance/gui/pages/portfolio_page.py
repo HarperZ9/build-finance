@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Weight Bar Chart Widget
 # =============================================================================
 
+
 class WeightBarWidget(QWidget):
     """Horizontal bar chart showing portfolio weight allocations."""
 
@@ -48,8 +49,7 @@ class WeightBarWidget(QWidget):
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QColor(C.TEXT3))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                       "No data \u2014 run an optimization")
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No data \u2014 run an optimization")
             p.end()
             return
 
@@ -64,8 +64,7 @@ class WeightBarWidget(QWidget):
         spacing = 36
         chart_w = w - margin_l - margin_r
 
-        colors = [C.ACCENT, C.GREEN, C.CYAN, C.YELLOW, C.RED,
-                  C.ACCENT_HI, C.GREEN_HI, C.ACCENT_TX]
+        colors = [C.ACCENT, C.GREEN, C.CYAN, C.YELLOW, C.RED, C.ACCENT_HI, C.GREEN_HI, C.ACCENT_TX]
 
         sorted_items = sorted(self._data.items(), key=lambda x: x[1], reverse=True)
 
@@ -76,9 +75,9 @@ class WeightBarWidget(QWidget):
             # Symbol label
             p.setPen(QColor(C.TEXT))
             p.setFont(QFont("Segoe UI", 10, QFont.Weight.Medium))
-            p.drawText(QRectF(0, y, margin_l - 8, bar_h),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       symbol)
+            p.drawText(
+                QRectF(0, y, margin_l - 8, bar_h), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, symbol
+            )
 
             # Background bar
             bar_rect = QRectF(margin_l, y, chart_w, bar_h)
@@ -98,9 +97,11 @@ class WeightBarWidget(QWidget):
             p.setPen(QColor(C.TEXT2))
             p.setFont(QFont("Segoe UI", 9))
             pct_text = f"{weight * 100:.1f}%"
-            p.drawText(QRectF(margin_l + chart_w + 8, y, margin_r - 8, bar_h),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       pct_text)
+            p.drawText(
+                QRectF(margin_l + chart_w + 8, y, margin_r - 8, bar_h),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                pct_text,
+            )
 
         p.end()
 
@@ -108,6 +109,7 @@ class WeightBarWidget(QWidget):
 # =============================================================================
 # Portfolio Optimization Worker
 # =============================================================================
+
 
 class PortfolioWorker(QThread):
     """Runs portfolio optimization in a background thread."""
@@ -125,6 +127,7 @@ class PortfolioWorker(QThread):
             # Try real optimizer first
             try:
                 from quanta_finance.portfolio import optimize
+
                 result = optimize(self._symbols, method=self._method)
                 self.finished_signal.emit(result)
                 return
@@ -159,8 +162,7 @@ class PortfolioWorker(QThread):
 
             # Compute portfolio stats
             exp_return = sum(random.gauss(0.08, 0.04) * w for w in weights.values())
-            volatility = math.sqrt(sum((random.gauss(0.20, 0.05) * w) ** 2
-                                       for w in weights.values()))
+            volatility = math.sqrt(sum((random.gauss(0.20, 0.05) * w) ** 2 for w in weights.values()))
             sharpe = exp_return / volatility if volatility > 0 else 0
 
             result = {
@@ -180,6 +182,7 @@ class PortfolioWorker(QThread):
 # =============================================================================
 # Portfolio Page
 # =============================================================================
+
 
 class PortfolioPage(QWidget):
     """Portfolio optimization configuration and results."""

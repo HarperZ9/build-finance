@@ -21,6 +21,7 @@ Usage
     trader.run_once()          # single iteration
     trader.run_loop(max_iterations=10)   # loop with sleep
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class AutoTraderConfig:
@@ -74,6 +76,7 @@ class AutoTraderConfig:
 # Strategy loader
 # ---------------------------------------------------------------------------
 
+
 def _create_strategy(name: str):
     """Instantiate a strategy by name.
 
@@ -98,7 +101,8 @@ def _create_strategy(name: str):
     cls = strategies.get(name)
     if cls is None:
         logger.warning(
-            "Unknown strategy %r; falling back to EnsembleStrategy", name,
+            "Unknown strategy %r; falling back to EnsembleStrategy",
+            name,
         )
         cls = EnsembleStrategy
     return cls()
@@ -107,6 +111,7 @@ def _create_strategy(name: str):
 # ---------------------------------------------------------------------------
 # AutoTrader
 # ---------------------------------------------------------------------------
+
 
 class AutoTrader:
     """Automated trading engine.
@@ -135,7 +140,9 @@ class AutoTrader:
     # -- data fetching ------------------------------------------------------
 
     def _fetch_recent(
-        self, symbol: str, lookback: int = 100,
+        self,
+        symbol: str,
+        lookback: int = 100,
     ) -> list[Candle]:
         """Fetch recent candles for *symbol*.
 
@@ -158,7 +165,9 @@ class AutoTrader:
     # -- signal -> order logic ----------------------------------------------
 
     def _position_size(
-        self, price: float, equity: float,
+        self,
+        price: float,
+        equity: float,
     ) -> int:
         """Calculate the number of shares to buy given risk budget.
 
@@ -199,7 +208,8 @@ class AutoTrader:
             if len(positions) >= self.config.max_positions:
                 logger.info(
                     "Max positions (%d) reached; skipping BUY %s",
-                    self.config.max_positions, symbol,
+                    self.config.max_positions,
+                    symbol,
                 )
                 return []
 
@@ -215,7 +225,9 @@ class AutoTrader:
                 if current_price * qty > account.cash:
                     logger.info(
                         "Insufficient cash for %s (need %.2f, have %.2f)",
-                        symbol, current_price, account.cash,
+                        symbol,
+                        current_price,
+                        account.cash,
                     )
                     return []
 
@@ -233,7 +245,10 @@ class AutoTrader:
                 actions.append(action)
                 logger.info(
                     "BUY %d %s @ %.2f (strength=%.2f)",
-                    qty, symbol, current_price, signal.strength,
+                    qty,
+                    symbol,
+                    current_price,
+                    signal.strength,
                 )
             except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
                 logger.error("Order failed for BUY %s: %s", symbol, exc)
@@ -257,7 +272,10 @@ class AutoTrader:
                     actions.append(action)
                     logger.info(
                         "SELL %d %s @ %.2f (strength=%.2f)",
-                        qty, symbol, current_price, signal.strength,
+                        qty,
+                        symbol,
+                        current_price,
+                        signal.strength,
                     )
                 except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
                     logger.error("Order failed for SELL %s: %s", symbol, exc)
@@ -282,7 +300,8 @@ class AutoTrader:
             if len(candles) < 50:
                 logger.debug(
                     "Insufficient data for %s (%d candles, need 50)",
-                    symbol, len(candles),
+                    symbol,
+                    len(candles),
                 )
                 continue
 
@@ -318,7 +337,8 @@ class AutoTrader:
         self.running = True
         logger.info(
             "AutoTrader started: symbols=%s, strategy=%s, interval=%ds",
-            self.config.symbols, self.config.strategy_name,
+            self.config.symbols,
+            self.config.strategy_name,
             self.config.interval_seconds,
         )
 
@@ -328,18 +348,20 @@ class AutoTrader:
                     actions = self.run_once()
                     account = self.broker.get_account()
                     logger.info(
-                        "Iteration %d: equity=$%.2f, cash=$%.2f, "
-                        "positions=%d, actions=%d",
-                        self.iteration, account.equity, account.cash,
-                        len(account.positions), len(actions),
+                        "Iteration %d: equity=$%.2f, cash=$%.2f, positions=%d, actions=%d",
+                        self.iteration,
+                        account.equity,
+                        account.cash,
+                        len(account.positions),
+                        len(actions),
                     )
                 except Exception as exc:
-                    logger.error("AutoTrader error in iteration %d: %s",
-                                 self.iteration, exc)
+                    logger.error("AutoTrader error in iteration %d: %s", self.iteration, exc)
 
                 if max_iterations is not None and self.iteration >= max_iterations:
                     logger.info(
-                        "Reached max_iterations=%d; stopping.", max_iterations,
+                        "Reached max_iterations=%d; stopping.",
+                        max_iterations,
                     )
                     break
 

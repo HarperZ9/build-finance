@@ -14,6 +14,7 @@ Factory
 ``get_broker(config)`` returns the appropriate broker instance based on
 the supplied :class:`BrokerConfig`.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class BrokerConfig:
@@ -71,6 +73,7 @@ class AccountInfo:
 # Position tracker (internal)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Position:
     """Lightweight mutable position used by :class:`PaperBroker`."""
@@ -102,6 +105,7 @@ class _Position:
 # ---------------------------------------------------------------------------
 # PaperBroker
 # ---------------------------------------------------------------------------
+
 
 class PaperBroker:
     """Simulated broker for paper trading.
@@ -143,17 +147,13 @@ class PaperBroker:
 
     def get_account(self) -> AccountInfo:
         """Return current account snapshot."""
-        position_value = sum(
-            p.market_value for p in self.positions.values()
-        )
+        position_value = sum(p.market_value for p in self.positions.values())
         equity = self.cash + position_value
         return AccountInfo(
             equity=round(equity, 2),
             cash=round(self.cash, 2),
             buying_power=round(self.cash, 2),
-            positions={
-                sym: pos.to_dict() for sym, pos in self.positions.items()
-            },
+            positions={sym: pos.to_dict() for sym, pos in self.positions.items()},
         )
 
     # -- order execution ----------------------------------------------------
@@ -213,8 +213,8 @@ class PaperBroker:
             else:
                 # Cannot determine price -- record at 0
                 logger.warning(
-                    "No price reference for %s; fill at 0. "
-                    "Call update_prices() first.", symbol,
+                    "No price reference for %s; fill at 0. Call update_prices() first.",
+                    symbol,
                 )
                 base_price = 0.0
 
@@ -284,7 +284,11 @@ class PaperBroker:
 
         logger.debug(
             "Paper %s %s x%.2f @ %.4f (commission=%.4f)",
-            side.upper(), symbol, quantity, filled_price, commission,
+            side.upper(),
+            symbol,
+            quantity,
+            filled_price,
+            commission,
         )
 
         return trade
@@ -334,6 +338,7 @@ class PaperBroker:
 # AlpacaBroker
 # ---------------------------------------------------------------------------
 
+
 class AlpacaBroker:
     """Alpaca Markets broker (paper + live trading).
 
@@ -349,14 +354,10 @@ class AlpacaBroker:
 
     def __init__(self, config: BrokerConfig) -> None:
         if not config.api_key or not config.api_secret:
-            raise ValueError(
-                "AlpacaBroker requires api_key and api_secret in BrokerConfig"
-            )
+            raise ValueError("AlpacaBroker requires api_key and api_secret in BrokerConfig")
 
         self.base_url = config.base_url or (
-            "https://paper-api.alpaca.markets"
-            if config.paper_trading
-            else "https://api.alpaca.markets"
+            "https://paper-api.alpaca.markets" if config.paper_trading else "https://api.alpaca.markets"
         )
         self.headers = {
             "APCA-API-KEY-ID": config.api_key,
@@ -408,7 +409,11 @@ class AlpacaBroker:
         except urllib.error.HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="replace")
             logger.error(
-                "Alpaca HTTP %s %s -> %s: %s", method, endpoint, exc.code, body_text,
+                "Alpaca HTTP %s %s -> %s: %s",
+                method,
+                endpoint,
+                exc.code,
+                body_text,
             )
             raise
         except (urllib.error.URLError, OSError) as exc:
@@ -557,6 +562,7 @@ class AlpacaBroker:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def get_broker(config: BrokerConfig | None = None):
     """Create and return a broker instance.

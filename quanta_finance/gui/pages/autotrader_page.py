@@ -4,6 +4,7 @@ Quanta Finance -- Auto-Trader Page
 Strategy selection, start/stop controls, live P&L card,
 signal log table, and risk controls -- all wired to DataBridge.
 """
+
 from __future__ import annotations
 
 import logging
@@ -75,6 +76,7 @@ _STRATEGY_MAP = {
 # Auto-Trader Worker Thread
 # ---------------------------------------------------------------------------
 
+
 class AutoTraderWorker(QThread):
     """Runs the auto-trader loop in a background thread."""
 
@@ -103,19 +105,15 @@ class AutoTraderWorker(QThread):
 
     def run(self) -> None:
         mode = "PAPER" if self._paper else "LIVE"
+        self.log_message.emit(f"[{self._ts()}] Auto-Trader started in {mode} mode")
+        self.log_message.emit(f"[{self._ts()}] Symbols: {', '.join(self._symbols)}")
         self.log_message.emit(
-            f"[{self._ts()}] Auto-Trader started in {mode} mode"
-        )
-        self.log_message.emit(
-            f"[{self._ts()}] Symbols: {', '.join(self._symbols)}"
-        )
-        self.log_message.emit(
-            f"[{self._ts()}] Strategy: {self._strategy} | "
-            f"Interval: {self._interval} | Risk: {self._risk_pct}%"
+            f"[{self._ts()}] Strategy: {self._strategy} | Interval: {self._interval} | Risk: {self._risk_pct}%"
         )
 
         try:
             from quanta_finance.strategies import get_strategy
+
             strategy_fn = get_strategy(self._strategy)
         except (ImportError, AttributeError):
             strategy_fn = None
@@ -138,16 +136,25 @@ class AutoTraderWorker(QThread):
                         from quanta_finance.market_data import (
                             generate_sample_data,
                         )
+
                         data = generate_sample_data(sym, days=50)
                         signal = strategy_fn(data)
                     else:
                         import random
-                        signal = random.choice([
-                            "BUY", "SELL", "HOLD", "HOLD", "HOLD",
-                        ])
+
+                        signal = random.choice(
+                            [
+                                "BUY",
+                                "SELL",
+                                "HOLD",
+                                "HOLD",
+                                "HOLD",
+                            ]
+                        )
 
                     # Determine strength
                     import random
+
                     strength = round(random.uniform(0.3, 0.95), 2)
 
                     if signal in ("BUY", "SELL"):
@@ -158,7 +165,8 @@ class AutoTraderWorker(QThread):
                             positions = max(0, positions - 1)
 
                         pnl_change = random.gauss(
-                            0, equity * self._risk_pct / 100 * 0.5,
+                            0,
+                            equity * self._risk_pct / 100 * 0.5,
                         )
                         equity += pnl_change
                         if pnl_change >= 0:
@@ -166,19 +174,17 @@ class AutoTraderWorker(QThread):
                         else:
                             unrealized_pnl += pnl_change
 
-                        action = (
-                            f"Executed {signal}"
-                            if signal in ("BUY", "SELL")
-                            else "Hold"
-                        )
+                        action = f"Executed {signal}" if signal in ("BUY", "SELL") else "Hold"
 
-                        self.signal_event.emit({
-                            "time": self._ts(),
-                            "symbol": sym,
-                            "direction": signal,
-                            "strength": strength,
-                            "action": action,
-                        })
+                        self.signal_event.emit(
+                            {
+                                "time": self._ts(),
+                                "symbol": sym,
+                                "direction": signal,
+                                "strength": strength,
+                                "action": action,
+                            }
+                        )
 
                         self.log_message.emit(
                             f"[{self._ts()}] {signal} {sym} | "
@@ -187,23 +193,21 @@ class AutoTraderWorker(QThread):
                             f"Equity: ${equity:,.2f}"
                         )
                     else:
-                        self.log_message.emit(
-                            f"[{self._ts()}] HOLD {sym} \u2014 no signal"
-                        )
+                        self.log_message.emit(f"[{self._ts()}] HOLD {sym} \u2014 no signal")
 
                 except Exception as e:
-                    self.log_message.emit(
-                        f"[{self._ts()}] Error processing {sym}: {e}"
-                    )
+                    self.log_message.emit(f"[{self._ts()}] Error processing {sym}: {e}")
 
-            self.status_update.emit({
-                "equity": equity,
-                "positions": positions,
-                "trades": trade_count,
-                "realized_pnl": realized_pnl,
-                "unrealized_pnl": unrealized_pnl,
-                "total_pnl": realized_pnl + unrealized_pnl,
-            })
+            self.status_update.emit(
+                {
+                    "equity": equity,
+                    "positions": positions,
+                    "trades": trade_count,
+                    "realized_pnl": realized_pnl,
+                    "unrealized_pnl": unrealized_pnl,
+                    "total_pnl": realized_pnl + unrealized_pnl,
+                }
+            )
 
             wait_secs = self._interval_seconds()
             elapsed = 0
@@ -231,6 +235,7 @@ class AutoTraderWorker(QThread):
 # Auto-Trader Page
 # ---------------------------------------------------------------------------
 
+
 class AutoTraderPage(QWidget):
     """Auto-trader: strategy, start/stop, P&L, signals, risk controls."""
 
@@ -244,9 +249,7 @@ class AutoTraderPage(QWidget):
     def _build_ui(self) -> None:
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -255,37 +258,26 @@ class AutoTraderPage(QWidget):
 
         layout.addWidget(Heading("Auto-Trader"))
 
-        subtitle = QLabel(
-            "Automated strategy execution with live monitoring"
-        )
+        subtitle = QLabel("Automated strategy execution with live monitoring")
         subtitle.setStyleSheet(f"font-size: 13px; color: {C.TEXT2};")
         layout.addWidget(subtitle)
 
         # --- Warning Banner ---
         self._warning_banner = QFrame()
         self._warning_banner.setFixedHeight(40)
-        self._warning_banner.setStyleSheet(
-            f"QFrame {{"
-            f"  background: {C.GREEN};"
-            f"  border: none; border-radius: 10px;"
-            f"}}"
-        )
+        self._warning_banner.setStyleSheet(f"QFrame {{  background: {C.GREEN};  border: none; border-radius: 10px;}}")
         banner_layout = QHBoxLayout(self._warning_banner)
         banner_layout.setContentsMargins(16, 0, 16, 0)
-        self._banner_label = QLabel(
-            "Paper trading mode \u2014 no real money at risk"
-        )
-        self._banner_label.setStyleSheet(
-            "font-size: 12px; font-weight: 600; "
-            "color: white; background: transparent;"
-        )
+        self._banner_label = QLabel("Paper trading mode \u2014 no real money at risk")
+        self._banner_label.setStyleSheet("font-size: 12px; font-weight: 600; color: white; background: transparent;")
         self._banner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         banner_layout.addWidget(self._banner_label)
         layout.addWidget(self._warning_banner)
 
         # --- Configuration Card ---
         config_card, config_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         config_layout.addWidget(Heading("Configuration", level=2))
 
@@ -295,9 +287,7 @@ class AutoTraderPage(QWidget):
 
         strat_col = QVBoxLayout()
         strat_label = QLabel("Strategy")
-        strat_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        strat_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         strat_col.addWidget(strat_label)
         self._strategy_combo = QComboBox()
         self._strategy_combo.addItems(list(_STRATEGY_MAP.keys()))
@@ -307,9 +297,7 @@ class AutoTraderPage(QWidget):
 
         sym_col = QVBoxLayout()
         sym_label = QLabel("Symbols (comma-separated)")
-        sym_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        sym_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         sym_col.addWidget(sym_label)
         self._symbols_input = QLineEdit("AAPL,MSFT,NVDA")
         self._symbols_input.setFixedWidth(240)
@@ -319,14 +307,18 @@ class AutoTraderPage(QWidget):
 
         interval_col = QVBoxLayout()
         interval_label = QLabel("Interval")
-        interval_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        interval_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         interval_col.addWidget(interval_label)
         self._interval_combo = QComboBox()
-        self._interval_combo.addItems([
-            "1min", "5min", "15min", "1hour", "1day",
-        ])
+        self._interval_combo.addItems(
+            [
+                "1min",
+                "5min",
+                "15min",
+                "1hour",
+                "1day",
+            ]
+        )
         self._interval_combo.setFixedWidth(120)
         interval_col.addWidget(self._interval_combo)
         row1.addLayout(interval_col)
@@ -340,17 +332,13 @@ class AutoTraderPage(QWidget):
 
         risk_col = QVBoxLayout()
         self._risk_label = QLabel("Risk per trade: 2%")
-        self._risk_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        self._risk_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         risk_col.addWidget(self._risk_label)
         self._risk_slider = QSlider(Qt.Orientation.Horizontal)
         self._risk_slider.setRange(1, 5)
         self._risk_slider.setValue(2)
         self._risk_slider.setFixedWidth(200)
-        self._risk_slider.setTickPosition(
-            QSlider.TickPosition.TicksBelow
-        )
+        self._risk_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._risk_slider.setTickInterval(1)
         self._risk_slider.valueChanged.connect(self._on_risk_changed)
         risk_col.addWidget(self._risk_slider)
@@ -390,7 +378,8 @@ class AutoTraderPage(QWidget):
 
         # --- Risk Controls Card ---
         risk_card, risk_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         risk_layout.addWidget(Heading("Risk Controls", level=2))
 
@@ -400,9 +389,7 @@ class AutoTraderPage(QWidget):
         # Position size limit
         ps_col = QVBoxLayout()
         ps_label = QLabel("Max Position Size ($)")
-        ps_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        ps_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         ps_col.addWidget(ps_label)
         self._max_pos_size = QSpinBox()
         self._max_pos_size.setRange(100, 100_000)
@@ -416,9 +403,7 @@ class AutoTraderPage(QWidget):
         # Daily loss limit
         dl_col = QVBoxLayout()
         dl_label = QLabel("Daily Loss Limit ($)")
-        dl_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        dl_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         dl_col.addWidget(dl_label)
         self._daily_loss_limit = QSpinBox()
         self._daily_loss_limit.setRange(50, 50_000)
@@ -432,9 +417,7 @@ class AutoTraderPage(QWidget):
         # Max open positions
         mp_col = QVBoxLayout()
         mp_label = QLabel("Max Open Positions")
-        mp_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        mp_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         mp_col.addWidget(mp_label)
         self._max_open_positions = QSpinBox()
         self._max_open_positions.setRange(1, 20)
@@ -450,16 +433,15 @@ class AutoTraderPage(QWidget):
 
         # --- Live P&L Card ---
         pnl_card, pnl_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         pnl_header = QHBoxLayout()
         pnl_header.addWidget(Heading("Live P&L", level=2))
         self._status_dot = StatusDot(C.TEXT3, 12)
         pnl_header.addWidget(self._status_dot)
         self._status_label = QLabel("Stopped")
-        self._status_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT3};"
-        )
+        self._status_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT3};")
         pnl_header.addWidget(self._status_label)
         pnl_header.addStretch()
         pnl_layout.addLayout(pnl_header)
@@ -484,21 +466,24 @@ class AutoTraderPage(QWidget):
 
         # --- Signal Log Table ---
         sig_card, sig_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         sig_layout.addWidget(Heading("Signal Log", level=2))
 
         self._signal_table = QTableWidget(0, 5)
-        self._signal_table.setHorizontalHeaderLabels([
-            "Time", "Symbol", "Direction", "Strength", "Action Taken",
-        ])
+        self._signal_table.setHorizontalHeaderLabels(
+            [
+                "Time",
+                "Symbol",
+                "Direction",
+                "Strength",
+                "Action Taken",
+            ]
+        )
         self._signal_table.setStyleSheet(_TABLE_STYLE)
-        self._signal_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._signal_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self._signal_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._signal_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._signal_table.setAlternatingRowColors(True)
         self._signal_table.verticalHeader().setVisible(False)
         self._signal_table.setFixedHeight(200)
@@ -511,7 +496,8 @@ class AutoTraderPage(QWidget):
 
         # --- Activity Log Card ---
         log_card, log_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         log_layout.addWidget(Heading("Activity Log", level=2))
 
@@ -527,9 +513,7 @@ class AutoTraderPage(QWidget):
             f"  font-size: 11px; color: {C.TEXT};"
             f"}}"
         )
-        self._activity_log.setPlaceholderText(
-            "Trading activity will appear here..."
-        )
+        self._activity_log.setPlaceholderText("Trading activity will appear here...")
         log_layout.addWidget(self._activity_log)
 
         layout.addWidget(log_card)
@@ -550,24 +534,12 @@ class AutoTraderPage(QWidget):
         is_paper = state == Qt.CheckState.Checked.value
         if is_paper:
             self._warning_banner.setStyleSheet(
-                f"QFrame {{"
-                f"  background: {C.GREEN};"
-                f"  border: none; border-radius: 10px;"
-                f"}}"
+                f"QFrame {{  background: {C.GREEN};  border: none; border-radius: 10px;}}"
             )
-            self._banner_label.setText(
-                "Paper trading mode \u2014 no real money at risk"
-            )
+            self._banner_label.setText("Paper trading mode \u2014 no real money at risk")
         else:
-            self._warning_banner.setStyleSheet(
-                f"QFrame {{"
-                f"  background: {C.RED};"
-                f"  border: none; border-radius: 10px;"
-                f"}}"
-            )
-            self._banner_label.setText(
-                "LIVE TRADING \u2014 real money at risk"
-            )
+            self._warning_banner.setStyleSheet(f"QFrame {{  background: {C.RED};  border: none; border-radius: 10px;}}")
+            self._banner_label.setText("LIVE TRADING \u2014 real money at risk")
 
     # -- trading control ----------------------------------------------------
 
@@ -583,10 +555,7 @@ class AutoTraderPage(QWidget):
             symbols_text = "AAPL"
             self._symbols_input.setText(symbols_text)
 
-        symbols = [
-            s.strip().upper()
-            for s in symbols_text.split(",") if s.strip()
-        ]
+        symbols = [s.strip().upper() for s in symbols_text.split(",") if s.strip()]
         strategy = self._strategy_combo.currentText()
         interval = self._interval_combo.currentText()
         risk_pct = self._risk_slider.value()
@@ -604,21 +573,27 @@ class AutoTraderPage(QWidget):
 
         self._status_dot.set_color(C.GREEN)
         self._status_label.setText("Running")
-        self._status_label.setStyleSheet(
-            f"font-size: 11px; color: {C.GREEN};"
-        )
+        self._status_label.setStyleSheet(f"font-size: 11px; color: {C.GREEN};")
 
         # Disable config
         for w in (
-            self._symbols_input, self._strategy_combo,
-            self._interval_combo, self._risk_slider, self._paper_check,
-            self._max_pos_size, self._daily_loss_limit,
+            self._symbols_input,
+            self._strategy_combo,
+            self._interval_combo,
+            self._risk_slider,
+            self._paper_check,
+            self._max_pos_size,
+            self._daily_loss_limit,
             self._max_open_positions,
         ):
             w.setEnabled(False)
 
         self._worker = AutoTraderWorker(
-            symbols, strategy, interval, risk_pct, paper,
+            symbols,
+            strategy,
+            interval,
+            risk_pct,
+            paper,
         )
         self._worker.log_message.connect(self._append_log)
         self._worker.status_update.connect(self._update_status)
@@ -643,14 +618,16 @@ class AutoTraderPage(QWidget):
 
         self._status_dot.set_color(C.TEXT3)
         self._status_label.setText("Stopped")
-        self._status_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT3};"
-        )
+        self._status_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT3};")
 
         for w in (
-            self._symbols_input, self._strategy_combo,
-            self._interval_combo, self._risk_slider, self._paper_check,
-            self._max_pos_size, self._daily_loss_limit,
+            self._symbols_input,
+            self._strategy_combo,
+            self._interval_combo,
+            self._risk_slider,
+            self._paper_check,
+            self._max_pos_size,
+            self._daily_loss_limit,
             self._max_open_positions,
         ):
             w.setEnabled(True)
@@ -692,17 +669,19 @@ class AutoTraderPage(QWidget):
         row = self._signal_table.rowCount()
         self._signal_table.insertRow(row)
         self._signal_table.setItem(
-            row, 0, QTableWidgetItem(data.get("time", "")),
+            row,
+            0,
+            QTableWidgetItem(data.get("time", "")),
         )
         self._signal_table.setItem(
-            row, 1, QTableWidgetItem(data.get("symbol", "")),
+            row,
+            1,
+            QTableWidgetItem(data.get("symbol", "")),
         )
 
         direction = data.get("direction", "")
         dir_item = QTableWidgetItem(direction)
-        dir_item.setForeground(
-            QColor(C.GREEN if direction == "BUY" else C.RED)
-        )
+        dir_item.setForeground(QColor(C.GREEN if direction == "BUY" else C.RED))
         self._signal_table.setItem(row, 2, dir_item)
 
         strength = data.get("strength", 0)
@@ -710,7 +689,9 @@ class AutoTraderPage(QWidget):
         self._signal_table.setItem(row, 3, str_item)
 
         self._signal_table.setItem(
-            row, 4, QTableWidgetItem(data.get("action", "")),
+            row,
+            4,
+            QTableWidgetItem(data.get("action", "")),
         )
 
         # Auto-scroll to latest

@@ -11,4 +11,5 @@ Modules:
     portfolio   - Portfolio optimization (Mean-Variance, Black-Litterman, HRP)
     data        - Market data structures (Candle, Quote, Trade)
 """
+
 __version__ = "1.0.0"

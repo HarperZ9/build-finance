@@ -52,6 +52,7 @@ APP_ORG = "Quanta Universe"
 # Application Icon — candlestick chart
 # =============================================================================
 
+
 def make_app_icon() -> QIcon:
     """
     Create the application icon programmatically.
@@ -122,6 +123,7 @@ def make_app_icon() -> QIcon:
 # =============================================================================
 # Placeholder Page (fallback for unbuilt pages)
 # =============================================================================
+
 
 class PlaceholderPage(QWidget):
     def __init__(self, title: str, parent=None):
@@ -200,40 +202,24 @@ class QuantaFinanceWindow(QMainWindow):
 
         # File
         file_menu = mb.addMenu("&File")
-        file_menu.addAction(
-            QAction("&Import Data...", self, shortcut="Ctrl+I",
-                    triggered=self._import_data)
-        )
-        file_menu.addAction(
-            QAction("&Export Results...", self, shortcut="Ctrl+E",
-                    triggered=self._export_results)
-        )
+        file_menu.addAction(QAction("&Import Data...", self, shortcut="Ctrl+I", triggered=self._import_data))
+        file_menu.addAction(QAction("&Export Results...", self, shortcut="Ctrl+E", triggered=self._export_results))
         file_menu.addSeparator()
-        file_menu.addAction(
-            QAction("E&xit", self, shortcut="Alt+F4",
-                    triggered=self.close)
-        )
+        file_menu.addAction(QAction("E&xit", self, shortcut="Alt+F4", triggered=self.close))
 
         # View — page navigation shortcuts
         view = mb.addMenu("&View")
         for i, (name, sc) in enumerate(zip(PAGE_MENU_NAMES, PAGE_SHORTCUTS)):
             act = QAction(name, self)
             act.setShortcut(QKeySequence(sc))
-            act.triggered.connect(
-                lambda checked, idx=i: self._shortcut_switch_page(idx)
-            )
+            act.triggered.connect(lambda checked, idx=i: self._shortcut_switch_page(idx))
             view.addAction(act)
         view.addSeparator()
-        view.addAction(
-            QAction("&Refresh", self, shortcut="F5",
-                    triggered=self._refresh_current)
-        )
+        view.addAction(QAction("&Refresh", self, shortcut="F5", triggered=self._refresh_current))
 
         # Help
         help_menu = mb.addMenu("&Help")
-        help_menu.addAction(
-            QAction("&About", self, triggered=self._about)
-        )
+        help_menu.addAction(QAction("&About", self, triggered=self._about))
 
     # --- Central Widget ---
 
@@ -255,6 +241,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 0: Dashboard
         try:
             from quanta_finance.gui.pages.dashboard import DashboardPage
+
             self.stack.addWidget(DashboardPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load DashboardPage: %s", e)
@@ -263,6 +250,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 1: Backtest
         try:
             from quanta_finance.gui.pages.backtest_page import BacktestPage
+
             self.stack.addWidget(BacktestPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load BacktestPage: %s", e)
@@ -271,6 +259,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 2: Auto-Trader
         try:
             from quanta_finance.gui.pages.autotrader_page import AutoTraderPage
+
             self.stack.addWidget(AutoTraderPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load AutoTraderPage: %s", e)
@@ -279,6 +268,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 3: Portfolio
         try:
             from quanta_finance.gui.pages.portfolio_page import PortfolioPage
+
             self.stack.addWidget(PortfolioPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load PortfolioPage: %s", e)
@@ -287,6 +277,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 4: Market Data
         try:
             from quanta_finance.gui.pages.market_data_page import MarketDataPage
+
             self.stack.addWidget(MarketDataPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load MarketDataPage: %s", e)
@@ -295,6 +286,7 @@ class QuantaFinanceWindow(QMainWindow):
         # Page 5: Settings
         try:
             from quanta_finance.gui.pages.settings_page import SettingsPage
+
             self.stack.addWidget(SettingsPage())
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning("Failed to load SettingsPage: %s", e)
@@ -352,8 +344,7 @@ class QuantaFinanceWindow(QMainWindow):
 
     def _import_data(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Data", "",
-            "Data Files (*.csv *.json *.xlsx *.parquet);;All Files (*)"
+            self, "Import Data", "", "Data Files (*.csv *.json *.xlsx *.parquet);;All Files (*)"
         )
         if path:
             self._status.setText(f"Imported: {Path(path).name}")
@@ -361,8 +352,7 @@ class QuantaFinanceWindow(QMainWindow):
 
     def _export_results(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Results", "",
-            "CSV Files (*.csv);;JSON Files (*.json);;All Files (*)"
+            self, "Export Results", "", "CSV Files (*.csv);;JSON Files (*.json);;All Files (*)"
         )
         if path:
             self._status.setText(f"Exported: {Path(path).name}")
@@ -370,19 +360,20 @@ class QuantaFinanceWindow(QMainWindow):
 
     def _refresh_current(self):
         page = self.stack.currentWidget()
-        if hasattr(page, 'refresh'):
+        if hasattr(page, "refresh"):
             page.refresh()
         self._status.setText("Refreshed")
 
     def _about(self):
         QMessageBox.about(
-            self, f"About {APP_NAME}",
+            self,
+            f"About {APP_NAME}",
             f"<h2>{APP_NAME}</h2>"
             f"<p>Version {APP_VERSION}</p>"
             f"<p>Professional algorithmic trading workbench for<br>"
             f"backtesting, auto-trading, and portfolio optimization.</p>"
             f"<p>Strategies: Momentum, Mean Reversion, Trend, Breakout</p>"
-            f"<p>&copy; 2022-2026 Zain Dana Harper</p>"
+            f"<p>&copy; 2022-2026 Zain Dana Harper</p>",
         )
 
     # --- Geometry Persistence ---
@@ -403,4 +394,5 @@ class QuantaFinanceWindow(QMainWindow):
 
 if __name__ == "__main__":
     from quanta_finance.gui import launch
+
     sys.exit(launch())

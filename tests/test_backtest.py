@@ -1,10 +1,12 @@
 """
 Tests for backtest engine, order book, portfolio optimization, and sample data.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
+
 from quanta_finance.backtest import (
     BacktestConfig,
     Backtester,
@@ -35,44 +37,54 @@ from quanta_finance.portfolio import (
 # Helpers
 # ===========================================================================
 
+
 class AlwaysBuyStrategy:
     """Buys on every bar if not already in a position, never closes."""
+
     def generate_signals(self, candles: list[Candle]) -> list[Signal]:
         if len(candles) < 2:
             return []
         bar = candles[-1]
-        return [Signal(
-            symbol=bar.symbol,
-            signal_type=SignalType.LONG,
-            price=bar.close,
-            timestamp=bar.timestamp,
-        )]
-
-
-class BuyThenSellStrategy:
-    """Buys on bar 5, sells on bar 15."""
-    def generate_signals(self, candles: list[Candle]) -> list[Signal]:
-        bar = candles[-1]
-        n = len(candles)
-        if n == 5:
-            return [Signal(
+        return [
+            Signal(
                 symbol=bar.symbol,
                 signal_type=SignalType.LONG,
                 price=bar.close,
                 timestamp=bar.timestamp,
-            )]
+            )
+        ]
+
+
+class BuyThenSellStrategy:
+    """Buys on bar 5, sells on bar 15."""
+
+    def generate_signals(self, candles: list[Candle]) -> list[Signal]:
+        bar = candles[-1]
+        n = len(candles)
+        if n == 5:
+            return [
+                Signal(
+                    symbol=bar.symbol,
+                    signal_type=SignalType.LONG,
+                    price=bar.close,
+                    timestamp=bar.timestamp,
+                )
+            ]
         if n == 15:
-            return [Signal(
-                symbol=bar.symbol,
-                signal_type=SignalType.CLOSE,
-                price=bar.close,
-                timestamp=bar.timestamp,
-            )]
+            return [
+                Signal(
+                    symbol=bar.symbol,
+                    signal_type=SignalType.CLOSE,
+                    price=bar.close,
+                    timestamp=bar.timestamp,
+                )
+            ]
         return []
 
 
 class NoopStrategy:
     """Generates no signals."""
+
     def generate_signals(self, candles: list[Candle]) -> list[Signal]:
         return []
 
@@ -80,6 +92,7 @@ class NoopStrategy:
 # ===========================================================================
 # Sample data tests
 # ===========================================================================
+
 
 class TestSampleData:
     def test_correct_length(self):
@@ -119,6 +132,7 @@ class TestSampleData:
 # BacktestResult field tests
 # ===========================================================================
 
+
 class TestBacktestResult:
     def test_fields_populated(self):
         candles = generate_sample_data(days=60, seed=10)
@@ -154,18 +168,20 @@ class TestBacktestResult:
 # P&L scenarios
 # ===========================================================================
 
+
 class TestPnlScenarios:
     def test_commission_reduces_equity(self):
         """Even with a flat market, commissions should reduce equity."""
         flat_candles = [
-            Candle(timestamp=1e9 + i * 86400, open=100, high=100,
-                   low=100, close=100, volume=1e6, symbol="FLAT")
+            Candle(timestamp=1e9 + i * 86400, open=100, high=100, low=100, close=100, volume=1e6, symbol="FLAT")
             for i in range(30)
         ]
-        bt = Backtester(BacktestConfig(
-            initial_capital=100_000,
-            commission_rate=0.01,  # high commission to make effect visible
-        ))
+        bt = Backtester(
+            BacktestConfig(
+                initial_capital=100_000,
+                commission_rate=0.01,  # high commission to make effect visible
+            )
+        )
         result = bt.run(BuyThenSellStrategy(), {"FLAT": flat_candles})
         if result.num_trades > 0:
             total_comm = sum(t.commission for t in result.trades)
@@ -179,12 +195,17 @@ class TestPnlScenarios:
         for i in range(100):
             price *= 1.003  # strong uptrend
             noise = rng.normal(0, 0.001) * price
-            candles.append(Candle(
-                timestamp=1e9 + i * 86400,
-                open=price - noise, high=price + abs(noise),
-                low=price - abs(noise), close=price,
-                volume=1e6, symbol="UP",
-            ))
+            candles.append(
+                Candle(
+                    timestamp=1e9 + i * 86400,
+                    open=price - noise,
+                    high=price + abs(noise),
+                    low=price - abs(noise),
+                    close=price,
+                    volume=1e6,
+                    symbol="UP",
+                )
+            )
         bt = Backtester(BacktestConfig(initial_capital=100_000))
         result = bt.run(AlwaysBuyStrategy(), {"UP": candles})
         assert result.final_equity >= result.initial_capital * 0.99
@@ -195,12 +216,17 @@ class TestPnlScenarios:
         price = 100.0
         for i in range(20):
             price *= 0.99  # downtrend
-            candles.append(Candle(
-                timestamp=1e9 + i * 86400,
-                open=price + 0.1, high=price + 0.2,
-                low=price - 0.2, close=price,
-                volume=1e6, symbol="DOWN",
-            ))
+            candles.append(
+                Candle(
+                    timestamp=1e9 + i * 86400,
+                    open=price + 0.1,
+                    high=price + 0.2,
+                    low=price - 0.2,
+                    close=price,
+                    volume=1e6,
+                    symbol="DOWN",
+                )
+            )
         bt = Backtester(BacktestConfig(initial_capital=100_000))
         result = bt.run(AlwaysBuyStrategy(), {"DOWN": candles})
         assert result.final_equity < result.initial_capital
@@ -209,6 +235,7 @@ class TestPnlScenarios:
 # ===========================================================================
 # Order book tests
 # ===========================================================================
+
 
 class TestOrderBook:
     def _sample_book(self) -> OrderBook:
@@ -249,6 +276,7 @@ class TestOrderBook:
 # Execution simulation tests
 # ===========================================================================
 
+
 class TestSimulateFill:
     def test_buy_slippage_increases_price(self):
         fill, _ = simulate_fill(100.0, 10, "buy")
@@ -259,8 +287,7 @@ class TestSimulateFill:
         assert fill < 100.0
 
     def test_commission_bounds(self):
-        cfg = ExecutionConfig(commission_min=1.0, commission_max=10.0,
-                              commission_per_share=0.005)
+        cfg = ExecutionConfig(commission_min=1.0, commission_max=10.0, commission_per_share=0.005)
         _, comm = simulate_fill(100.0, 1, "buy", cfg)
         assert comm >= 1.0
         _, comm2 = simulate_fill(100.0, 100_000, "buy", cfg)
@@ -270,6 +297,7 @@ class TestSimulateFill:
 # ===========================================================================
 # Monte Carlo test
 # ===========================================================================
+
 
 class TestMonteCarlo:
     def test_produces_distribution(self):
@@ -292,6 +320,7 @@ class TestMonteCarlo:
 # ===========================================================================
 # Portfolio optimization tests
 # ===========================================================================
+
 
 def _random_returns(n_assets: int = 4, n_days: int = 252, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -343,6 +372,7 @@ class TestPortfolio:
 # ===========================================================================
 # Data structure tests
 # ===========================================================================
+
 
 class TestDataStructures:
     def test_candle_typical_price(self):

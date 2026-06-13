@@ -4,6 +4,7 @@ Quanta Finance -- Market Data Page
 Watchlist table, quote lookup, data source indicator,
 and auto-refresh with interval selector.  Wired to DataBridge.
 """
+
 from __future__ import annotations
 
 import logging
@@ -63,6 +64,7 @@ _TABLE_STYLE = (
 # Price Chart Widget  (kept from original)
 # ---------------------------------------------------------------------------
 
+
 class PriceChartWidget(QWidget):
     """Simple QPainter line chart for price data."""
 
@@ -84,7 +86,8 @@ class PriceChartWidget(QWidget):
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QColor(C.TEXT3))
             p.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter,
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
                 "No data \u2014 fetch market data first",
             )
             p.end()
@@ -123,13 +126,13 @@ class PriceChartWidget(QWidget):
             y_val = y_min + frac * y_range
             y_px = to_y(y_val)
             p.drawLine(
-                QPointF(margin_l, y_px), QPointF(w - margin_r, y_px),
+                QPointF(margin_l, y_px),
+                QPointF(w - margin_r, y_px),
             )
             p.setPen(QColor(C.TEXT3))
             p.drawText(
                 QRectF(0, y_px - 8, margin_l - 6, 16),
-                Qt.AlignmentFlag.AlignRight
-                | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 f"${y_val:,.2f}",
             )
             p.setPen(grid_pen)
@@ -177,7 +180,8 @@ class PriceChartWidget(QWidget):
         p.setPen(QColor(C.TEXT2))
         p.drawText(
             QRectF(margin_l, h - margin_b + 4, chart_w, 20),
-            Qt.AlignmentFlag.AlignCenter, label,
+            Qt.AlignmentFlag.AlignCenter,
+            label,
         )
         p.end()
 
@@ -185,6 +189,7 @@ class PriceChartWidget(QWidget):
 # ---------------------------------------------------------------------------
 # Data Fetch Worker  (kept from original)
 # ---------------------------------------------------------------------------
+
 
 class FetchWorker(QThread):
     """Fetches market data in a background thread."""
@@ -261,7 +266,14 @@ class FetchWorker(QThread):
 # ---------------------------------------------------------------------------
 
 _DEFAULT_WATCHLIST = [
-    "AAPL", "MSFT", "GOOGL", "NVDA", "TSLA", "AMZN", "META", "JPM",
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "NVDA",
+    "TSLA",
+    "AMZN",
+    "META",
+    "JPM",
 ]
 
 _REFRESH_INTERVALS = {
@@ -287,6 +299,7 @@ class MarketDataPage(QWidget):
     def _init_bridge(self) -> None:
         try:
             from quanta_finance.gui.data_bridge import DataBridge
+
             self._bridge = DataBridge(use_paper=True)
         except Exception as exc:
             logger.warning("DataBridge init failed: %s", exc)
@@ -298,9 +311,7 @@ class MarketDataPage(QWidget):
     def _build_ui(self) -> None:
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -309,21 +320,18 @@ class MarketDataPage(QWidget):
 
         layout.addWidget(Heading("Market Data"))
 
-        subtitle = QLabel(
-            "Live quotes, watchlist, and historical data visualization"
-        )
+        subtitle = QLabel("Live quotes, watchlist, and historical data visualization")
         subtitle.setStyleSheet(f"font-size: 13px; color: {C.TEXT2};")
         layout.addWidget(subtitle)
 
         # --- Data Source Indicator ---
         src_card, src_layout = Card.with_layout(
-            QHBoxLayout, margins=(24, 12, 24, 12),
+            QHBoxLayout,
+            margins=(24, 12, 24, 12),
         )
         src_layout.addWidget(QLabel("Data Source:"))
         self._source_label = QLabel("Initializing...")
-        self._source_label.setStyleSheet(
-            f"font-weight: 600; color: {C.ACCENT_TX};"
-        )
+        self._source_label.setStyleSheet(f"font-weight: 600; color: {C.ACCENT_TX};")
         src_layout.addWidget(self._source_label)
         src_layout.addStretch()
 
@@ -337,30 +345,32 @@ class MarketDataPage(QWidget):
         self._interval_combo.addItems(list(_REFRESH_INTERVALS.keys()))
         self._interval_combo.setCurrentText("15s")
         self._interval_combo.setFixedWidth(80)
-        self._interval_combo.currentTextChanged.connect(
-            self._update_refresh_interval
-        )
+        self._interval_combo.currentTextChanged.connect(self._update_refresh_interval)
         src_layout.addWidget(self._interval_combo)
 
         layout.addWidget(src_card)
 
         # --- Watchlist Card ---
         wl_card, wl_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         wl_layout.addWidget(Heading("Watchlist", level=2))
 
         self._watchlist_table = QTableWidget(0, 6)
-        self._watchlist_table.setHorizontalHeaderLabels([
-            "Symbol", "Last Price", "Change", "Volume", "Bid", "Ask",
-        ])
+        self._watchlist_table.setHorizontalHeaderLabels(
+            [
+                "Symbol",
+                "Last Price",
+                "Change",
+                "Volume",
+                "Bid",
+                "Ask",
+            ]
+        )
         self._watchlist_table.setStyleSheet(_TABLE_STYLE)
-        self._watchlist_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        self._watchlist_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
+        self._watchlist_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._watchlist_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._watchlist_table.setAlternatingRowColors(True)
         self._watchlist_table.verticalHeader().setVisible(False)
         self._watchlist_table.setFixedHeight(260)
@@ -373,7 +383,8 @@ class MarketDataPage(QWidget):
 
         # --- Quote Lookup Card ---
         quote_card, quote_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
         quote_layout.addWidget(Heading("Quote Lookup", level=2))
 
@@ -382,9 +393,7 @@ class MarketDataPage(QWidget):
 
         sym_col = QVBoxLayout()
         sym_label = QLabel("Symbol")
-        sym_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        sym_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         sym_col.addWidget(sym_label)
         self._symbol_input = QLineEdit("AAPL")
         self._symbol_input.setFixedWidth(140)
@@ -395,14 +404,17 @@ class MarketDataPage(QWidget):
 
         source_col = QVBoxLayout()
         source_label = QLabel("Source")
-        source_label.setStyleSheet(
-            f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;"
-        )
+        source_label.setStyleSheet(f"font-size: 11px; color: {C.TEXT2}; font-weight: 500;")
         source_col.addWidget(source_label)
         self._source_combo = QComboBox()
-        self._source_combo.addItems([
-            "Yahoo Finance", "Alpaca", "CoinGecko", "CSV File",
-        ])
+        self._source_combo.addItems(
+            [
+                "Yahoo Finance",
+                "Alpaca",
+                "CoinGecko",
+                "CSV File",
+            ]
+        )
         self._source_combo.setFixedWidth(160)
         source_col.addWidget(self._source_combo)
         fetch_row.addLayout(source_col)
@@ -433,7 +445,8 @@ class MarketDataPage(QWidget):
 
         # --- Results Card (hidden until fetch) ---
         self._results_card, self._results_layout = Card.with_layout(
-            QVBoxLayout, margins=(24, 20, 24, 20),
+            QVBoxLayout,
+            margins=(24, 20, 24, 20),
         )
 
         self._chart_heading = Heading("Price Chart", level=2)
@@ -450,8 +463,12 @@ class MarketDataPage(QWidget):
         self._stat_volume = Stat("Volume", "\u2014", C.CYAN)
         self._stat_candles = Stat("Candles", "\u2014", C.TEXT2)
         for s in (
-            self._stat_open, self._stat_high, self._stat_low,
-            self._stat_close, self._stat_volume, self._stat_candles,
+            self._stat_open,
+            self._stat_high,
+            self._stat_low,
+            self._stat_close,
+            self._stat_volume,
+            self._stat_candles,
         ):
             stats_row.addWidget(s)
         stats_row.addStretch()
@@ -481,21 +498,23 @@ class MarketDataPage(QWidget):
 
         for row, item in enumerate(data):
             self._watchlist_table.setItem(
-                row, 0, QTableWidgetItem(item.get("symbol", "")),
+                row,
+                0,
+                QTableWidgetItem(item.get("symbol", "")),
             )
 
             last = item.get("last", 0)
             self._watchlist_table.setItem(
-                row, 1, QTableWidgetItem(f"${last:,.2f}"),
+                row,
+                1,
+                QTableWidgetItem(f"${last:,.2f}"),
             )
 
             change = item.get("change", 0)
             pct = item.get("change_pct", 0)
             change_text = f"${change:+.2f} ({pct:+.2f}%)"
             change_item = QTableWidgetItem(change_text)
-            change_item.setForeground(
-                QColor(C.GREEN if change >= 0 else C.RED)
-            )
+            change_item.setForeground(QColor(C.GREEN if change >= 0 else C.RED))
             self._watchlist_table.setItem(row, 2, change_item)
 
             vol = item.get("volume", 0)
@@ -506,15 +525,19 @@ class MarketDataPage(QWidget):
             else:
                 vol_str = str(vol)
             self._watchlist_table.setItem(
-                row, 3, QTableWidgetItem(vol_str),
+                row,
+                3,
+                QTableWidgetItem(vol_str),
             )
 
             self._watchlist_table.setItem(
-                row, 4,
+                row,
+                4,
                 QTableWidgetItem(f"${item.get('bid', 0):,.2f}"),
             )
             self._watchlist_table.setItem(
-                row, 5,
+                row,
+                5,
                 QTableWidgetItem(f"${item.get('ask', 0):,.2f}"),
             )
 
@@ -578,16 +601,20 @@ class MarketDataPage(QWidget):
         self._price_chart.set_data(prices, symbol)
 
         self._stat_open.set_value(
-            f"${result.get('open', 0):.2f}", C.TEXT,
+            f"${result.get('open', 0):.2f}",
+            C.TEXT,
         )
         self._stat_high.set_value(
-            f"${result.get('high', 0):.2f}", C.GREEN,
+            f"${result.get('high', 0):.2f}",
+            C.GREEN,
         )
         self._stat_low.set_value(
-            f"${result.get('low', 0):.2f}", C.RED,
+            f"${result.get('low', 0):.2f}",
+            C.RED,
         )
         self._stat_close.set_value(
-            f"${result.get('close', 0):.2f}", C.TEXT,
+            f"${result.get('close', 0):.2f}",
+            C.TEXT,
         )
 
         vol = result.get("volume", 0)
@@ -599,7 +626,8 @@ class MarketDataPage(QWidget):
             vol_str = str(vol)
         self._stat_volume.set_value(vol_str, C.CYAN)
         self._stat_candles.set_value(
-            str(result.get("candles", 0)), C.TEXT2,
+            str(result.get("candles", 0)),
+            C.TEXT2,
         )
 
         self._results_card.setVisible(True)
@@ -615,7 +643,9 @@ class MarketDataPage(QWidget):
 
         symbol = self._last_data.get("symbol", "data")
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Market Data", f"{symbol}_data.csv",
+            self,
+            "Save Market Data",
+            f"{symbol}_data.csv",
             "CSV Files (*.csv);;All Files (*)",
         )
         if path:

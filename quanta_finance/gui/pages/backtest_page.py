@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Equity Curve Chart Widget
 # =============================================================================
 
+
 class EquityCurveWidget(QWidget):
     """Custom QPainter widget that draws an equity curve with drawdown shading."""
 
@@ -97,9 +98,11 @@ class EquityCurveWidget(QWidget):
             # Label
             label_pen = QPen(QColor(C.TEXT3), 1)
             p.setPen(label_pen)
-            p.drawText(QRectF(0, y_px - 8, margin_l - 6, 16),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       f"${y_val:,.0f}")
+            p.drawText(
+                QRectF(0, y_px - 8, margin_l - 6, 16),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"${y_val:,.0f}",
+            )
             p.setPen(grid_pen)
 
         # Drawdown shading
@@ -111,7 +114,7 @@ class EquityCurveWidget(QWidget):
                     x = to_x(i)
                     to_y(data[i])
                     # Find the peak equity at this point
-                    peak = max(data[:i+1])
+                    peak = max(data[: i + 1])
                     y_peak = to_y(peak)
                     if not in_drawdown:
                         dd_path.moveTo(x, y_peak)
@@ -175,8 +178,7 @@ class EquityCurveWidget(QWidget):
 
         # Title
         p.setPen(QColor(C.TEXT2))
-        p.drawText(QRectF(margin_l, h - margin_b + 4, chart_w, 20),
-                   Qt.AlignmentFlag.AlignCenter, "Equity Curve")
+        p.drawText(QRectF(margin_l, h - margin_b + 4, chart_w, 20), Qt.AlignmentFlag.AlignCenter, "Equity Curve")
 
         p.end()
 
@@ -184,6 +186,7 @@ class EquityCurveWidget(QWidget):
 # =============================================================================
 # Backtest Worker Thread
 # =============================================================================
+
 
 class BacktestWorker(QThread):
     """Runs a backtest in a background thread."""
@@ -225,10 +228,12 @@ class BacktestWorker(QThread):
                 # Fallback: generate synthetic demo results
                 self.progress.emit(30)
                 import time
+
                 time.sleep(0.3)
                 self.progress.emit(50)
 
                 import random
+
                 random.seed(42)
                 n = self._lookback
                 equity = [10000.0]
@@ -249,10 +254,11 @@ class BacktestWorker(QThread):
                     drawdowns.append(dd)
                     max_dd = min(max_dd, dd)
 
-                daily_returns = [(equity[i] / equity[i-1] - 1) for i in range(1, len(equity))]
+                daily_returns = [(equity[i] / equity[i - 1] - 1) for i in range(1, len(equity))]
                 import math
+
                 avg_ret = sum(daily_returns) / len(daily_returns)
-                std_ret = math.sqrt(sum((r - avg_ret)**2 for r in daily_returns) / len(daily_returns))
+                std_ret = math.sqrt(sum((r - avg_ret) ** 2 for r in daily_returns) / len(daily_returns))
                 sharpe = (avg_ret / std_ret * math.sqrt(252)) if std_ret > 0 else 0
 
                 wins = sum(1 for r in daily_returns if r > 0)
@@ -260,7 +266,7 @@ class BacktestWorker(QThread):
 
                 gross_profit = sum(r for r in daily_returns if r > 0)
                 gross_loss = abs(sum(r for r in daily_returns if r < 0))
-                profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+                profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
                 self.progress.emit(85)
 
@@ -272,14 +278,16 @@ class BacktestWorker(QThread):
                     entry_price = equity[entry_idx] / 100
                     exit_price = equity[min(exit_idx, n - 1)] / 100
                     pnl = exit_price - entry_price
-                    trades.append({
-                        "entry_day": entry_idx,
-                        "exit_day": min(exit_idx, n - 1),
-                        "entry_price": entry_price,
-                        "exit_price": exit_price,
-                        "pnl": pnl,
-                        "side": "LONG" if random.random() > 0.3 else "SHORT",
-                    })
+                    trades.append(
+                        {
+                            "entry_day": entry_idx,
+                            "exit_day": min(exit_idx, n - 1),
+                            "entry_price": entry_price,
+                            "exit_price": exit_price,
+                            "pnl": pnl,
+                            "side": "LONG" if random.random() > 0.3 else "SHORT",
+                        }
+                    )
 
                 time.sleep(0.2)
                 self.progress.emit(95)
@@ -308,6 +316,7 @@ class BacktestWorker(QThread):
 # =============================================================================
 # Backtest Page
 # =============================================================================
+
 
 class BacktestPage(QWidget):
     """Backtest configuration, execution, and results display."""
@@ -523,7 +532,7 @@ class BacktestPage(QWidget):
             pnl = t.get("pnl", 0)
             pnl_sign = "+" if pnl >= 0 else ""
             line = (
-                f"{i+1:<4} {t.get('side', 'LONG'):<6} "
+                f"{i + 1:<4} {t.get('side', 'LONG'):<6} "
                 f"${t.get('entry_price', 0):>7.2f} "
                 f"${t.get('exit_price', 0):>7.2f} "
                 f"{pnl_sign}${pnl:>8.2f}"

@@ -4,6 +4,7 @@ Risk and performance metrics for portfolio and strategy evaluation.
 All functions accept NumPy arrays and assume daily return series unless
 otherwise noted.  Annualisation uses 252 trading days.
 """
+
 from __future__ import annotations
 
 import math
@@ -15,6 +16,7 @@ TRADING_DAYS = 252
 
 
 # ---- core ratios -----------------------------------------------------------
+
 
 def sharpe_ratio(
     returns: np.ndarray,
@@ -48,7 +50,7 @@ def sortino_ratio(
     downside = excess[excess < 0]
     if len(downside) == 0:
         return float("inf") if np.mean(excess) > 0 else 0.0
-    dd = np.sqrt(np.mean(downside ** 2))
+    dd = np.sqrt(np.mean(downside**2))
     if dd < 1e-12:
         return 0.0
     return float(np.mean(excess) / dd * math.sqrt(TRADING_DAYS))
@@ -71,6 +73,7 @@ def information_ratio(
 
 
 # ---- CAPM ------------------------------------------------------------------
+
 
 def beta(
     returns: np.ndarray,
@@ -106,6 +109,7 @@ def alpha(
 
 
 # ---- drawdown --------------------------------------------------------------
+
 
 def max_drawdown(equity_curve: np.ndarray) -> float:
     """Maximum peak-to-trough drawdown (returned as a positive fraction).
@@ -152,6 +156,7 @@ def calmar_ratio(
 
 
 # ---- Value at Risk ----------------------------------------------------------
+
 
 def var_parametric(
     returns: np.ndarray,
@@ -202,6 +207,7 @@ def cvar(
 
 # ---- volatility -------------------------------------------------------------
 
+
 def volatility(
     returns: np.ndarray,
     annualize: bool = True,
@@ -217,6 +223,7 @@ def volatility(
 
 
 # ---- trade-level metrics ---------------------------------------------------
+
 
 def profit_factor(trades: Sequence) -> float:
     """Gross profit / gross loss.

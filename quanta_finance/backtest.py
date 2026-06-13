@@ -4,6 +4,7 @@ Backtesting engine with walk-forward optimization and Monte Carlo analysis.
 Supports any strategy that exposes a ``generate_signals(candles)`` method
 returning a list of :class:`Signal` objects.
 """
+
 from __future__ import annotations
 
 import math
@@ -33,6 +34,7 @@ from quanta_finance.orderbook import ExecutionConfig, simulate_fill
 # Strategy protocol
 # ---------------------------------------------------------------------------
 
+
 @runtime_checkable
 class Strategy(Protocol):
     """Minimal interface a strategy must satisfy."""
@@ -44,25 +46,29 @@ class Strategy(Protocol):
 # Configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BacktestConfig:
     """Parameters controlling a backtest run."""
+
     initial_capital: float = 100_000.0
     slippage_bps: float = 5.0
     commission_rate: float = 0.001
-    risk_per_trade: float = 0.10        # 10 % of equity per position
+    risk_per_trade: float = 0.10  # 10 % of equity per position
     max_positions: int = 10
-    lookback: int = 100                  # bars of history fed to strategy
-    risk_free_rate: float = 0.02         # annualized
+    lookback: int = 100  # bars of history fed to strategy
+    risk_free_rate: float = 0.02  # annualized
 
 
 # ---------------------------------------------------------------------------
 # Result container
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BacktestResult:
     """Comprehensive backtest output."""
+
     initial_capital: float
     final_equity: float
     total_return: float
@@ -110,6 +116,7 @@ class BacktestResult:
 # ---------------------------------------------------------------------------
 # Metric helpers
 # ---------------------------------------------------------------------------
+
 
 def _sharpe(returns: np.ndarray, rf_daily: float) -> float:
     if len(returns) < 2:
@@ -180,9 +187,7 @@ def _compute_metrics(
         losses = pnls[pnls < 0]
         gross_profit = float(wins.sum()) if len(wins) else 0.0
         gross_loss = float(abs(losses.sum())) if len(losses) else 0.0
-        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (
-            float("inf") if gross_profit > 0 else 0.0
-        )
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
         n_trades = len(trades)
         n_wins = int(len(wins))
         n_losses = int(len(losses))
@@ -231,6 +236,7 @@ def _compute_metrics(
 # ---------------------------------------------------------------------------
 # Main backtester
 # ---------------------------------------------------------------------------
+
 
 class Backtester:
     """Event-driven backtesting engine.
@@ -291,7 +297,7 @@ class Backtester:
 
             # Build lookback window for this symbol
             start = max(0, bar_idx + 1 - cfg.lookback)
-            window = candles[sym][start: bar_idx + 1]
+            window = candles[sym][start : bar_idx + 1]
 
             # Generate signals
             raw_signals = strategy.generate_signals(window)
@@ -299,17 +305,17 @@ class Backtester:
             # Adapt Signal objects to BacktestSignal if needed
             signals = []
             for s in raw_signals:
-                if hasattr(s, 'signal_type'):
+                if hasattr(s, "signal_type"):
                     signals.append(s)
                 else:
                     # Convert data.Signal to BacktestSignal
                     # Only consider signals from the current bar (last bar
                     # in the window) to avoid replaying old signals.
-                    sig_ts = getattr(s, 'timestamp', 0.0)
+                    sig_ts = getattr(s, "timestamp", 0.0)
                     if sig_ts != window[-1].timestamp:
                         continue
 
-                    side = getattr(s, 'side', 'buy')
+                    side = getattr(s, "side", "buy")
                     # Always use the actual candle symbol so positions
                     # are keyed consistently with the candle data.
                     sig_symbol = sym
@@ -317,24 +323,26 @@ class Backtester:
                     # If we already hold a position in this symbol and the
                     # signal is in the opposite direction, emit a CLOSE
                     # instead of opening a new position.
-                    if side == 'buy':
-                        if sig_symbol in positions and positions[sig_symbol].side == 'sell':
+                    if side == "buy":
+                        if sig_symbol in positions and positions[sig_symbol].side == "sell":
                             st = SignalType.CLOSE
                         else:
                             st = SignalType.LONG
                     else:  # sell
-                        if sig_symbol in positions and positions[sig_symbol].side == 'buy':
+                        if sig_symbol in positions and positions[sig_symbol].side == "buy":
                             st = SignalType.CLOSE
                         else:
                             st = SignalType.SHORT
 
-                    signals.append(BacktestSignal(
-                        symbol=sig_symbol,
-                        signal_type=st,
-                        price=window[-1].close,
-                        timestamp=window[-1].timestamp,
-                        strength=getattr(s, 'strength', 0.5),
-                    ))
+                    signals.append(
+                        BacktestSignal(
+                            symbol=sig_symbol,
+                            signal_type=st,
+                            price=window[-1].close,
+                            timestamp=window[-1].timestamp,
+                            strength=getattr(s, "strength", 0.5),
+                        )
+                    )
 
             for sig in signals:
                 if sig.signal_type == SignalType.CLOSE:
@@ -344,24 +352,29 @@ class Backtester:
                         continue
                     exit_side = "sell" if pos.side == "buy" else "buy"
                     fill, comm = simulate_fill(
-                        sig.price, pos.quantity, exit_side, exec_cfg,
+                        sig.price,
+                        pos.quantity,
+                        exit_side,
+                        exec_cfg,
                     )
                     if pos.side == "buy":
                         pnl = (fill - pos.entry_price) * pos.quantity
                     else:
                         pnl = (pos.entry_price - fill) * pos.quantity
                     total_comm = comm + pos.commission
-                    completed_trades.append(Trade(
-                        symbol=sig.symbol,
-                        side=pos.side,
-                        entry_price=pos.entry_price,
-                        exit_price=fill,
-                        quantity=pos.quantity,
-                        entry_time=pos.entry_time,
-                        exit_time=ts,
-                        commission=total_comm,
-                        pnl=pnl,
-                    ))
+                    completed_trades.append(
+                        Trade(
+                            symbol=sig.symbol,
+                            side=pos.side,
+                            entry_price=pos.entry_price,
+                            exit_price=fill,
+                            quantity=pos.quantity,
+                            entry_time=pos.entry_time,
+                            exit_time=ts,
+                            commission=total_comm,
+                            pnl=pnl,
+                        )
+                    )
 
                 elif sig.signal_type in (SignalType.LONG, SignalType.SHORT):
                     if sig.symbol in positions:
@@ -415,23 +428,28 @@ class Backtester:
             last_price = candles[sym][cnt - 1].close if cnt > 0 else pos.entry_price
             exit_side = "sell" if pos.side == "buy" else "buy"
             fill, comm = simulate_fill(
-                last_price, pos.quantity, exit_side, exec_cfg,
+                last_price,
+                pos.quantity,
+                exit_side,
+                exec_cfg,
             )
             if pos.side == "buy":
                 pnl = (fill - pos.entry_price) * pos.quantity
             else:
                 pnl = (pos.entry_price - fill) * pos.quantity
-            completed_trades.append(Trade(
-                symbol=sym,
-                side=pos.side,
-                entry_price=pos.entry_price,
-                exit_price=fill,
-                quantity=pos.quantity,
-                entry_time=pos.entry_time,
-                exit_time=timeline[-1][0] if timeline else 0.0,
-                commission=comm + pos.commission,
-                pnl=pnl,
-            ))
+            completed_trades.append(
+                Trade(
+                    symbol=sym,
+                    side=pos.side,
+                    entry_price=pos.entry_price,
+                    exit_price=fill,
+                    quantity=pos.quantity,
+                    entry_time=pos.entry_time,
+                    exit_time=timeline[-1][0] if timeline else 0.0,
+                    commission=comm + pos.commission,
+                    pnl=pnl,
+                )
+            )
         positions.clear()
 
         eq_arr = np.array(equity_history, dtype=np.float64)
@@ -557,6 +575,7 @@ class Backtester:
 # Sample data generator
 # ---------------------------------------------------------------------------
 
+
 def generate_sample_data(
     symbol: str = "AAPL",
     days: int = 252,
@@ -615,15 +634,17 @@ def generate_sample_data(
 
         volume = float(rng.integers(100_000, 10_000_000))
 
-        candles.append(Candle(
-            timestamp=ts,
-            open=round(price, 4),
-            high=round(high, 4),
-            low=round(low, 4),
-            close=round(close, 4),
-            volume=volume,
-            symbol=symbol,
-        ))
+        candles.append(
+            Candle(
+                timestamp=ts,
+                open=round(price, 4),
+                high=round(high, 4),
+                low=round(low, 4),
+                close=round(close, 4),
+                volume=volume,
+                symbol=symbol,
+            )
+        )
         price = close
 
     return candles

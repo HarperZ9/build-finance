@@ -212,10 +212,10 @@ class SettingsPage(QWidget):
         # Show feedback via parent window toast if available
         widget = self.parent()
         while widget:
-            if hasattr(widget, 'show_toast'):
+            if hasattr(widget, "show_toast"):
                 widget.show_toast("Settings saved", "success")
                 break
-            widget = widget.parent() if hasattr(widget, 'parent') else None
+            widget = widget.parent() if hasattr(widget, "parent") else None
 
     def _load_settings(self):
         """Load persisted settings from QSettings."""
