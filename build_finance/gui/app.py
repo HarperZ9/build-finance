@@ -1,5 +1,5 @@
 """
-Quanta Finance — Main Application
+Build Finance — Main Application
 
 Professional algorithmic trading workbench with sidebar navigation,
 page transitions, and the shared Calibrate Pro visual framework.
@@ -40,12 +40,12 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from quanta_ui.theme import STYLE, C
-from quanta_ui.widgets import Heading, Sidebar, ToastNotification
+from build_ui.theme import STYLE, C
+from build_ui.widgets import Heading, Sidebar, ToastNotification
 
-APP_NAME = "Quanta Finance"
+APP_NAME = "Build Finance"
 APP_VERSION = "1.0.0"
-APP_ORG = "Quanta Universe"
+APP_ORG = "Build Universe"
 
 
 # =============================================================================
@@ -164,7 +164,7 @@ PAGE_MENU_NAMES = [
 ]
 
 
-class QuantaFinanceWindow(QMainWindow):
+class BuildFinanceWindow(QMainWindow):
     """Main application window."""
 
     def __init__(self):
@@ -240,7 +240,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 0: Dashboard
         try:
-            from quanta_finance.gui.pages.dashboard import DashboardPage
+            from build_finance.gui.pages.dashboard import DashboardPage
 
             self.stack.addWidget(DashboardPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -249,7 +249,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 1: Backtest
         try:
-            from quanta_finance.gui.pages.backtest_page import BacktestPage
+            from build_finance.gui.pages.backtest_page import BacktestPage
 
             self.stack.addWidget(BacktestPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -258,7 +258,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 2: Auto-Trader
         try:
-            from quanta_finance.gui.pages.autotrader_page import AutoTraderPage
+            from build_finance.gui.pages.autotrader_page import AutoTraderPage
 
             self.stack.addWidget(AutoTraderPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -267,7 +267,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 3: Portfolio
         try:
-            from quanta_finance.gui.pages.portfolio_page import PortfolioPage
+            from build_finance.gui.pages.portfolio_page import PortfolioPage
 
             self.stack.addWidget(PortfolioPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -276,7 +276,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 4: Market Data
         try:
-            from quanta_finance.gui.pages.market_data_page import MarketDataPage
+            from build_finance.gui.pages.market_data_page import MarketDataPage
 
             self.stack.addWidget(MarketDataPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -285,7 +285,7 @@ class QuantaFinanceWindow(QMainWindow):
 
         # Page 5: Settings
         try:
-            from quanta_finance.gui.pages.settings_page import SettingsPage
+            from build_finance.gui.pages.settings_page import SettingsPage
 
             self.stack.addWidget(SettingsPage())
         except (ImportError, AttributeError, TypeError) as e:
@@ -393,6 +393,6 @@ class QuantaFinanceWindow(QMainWindow):
 # =============================================================================
 
 if __name__ == "__main__":
-    from quanta_finance.gui import launch
+    from build_finance.gui import launch
 
     sys.exit(launch())

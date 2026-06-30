@@ -3,9 +3,9 @@ def launch():
 
     from PyQt6.QtWidgets import QApplication
 
-    from quanta_finance.gui.app import QuantaFinanceWindow
+    from build_finance.gui.app import BuildFinanceWindow
 
     app = QApplication(sys.argv)
-    window = QuantaFinanceWindow()
+    window = BuildFinanceWindow()
     window.show()
     return app.exec()

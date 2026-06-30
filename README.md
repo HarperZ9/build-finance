@@ -1,4 +1,4 @@
-# Quanta Finance
+# Build Finance
 
 Algorithmic trading toolkit for stocks and crypto. Backtest strategies, auto-trade with paper or live brokers, optimize portfolios.
 
@@ -6,15 +6,15 @@ Algorithmic trading toolkit for stocks and crypto. Backtest strategies, auto-tra
 
 ```bash
 pip install ".[all]"
-quanta-finance
+build-finance
 ```
 
 Launch the GUI, or use the CLI:
 
 ```bash
-quanta-finance backtest --strategy momentum --days 252
-quanta-finance optimize --method max_sharpe
-quanta-finance indicators
+build-finance backtest --strategy momentum --days 252
+build-finance optimize --method max_sharpe
+build-finance indicators
 ```
 
 ## Features
@@ -73,17 +73,17 @@ Professional interface matching Calibrate Pro's design:
 
 | Command | Description |
 |---------|-------------|
-| `quanta-finance` | Launch GUI (default) |
-| `quanta-finance backtest` | Run backtest with strategy selection |
-| `quanta-finance analyze` | Analyze trades from CSV |
-| `quanta-finance optimize` | Portfolio optimization |
-| `quanta-finance indicators` | Compute technical indicators |
-| `quanta-finance gui` | Launch GUI explicitly |
+| `build-finance` | Launch GUI (default) |
+| `build-finance backtest` | Run backtest with strategy selection |
+| `build-finance analyze` | Analyze trades from CSV |
+| `build-finance optimize` | Portfolio optimization |
+| `build-finance indicators` | Compute technical indicators |
+| `build-finance gui` | Launch GUI explicitly |
 
 ## Architecture
 
 ```
-quanta_finance/
+build_finance/
   data.py          Market data structures (Candle, Quote, Signal, Trade, Position)
   indicators.py    10 vectorized technical indicators
   strategies.py    5 trading strategies

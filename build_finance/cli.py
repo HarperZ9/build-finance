@@ -1,12 +1,12 @@
 """
-CLI entry point for quanta-finance.
+CLI entry point for build-finance.
 
 Usage:
-    quanta-finance backtest --strategy momentum --data sample --days 252
-    quanta-finance analyze --file trades.csv
-    quanta-finance optimize --file returns.csv --method max_sharpe
-    quanta-finance indicators --symbol AAPL --indicator rsi,macd
-    quanta-finance gui          (launch GUI -- default when no command given)
+    build-finance backtest --strategy momentum --data sample --days 252
+    build-finance analyze --file trades.csv
+    build-finance optimize --file returns.csv --method max_sharpe
+    build-finance indicators --symbol AAPL --indicator rsi,macd
+    build-finance gui          (launch GUI -- default when no command given)
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import numpy as np
 
 def _cmd_backtest(args: argparse.Namespace) -> None:
     """Run a backtest with the specified strategy on sample or file data."""
-    from quanta_finance.backtest import (
+    from build_finance.backtest import (
         BacktestConfig,
         Backtester,
         generate_sample_data,
@@ -72,7 +72,7 @@ def _cmd_backtest(args: argparse.Namespace) -> None:
 
 def _cmd_analyze(args: argparse.Namespace) -> None:
     """Analyze a CSV file of completed trades."""
-    from quanta_finance.data import BacktestTrade as Trade
+    from build_finance.data import BacktestTrade as Trade
 
     path = Path(args.file)
     if not path.exists():
@@ -123,7 +123,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
 def _cmd_optimize(args: argparse.Namespace) -> None:
     """Run portfolio optimization on a returns CSV."""
-    from quanta_finance.portfolio import (
+    from build_finance.portfolio import (
         hierarchical_risk_parity,
         mean_variance_optimize,
         portfolio_stats,
@@ -167,7 +167,7 @@ def _cmd_optimize(args: argparse.Namespace) -> None:
 
 def _cmd_indicators(args: argparse.Namespace) -> None:
     """Compute technical indicators on sample data and print."""
-    from quanta_finance.backtest import generate_sample_data
+    from build_finance.backtest import generate_sample_data
 
     symbol = args.symbol or "AAPL"
     candles = generate_sample_data(symbol=symbol, days=50, seed=42)
@@ -229,11 +229,11 @@ def _cmd_indicators(args: argparse.Namespace) -> None:
 def _cmd_gui(_args: argparse.Namespace) -> None:
     """Launch the PyQt6 GUI."""
     try:
-        from quanta_finance.gui import launch
+        from build_finance.gui import launch
 
         launch()
     except ImportError:
-        print("GUI requires PyQt6. Install with: pip install 'quanta-finance[gui]'")
+        print("GUI requires PyQt6. Install with: pip install 'build-finance[gui]'")
         print("Use CLI commands in the meantime: backtest, analyze, optimize, indicators")
 
 
@@ -250,8 +250,8 @@ class _MomentumStrategy:
         self.slow = slow
 
     def generate_signals(self, candles):
-        from quanta_finance.data import BacktestSignal as Signal
-        from quanta_finance.data import SignalType
+        from build_finance.data import BacktestSignal as Signal
+        from build_finance.data import SignalType
 
         if len(candles) < self.slow:
             return []
@@ -298,8 +298,8 @@ class _MeanReversionStrategy:
         self.num_std = num_std
 
     def generate_signals(self, candles):
-        from quanta_finance.data import BacktestSignal as Signal
-        from quanta_finance.data import SignalType
+        from build_finance.data import BacktestSignal as Signal
+        from build_finance.data import SignalType
 
         if len(candles) < self.period:
             return []
@@ -353,7 +353,7 @@ def _make_strategy(name: str):
 
 def _load_candles_csv(path: Path):
     """Load candles from CSV with columns: timestamp,open,high,low,close,volume."""
-    from quanta_finance.data import Candle
+    from build_finance.data import Candle
 
     candles = []
     with open(path, newline="") as f:
@@ -380,7 +380,7 @@ def _load_candles_csv(path: Path):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="quanta-finance",
+        prog="build-finance",
         description="Algorithmic trading toolkit -- strategies, backtesting, portfolio optimization",
     )
     sub = parser.add_subparsers(dest="command")

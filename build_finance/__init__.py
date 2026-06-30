@@ -1,5 +1,5 @@
 """
-Quanta Finance -- Algorithmic Trading Toolkit
+Build Finance -- Algorithmic Trading Toolkit
 
 Modules:
     indicators  - Technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, VWAP)

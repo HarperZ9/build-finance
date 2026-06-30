@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import time
 
-from quanta_finance.gui.data_bridge import (
+from build_finance.gui.data_bridge import (
     AccountSnapshot,
     DataBridge,
     PositionInfo,

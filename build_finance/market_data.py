@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from quanta_finance.data import Candle
+from build_finance.data import Candle
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,5 @@
 """
-Quanta Finance -- Auto-Trader Page
+Build Finance -- Auto-Trader Page
 
 Strategy selection, start/stop controls, live P&L card,
 signal log table, and risk controls -- all wired to DataBridge.
@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import C, Card, Heading, Stat, StatusDot
+from build_finance.gui.app import C, Card, Heading, Stat, StatusDot
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class AutoTraderWorker(QThread):
         )
 
         try:
-            from quanta_finance.strategies import get_strategy
+            from build_finance.strategies import get_strategy
 
             strategy_fn = get_strategy(self._strategy)
         except (ImportError, AttributeError):
@@ -133,7 +133,7 @@ class AutoTraderWorker(QThread):
 
                 try:
                     if strategy_fn:
-                        from quanta_finance.market_data import (
+                        from build_finance.market_data import (
                             generate_sample_data,
                         )
 

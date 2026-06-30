@@ -1,5 +1,5 @@
 """
-Quanta Finance -- Dashboard Page
+Build Finance -- Dashboard Page
 
 Account overview, open positions table, portfolio allocation stats,
 and quick actions -- all wired to live Alpaca data via DataBridge.
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import C, Card, Heading, Stat, StatusDot
+from build_finance.gui.app import C, Card, Heading, Stat, StatusDot
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class DashboardPage(QWidget):
     def _init_bridge(self) -> None:
         """Create the data bridge and start periodic refresh."""
         try:
-            from quanta_finance.gui.data_bridge import DataBridge
+            from build_finance.gui.data_bridge import DataBridge
 
             self._bridge = DataBridge(use_paper=True)
         except Exception as exc:

@@ -1,5 +1,5 @@
 """
-Core market data structures used throughout Quanta Finance.
+Core market data structures used throughout Build Finance.
 
 Provides Candle, Quote, Signal, Trade, and Position dataclasses
 with convenience methods for common calculations.

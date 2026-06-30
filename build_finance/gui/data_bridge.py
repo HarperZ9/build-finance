@@ -234,7 +234,7 @@ class DataBridge:
             return
 
         try:
-            from quanta_finance.broker import AlpacaBroker, BrokerConfig
+            from build_finance.broker import AlpacaBroker, BrokerConfig
 
             config = BrokerConfig(
                 name="alpaca",

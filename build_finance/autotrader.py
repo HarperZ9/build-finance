@@ -13,8 +13,8 @@ Usage
 -----
 ::
 
-    from quanta_finance.autotrader import AutoTrader, AutoTraderConfig
-    from quanta_finance.broker import PaperBroker
+    from build_finance.autotrader import AutoTrader, AutoTraderConfig
+    from build_finance.broker import PaperBroker
 
     config = AutoTraderConfig(symbols=["AAPL", "BTC-USD"])
     trader = AutoTrader(config)
@@ -28,8 +28,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from quanta_finance.broker import PaperBroker
-from quanta_finance.data import Candle, Signal
+from build_finance.broker import PaperBroker
+from build_finance.data import Candle, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def _create_strategy(name: str):
     Imports are deferred so that ``autotrader`` can be imported without
     pulling in NumPy unless a strategy is actually constructed.
     """
-    from quanta_finance.strategies import (
+    from build_finance.strategies import (
         BreakoutStrategy,
         EnsembleStrategy,
         MeanReversionStrategy,
@@ -146,12 +146,12 @@ class AutoTrader:
     ) -> list[Candle]:
         """Fetch recent candles for *symbol*.
 
-        Uses :func:`quanta_finance.market_data.fetch_yahoo` with a
+        Uses :func:`build_finance.market_data.fetch_yahoo` with a
         3-month daily window and trims to the most recent *lookback*
         bars.  On failure, falls back to any previously cached history.
         """
         try:
-            from quanta_finance.market_data import fetch_yahoo
+            from build_finance.market_data import fetch_yahoo
 
             candles = fetch_yahoo(symbol, period="3mo", interval="1d")
             if candles:

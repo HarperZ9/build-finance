@@ -1,5 +1,5 @@
 """
-Quanta Finance -- Market Data Page
+Build Finance -- Market Data Page
 
 Watchlist table, quote lookup, data source indicator,
 and auto-refresh with interval selector.  Wired to DataBridge.
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import C, Card, Heading, Stat
+from build_finance.gui.app import C, Card, Heading, Stat
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ class FetchWorker(QThread):
         try:
             # Try real data fetch
             try:
-                from quanta_finance.market_data import fetch_yahoo
+                from build_finance.market_data import fetch_yahoo
 
                 candles = fetch_yahoo(self._symbol, period="1y")
                 if candles:
@@ -298,7 +298,7 @@ class MarketDataPage(QWidget):
 
     def _init_bridge(self) -> None:
         try:
-            from quanta_finance.gui.data_bridge import DataBridge
+            from build_finance.gui.data_bridge import DataBridge
 
             self._bridge = DataBridge(use_paper=True)
         except Exception as exc:

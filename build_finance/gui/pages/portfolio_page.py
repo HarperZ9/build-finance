@@ -1,5 +1,5 @@
 """
-Quanta Finance — Portfolio Page
+Build Finance — Portfolio Page
 
 Portfolio optimization with multiple methods, weight visualization,
 and performance statistics.
@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import C, Card, Heading, Stat
+from build_finance.gui.app import C, Card, Heading, Stat
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class PortfolioWorker(QThread):
         try:
             # Try real optimizer first
             try:
-                from quanta_finance.portfolio import optimize
+                from build_finance.portfolio import optimize
 
                 result = optimize(self._symbols, method=self._method)
                 self.finished_signal.emit(result)

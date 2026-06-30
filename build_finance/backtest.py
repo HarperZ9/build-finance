@@ -14,21 +14,21 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestPosition as Position,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestSignal,
     Candle,
     SignalType,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestSignal as Signal,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestTrade as Trade,
 )
-from quanta_finance.orderbook import ExecutionConfig, simulate_fill
+from build_finance.orderbook import ExecutionConfig, simulate_fill
 
 # ---------------------------------------------------------------------------
 # Strategy protocol

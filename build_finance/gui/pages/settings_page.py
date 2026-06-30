@@ -1,5 +1,5 @@
 """
-Quanta Finance — Settings Page
+Build Finance — Settings Page
 
 Application configuration including broker credentials,
 default parameters, and export settings.
@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import APP_NAME, APP_ORG, APP_VERSION, C, Card, Heading
+from build_finance.gui.app import APP_NAME, APP_ORG, APP_VERSION, C, Card, Heading
 
 
 class SettingsPage(QWidget):

@@ -1,5 +1,5 @@
 """
-Tests for quanta_finance.indicators
+Tests for build_finance.indicators
 
 ~30 tests covering SMA, EMA, RSI, MACD, Bollinger Bands, ATR,
 Stochastic, VWAP, ADX, and OBV with edge cases.
@@ -8,7 +8,7 @@ Stochastic, VWAP, ADX, and OBV with edge cases.
 import numpy as np
 import pytest
 
-from quanta_finance.indicators import (
+from build_finance.indicators import (
     adx,
     atr,
     bollinger_bands,

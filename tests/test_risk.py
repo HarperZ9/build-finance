@@ -1,5 +1,5 @@
 """
-Tests for quanta_finance.risk
+Tests for build_finance.risk
 
 ~30 tests covering Sharpe, Sortino, drawdown, VaR, CVaR, volatility,
 CAPM metrics, and trade-level statistics.
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from quanta_finance.risk import (
+from build_finance.risk import (
     alpha,
     beta,
     calmar_ratio,

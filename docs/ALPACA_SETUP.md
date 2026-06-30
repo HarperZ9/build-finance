@@ -14,11 +14,11 @@
    - **API Key ID** (e.g., `PKXXXXXXXXXXXXXXXX`)
    - **API Secret Key** (e.g., `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`)
 
-## Step 3: Configure quanta-finance
+## Step 3: Configure build-finance
 
 ### Via CLI
 ```bash
-quanta-finance backtest --broker alpaca \
+build-finance backtest --broker alpaca \
     --api-key PKXXXXXXXXXXXXXXXX \
     --api-secret xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
     --symbol AAPL --strategy momentum
@@ -26,7 +26,7 @@ quanta-finance backtest --broker alpaca \
 
 ### Via Python API
 ```python
-from quanta_finance.broker import AlpacaBroker, BrokerConfig
+from build_finance.broker import AlpacaBroker, BrokerConfig
 
 config = BrokerConfig(
     name="alpaca",
@@ -41,14 +41,14 @@ print(f"Equity: ${account.equity:.2f}")
 ```
 
 ### Via GUI
-1. Launch: `quanta-finance gui`
+1. Launch: `build-finance gui`
 2. Go to Settings page
 3. Enter API Key and API Secret
 4. Click "Test Connection"
 
 ## Step 4: Verify Connection
 ```python
-from quanta_finance.market_data import fetch_yahoo
+from build_finance.market_data import fetch_yahoo
 candles = fetch_yahoo("AAPL", period="5d", interval="1d")
 print(f"Got {len(candles)} candles")
 ```

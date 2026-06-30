@@ -7,26 +7,26 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from quanta_finance.backtest import (
+from build_finance.backtest import (
     BacktestConfig,
     Backtester,
     generate_sample_data,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestPosition as Position,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestSignal as Signal,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     BacktestTrade as Trade,
 )
-from quanta_finance.data import (
+from build_finance.data import (
     Candle,
     SignalType,
 )
-from quanta_finance.orderbook import ExecutionConfig, OrderBook, simulate_fill
-from quanta_finance.portfolio import (
+from build_finance.orderbook import ExecutionConfig, OrderBook, simulate_fill
+from build_finance.portfolio import (
     hierarchical_risk_parity,
     mean_variance_optimize,
     portfolio_stats,

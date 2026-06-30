@@ -1,5 +1,5 @@
 """
-Quanta Finance — Backtest Page
+Build Finance — Backtest Page
 
 Run backtests with strategy selection, view results including
 equity curve, key metrics, and trade log.
@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from quanta_finance.gui.app import C, Card, Heading, Stat
+from build_finance.gui.app import C, Card, Heading, Stat
 
 logger = logging.getLogger(__name__)
 
@@ -207,9 +207,9 @@ class BacktestWorker(QThread):
 
             # Attempt to use real backtest engine
             try:
-                from quanta_finance.backtest import Backtest
-                from quanta_finance.data import fetch_ohlcv
-                from quanta_finance.strategies import get_strategy
+                from build_finance.backtest import Backtest
+                from build_finance.data import fetch_ohlcv
+                from build_finance.strategies import get_strategy
 
                 self.progress.emit(20)
                 data = fetch_ohlcv(self._symbol, days=self._lookback)
