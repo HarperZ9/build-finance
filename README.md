@@ -1,8 +1,23 @@
 <p align="center">
-  <img src="docs/brand/build-finance-hero.png" alt="Build Finance: Algorithmic Finance Toolkit">
+  <img src="docs/brand/build-finance-hero.png" alt="Build Finance, a Python algorithmic trading toolkit">
 </p>
+<!-- Project mark: docs/brand/build-finance-mark.svg -->
 
 # Build Finance
+
+> Python algorithmic trading toolkit for technical indicators, strategy backtesting, risk metrics, portfolio optimization, position sizing, and paper/live broker execution.
+
+[Project Telos](https://harperz9.github.io) | [gather](https://github.com/HarperZ9/gather) | [crucible](https://github.com/HarperZ9/crucible) | [index](https://github.com/HarperZ9/index) | [forum](https://github.com/HarperZ9/forum) | [telos](https://github.com/HarperZ9/telos) | [emet](https://github.com/HarperZ9/emet) | [buildlang](https://github.com/HarperZ9/buildlang)
+
+[![CI](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml/badge.svg)](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml)
+![version: 1.0.0](https://img.shields.io/badge/version-1.0.0-informational.svg)
+![python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+![core deps: numpy/pandas/scipy](https://img.shields.io/badge/core%20deps-numpy%2Fpandas%2Fscipy-success.svg)
+[![license: fair-source](https://img.shields.io/badge/license-fair--source-blue.svg)](LICENSE)
+
+> **Money-adjacent software.** Paper trading is the default; live broker
+> execution is explicit opt-in; the library custodies no funds. Read
+> [SECURITY.md](SECURITY.md) before connecting a real broker account.
 
 Algorithmic trading toolkit for stocks and crypto. Backtest strategies, auto-trade with paper or live brokers, optimize portfolios.
 
@@ -105,4 +120,8 @@ build_finance/
 
 ## License
 
-Copyright (c) 2022-2026 Zain Dana Harper. All rights reserved. See [LICENSE](LICENSE).
+Build Finance is released under the FSL-1.1-MIT.
+The source is available so you can read it, run it, and build on it; commercial use
+that competes with the project is reserved to the Licensor. See [LICENSE](LICENSE).
+
+Copyright (c) 2022-2026 Zain Dana Harper. All rights reserved.

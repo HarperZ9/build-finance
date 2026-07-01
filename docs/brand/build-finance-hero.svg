@@ -1,0 +1,26 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Build Finance, a Python algorithmic trading toolkit">
+  <defs>
+    <linearGradient id="hero-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#160c28"/>
+      <stop offset="1" stop-color="#0a0816"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="360" fill="url(#hero-bg)"/>
+  <!-- candlestick ledger motif -->
+  <g transform="translate(900,150)" opacity="0.95">
+    <g stroke-linecap="round">
+      <line x1="0" y1="10" x2="0" y2="86" stroke="#38d39f" stroke-width="6"/>
+      <rect x="-13" y="30" width="26" height="34" rx="3" fill="#38d39f"/>
+      <line x1="46" y1="-14" x2="46" y2="60" stroke="#ff4d6d" stroke-width="6"/>
+      <rect x="33" y="4" width="26" height="36" rx="3" fill="#ff4d6d"/>
+      <line x1="92" y1="4" x2="92" y2="96" stroke="#38d39f" stroke-width="6"/>
+      <rect x="79" y="24" width="26" height="44" rx="3" fill="#38d39f"/>
+      <line x1="138" y1="-40" x2="138" y2="34" stroke="#38d39f" stroke-width="6"/>
+      <rect x="125" y="-22" width="26" height="28" rx="3" fill="#38d39f"/>
+    </g>
+    <!-- ledger baseline -->
+    <line x1="-30" y1="112" x2="168" y2="112" stroke="#4636e8" stroke-width="5" stroke-linecap="round" opacity="0.85"/>
+  </g>
+  <text x="80" y="150" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="72" font-weight="700" fill="#ffffff">Build Finance</text>
+  <text x="82" y="200" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" fill="#b8b0d8">A Python algorithmic trading toolkit — strategies, backtesting, risk, portfolio optimization, paper/live execution.</text>
+</svg>

@@ -405,10 +405,10 @@ class Backtester:
 
             # Mark-to-market equity
             pos_value = 0.0
-            for s, pos in positions.items():
-                cnt = bar_counts.get(s, 0)
+            for pos_sym, pos in positions.items():
+                cnt = bar_counts.get(pos_sym, 0)
                 if cnt > 0:
-                    cp = candles[s][cnt - 1].close
+                    cp = candles[pos_sym][cnt - 1].close
                 else:
                     cp = pos.entry_price
                 pos_value += pos.unrealized_pnl(cp)

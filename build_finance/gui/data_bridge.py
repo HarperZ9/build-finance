@@ -22,6 +22,10 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from build_finance.broker import AlpacaBroker
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +220,7 @@ class DataBridge:
 
     def __init__(self, use_paper: bool = True) -> None:
         self._use_paper = use_paper
-        self._broker = None
+        self._broker: AlpacaBroker | None = None
         self._demo_mode = True
         self._cache: dict[str, tuple] = {}  # key -> (data, timestamp)
         self._cache_ttl = 5.0  # seconds
@@ -285,7 +289,7 @@ class DataBridge:
         if cached is not None:
             return cached
 
-        if self._demo_mode:
+        if self._demo_mode or self._broker is None:
             result = _demo_account()
         else:
             try:
@@ -312,7 +316,7 @@ class DataBridge:
         if cached is not None:
             return cached
 
-        if self._demo_mode:
+        if self._demo_mode or self._broker is None:
             result = _demo_positions()
         else:
             try:
@@ -348,7 +352,7 @@ class DataBridge:
         if cached is not None:
             return cached
 
-        if self._demo_mode:
+        if self._demo_mode or self._broker is None:
             result = _demo_quote(symbol)
         else:
             try:
@@ -395,7 +399,7 @@ class DataBridge:
 
         Returns a list of order results or an empty list in demo mode.
         """
-        if self._demo_mode:
+        if self._demo_mode or self._broker is None:
             logger.info("Flatten all: demo mode, no real orders.")
             return []
 

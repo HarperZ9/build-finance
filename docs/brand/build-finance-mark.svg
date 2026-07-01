@@ -1,0 +1,22 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Build Finance mark">
+  <defs>
+    <linearGradient id="bf-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1030"/>
+      <stop offset="1" stop-color="#0c0a1a"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bf-bg)"/>
+  <!-- candlestick ledger -->
+  <g stroke-linecap="round">
+    <line x1="34" y1="46" x2="34" y2="86" stroke="#38d39f" stroke-width="3"/>
+    <rect x="28" y="56" width="12" height="20" rx="1.5" fill="#38d39f"/>
+    <line x1="58" y1="34" x2="58" y2="80" stroke="#ff4d6d" stroke-width="3"/>
+    <rect x="52" y="44" width="12" height="22" rx="1.5" fill="#ff4d6d"/>
+    <line x1="82" y1="42" x2="82" y2="92" stroke="#38d39f" stroke-width="3"/>
+    <rect x="76" y="52" width="12" height="26" rx="1.5" fill="#38d39f"/>
+    <line x1="106" y1="30" x2="106" y2="70" stroke="#38d39f" stroke-width="3"/>
+    <rect x="100" y="38" width="12" height="18" rx="1.5" fill="#38d39f"/>
+  </g>
+  <!-- ledger baseline -->
+  <line x1="20" y1="98" x2="112" y2="98" stroke="#4636e8" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+</svg>
