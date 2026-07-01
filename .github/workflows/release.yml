@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   build:
@@ -43,3 +44,5 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
