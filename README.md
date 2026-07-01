@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/brand/build-finance-hero.png" alt="Build Finance: Algorithmic Finance Toolkit">
+</p>
+
 # Build Finance
 
 Algorithmic trading toolkit for stocks and crypto. Backtest strategies, auto-trade with paper or live brokers, optimize portfolios.
