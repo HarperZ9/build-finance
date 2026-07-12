@@ -2239,6 +2239,14 @@ def validate_run_closure_receipt_semantics(
 
     row_codes: list[tuple[str, ...]] = []
     for index, row in enumerate(market_rows):
+        if not _valid_utf8_registry(row["market_id"], 128):
+            issues.append(
+                _issue(
+                    "semantic_registry",
+                    ("market_proofs", index, "market_id"),
+                    "market ID must be nonempty and at most 128 UTF-8 bytes",
+                )
+            )
         codes, code_issues = _check_reason_order(
             row["failure_codes"],
             RUN_CLOSURE_MARKET_REASON_PRECEDENCE,
@@ -2854,6 +2862,45 @@ def validate_model_validation_receipt_semantics(
     )
     issues.extend(reason_issues)
     reason_set = frozenset(reason_codes)
+    identity_codes = frozenset(
+        {
+            "SIG_MODEL_UNPINNED",
+            "SIG_RUNTIME_SUBSTITUTION",
+            "SIG_SCOPE_MISMATCH",
+            "SIG_FEATURE_MISMATCH",
+            "SIG_CALIBRATION_UNKNOWN",
+        }
+    )
+    sequence_codes = frozenset({"SIG_PRODUCER_SEQUENCE_INVALID", "SIG_REPLAYED"})
+    drift_code = "SIG_DRIFT_DISABLED"
+
+    def stage_issue(message: str) -> None:
+        issues.append(_issue("semantic_validation_stage", ("reason_codes",), message))
+
+    if "SIG_BYTES_INVALID" in reason_set and reason_set != {"SIG_BYTES_INVALID"}:
+        stage_issue("byte-gate failure is the exact sole code and stops all later predicates")
+    if "SIG_ORDER_SHAPED" in reason_set and "SIG_SCHEMA_UNKNOWN" not in reason_set:
+        stage_issue("order-shaped evidence implies structural schema failure")
+    if "SIG_SCHEMA_UNKNOWN" in reason_set and not reason_set <= {
+        "SIG_SCHEMA_UNKNOWN",
+        "SIG_ORDER_SHAPED",
+    }:
+        stage_issue("structural failure stops after the optional order-shaped predicate")
+    if "SIG_ID_MISMATCH" in reason_set and reason_set != {"SIG_ID_MISMATCH"}:
+        stage_issue("content-ID failure is the exact sole code and stops all later predicates")
+    if identity_codes.intersection(reason_set) and not reason_set <= identity_codes | {drift_code}:
+        stage_issue("identity/calibration failure stops before sequence and later predicates")
+    reached_sequence_codes = sequence_codes.intersection(reason_set)
+    if reached_sequence_codes and (
+        len(reached_sequence_codes) != 1 or not reason_set <= reached_sequence_codes | {drift_code}
+    ):
+        stage_issue("sequence and replay failures are exclusive and stop later predicates")
+    if "SIG_TIME_INVALID" in reason_set and {
+        "SIG_EXPIRED",
+        "SIG_DEADLINE_MISS",
+    }.intersection(reason_set):
+        stage_issue("invalid clock structure skips expiry and deadline predicates")
+
     if not reason_codes:
         expected_status = "ACCEPTED"
     elif reason_set == {"SIG_DRIFT_DISABLED"}:
@@ -2878,6 +2925,22 @@ def validate_model_validation_receipt_semantics(
                         "semantic_byte_gate_evidence",
                         (field,),
                         "byte-invalid receipt cannot fabricate parsed candidate evidence",
+                    )
+                )
+    elif "SIG_SCHEMA_UNKNOWN" not in reason_set:
+        for field in (
+            "declared_signal_id",
+            "producer_sequence",
+            "producer_scope_key_sha256",
+            "issued_replay_clock_ns",
+            "expires_replay_clock_ns",
+        ):
+            if document[field] is None:
+                issues.append(
+                    _issue(
+                        "semantic_stage_evidence",
+                        (field,),
+                        "exact-schema and deeper stages require preserved typed candidate evidence",
                     )
                 )
 

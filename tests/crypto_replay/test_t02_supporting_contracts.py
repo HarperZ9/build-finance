@@ -1938,6 +1938,12 @@ def test_run_closure_receipt_is_total_by_config_status() -> None:
                 "market_proofs": [market_row, {**second_market_row, "market_id": MARKET_ID}],
             }
         ),
+        _reseal(
+            {
+                **passing_force,
+                "market_proofs": [{**market_row, "market_id": "é" * 65}],
+            }
+        ),
         _reseal({**capacity_failures[0], "proof_row_limit": "1"}),
         _reseal(
             {
@@ -2746,26 +2752,84 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
         "SIG_UNCERTAIN_OR_OOD",
         "SIG_DRIFT_DISABLED",
     )
-    singleton_receipts: list[dict[str, Any]] = []
-    for reason in reason_precedence:
-        if reason == "SIG_DRIFT_DISABLED":
+    reason_rank = {reason: index for index, reason in enumerate(reason_precedence)}
+
+    def validation_receipt(*reasons: str) -> dict[str, Any]:
+        ordered_reasons = sorted(set(reasons), key=reason_rank.__getitem__)
+        reason_set = frozenset(ordered_reasons)
+        if reason_set == {"SIG_DRIFT_DISABLED"}:
             status = "DRIFT_DISABLED"
-        elif reason == "SIG_EXPIRED":
+        elif reason_set and reason_set <= {"SIG_EXPIRED", "SIG_DEADLINE_MISS"} and "SIG_EXPIRED" in reason_set:
             status = "EXPIRED"
         else:
             status = "REJECTED"
-        evidence = {} if reason == "SIG_BYTES_INVALID" else parsed_evidence
-        singleton_receipts.append(
-            _reseal(
-                {
-                    **rejected,
-                    **evidence,
-                    "status": status,
-                    "reason_codes": [reason],
-                }
-            )
+        evidence = {} if "SIG_BYTES_INVALID" in reason_set else parsed_evidence
+        return _reseal(
+            {
+                **rejected,
+                **evidence,
+                "status": status,
+                "reason_codes": ordered_reasons,
+            }
         )
-    all_reason_receipt = _reseal({**rejected, "status": "REJECTED", "reason_codes": list(reason_precedence)})
+
+    valid_singleton_reasons = tuple(reason for reason in reason_precedence if reason != "SIG_ORDER_SHAPED")
+    singleton_receipts = [validation_receipt(reason) for reason in valid_singleton_reasons]
+    identity_codes = (
+        "SIG_MODEL_UNPINNED",
+        "SIG_RUNTIME_SUBSTITUTION",
+        "SIG_SCOPE_MISMATCH",
+        "SIG_FEATURE_MISMATCH",
+        "SIG_CALIBRATION_UNKNOWN",
+    )
+    sequence_codes = ("SIG_PRODUCER_SEQUENCE_INVALID", "SIG_REPLAYED")
+    later_codes = (
+        "SIG_TIME_INVALID",
+        "SIG_TTL_RANGE",
+        "SIG_EXPIRED",
+        "SIG_DEADLINE_MISS",
+        "SIG_NUMERIC_INVALID",
+        "SIG_PROBABILITY_INVALID",
+        "SIG_ACTION_INCONSISTENT",
+        "SIG_UNCERTAIN_OR_OOD",
+    )
+    structural_order_shaped = validation_receipt("SIG_SCHEMA_UNKNOWN", "SIG_ORDER_SHAPED")
+    structural_without_hints = _reseal(
+        {
+            **rejected,
+            "status": "REJECTED",
+            "reason_codes": ["SIG_SCHEMA_UNKNOWN"],
+        }
+    )
+    identity_with_drift = validation_receipt(*identity_codes, "SIG_DRIFT_DISABLED")
+    sequence_with_drift = tuple(validation_receipt(reason, "SIG_DRIFT_DISABLED") for reason in sequence_codes)
+    later_with_time_failure = validation_receipt(
+        "SIG_TIME_INVALID",
+        "SIG_TTL_RANGE",
+        "SIG_NUMERIC_INVALID",
+        "SIG_PROBABILITY_INVALID",
+        "SIG_ACTION_INCONSISTENT",
+        "SIG_UNCERTAIN_OR_OOD",
+        "SIG_DRIFT_DISABLED",
+    )
+    later_with_expiry = validation_receipt(
+        "SIG_TTL_RANGE",
+        "SIG_EXPIRED",
+        "SIG_DEADLINE_MISS",
+        "SIG_NUMERIC_INVALID",
+        "SIG_PROBABILITY_INVALID",
+        "SIG_ACTION_INCONSISTENT",
+        "SIG_UNCERTAIN_OR_OOD",
+        "SIG_DRIFT_DISABLED",
+    )
+    valid_stage_receipts = (
+        structural_order_shaped,
+        structural_without_hints,
+        identity_with_drift,
+        *sequence_with_drift,
+        later_with_time_failure,
+        later_with_expiry,
+    )
     accepted_shape = _reseal(
         {
             **rejected,
@@ -2795,7 +2859,7 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             *vector.documents.values(),
             *receipts,
             *singleton_receipts,
-            all_reason_receipt,
+            *valid_stage_receipts,
             accepted_shape,
             *vector.source_receipts,
             *vector.raw_events,
@@ -2814,11 +2878,52 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
         "REJECTED",
         "REJECTED",
     ]
-    for reason, receipt in zip(reason_precedence, singleton_receipts, strict=True):
+    for reason, receipt in zip(valid_singleton_reasons, singleton_receipts, strict=True):
         assert receipt["reason_codes"] == [reason]
         assert not _issues(receipt, resolver=resolver)
-    assert not _issues(all_reason_receipt, resolver=resolver)
+    for receipt in valid_stage_receipts:
+        assert not _issues(receipt, resolver=resolver)
+        assert {field: receipt[field] for field in fallback} == fallback
+    covered_reasons = {
+        reason for receipt in (*singleton_receipts, *valid_stage_receipts) for reason in receipt["reason_codes"]
+    }
+    assert covered_reasons == set(reason_precedence)
     assert not _issues(accepted_shape, resolver=resolver)
+
+    invalid_stage_sets: set[tuple[str, ...]] = set()
+
+    def add_invalid_stage(*reasons: str) -> None:
+        invalid_stage_sets.add(tuple(sorted(set(reasons), key=reason_rank.__getitem__)))
+
+    for reason in reason_precedence:
+        if reason != "SIG_BYTES_INVALID":
+            add_invalid_stage("SIG_BYTES_INVALID", reason)
+    add_invalid_stage("SIG_ORDER_SHAPED")
+    post_structural_codes = tuple(
+        reason
+        for reason in reason_precedence
+        if reason not in {"SIG_BYTES_INVALID", "SIG_SCHEMA_UNKNOWN", "SIG_ORDER_SHAPED"}
+    )
+    for reason in post_structural_codes:
+        add_invalid_stage("SIG_ORDER_SHAPED", reason)
+        add_invalid_stage("SIG_SCHEMA_UNKNOWN", reason)
+        add_invalid_stage("SIG_SCHEMA_UNKNOWN", "SIG_ORDER_SHAPED", reason)
+    for reason in reason_precedence:
+        if reason != "SIG_ID_MISMATCH":
+            add_invalid_stage("SIG_ID_MISMATCH", reason)
+    for identity_code in identity_codes:
+        for reason in (*sequence_codes, *later_codes):
+            add_invalid_stage(identity_code, reason)
+    add_invalid_stage(*sequence_codes)
+    for sequence_code in sequence_codes:
+        for reason in later_codes:
+            add_invalid_stage(sequence_code, reason)
+    add_invalid_stage("SIG_TIME_INVALID", "SIG_EXPIRED")
+    add_invalid_stage("SIG_TIME_INVALID", "SIG_DEADLINE_MISS")
+    for reasons in invalid_stage_sets:
+        issues = _issues(validation_receipt(*reasons), resolver=resolver)
+        assert "semantic_validation_stage" in {issue.code for issue in issues}, reasons
+
     mutations: list[dict[str, Any]] = []
     for receipt in receipts:
         for field, wrong in (
@@ -2841,7 +2946,12 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             _reseal({**drift_disabled, "reason_codes": ["SIG_DRIFT_DISABLED", "SIG_DRIFT_DISABLED"]}),
             _reseal({**rejected, "reason_codes": ["SIG_UNKNOWN"]}),
             _reseal({**rejected_disabled_ood, "status": "DRIFT_DISABLED"}),
-            _reseal({**all_reason_receipt, "reason_codes": list(reversed(reason_precedence))}),
+            _reseal(
+                {
+                    **later_with_expiry,
+                    "reason_codes": list(reversed(later_with_expiry["reason_codes"])),
+                }
+            ),
             _reseal({**accepted_shape, "accepted_signal_id": None}),
             _reseal({**accepted_shape, "canonical_probability_long_bias_q18": "999999999999999999"}),
             _reseal({**accepted_shape, "canonical_probability_long_bias_q18": "1000000000000000001"}),
@@ -2849,6 +2959,9 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             _reseal({**rejected, "available_replay_clock_ns": None}),
         )
     )
+    id_mismatch_receipt = singleton_receipts[valid_singleton_reasons.index("SIG_ID_MISMATCH")]
+    for field in parsed_evidence:
+        mutations.append(_reseal({**id_mismatch_receipt, field: None}))
     for mutation in mutations:
         _assert_invalid(mutation, resolver=resolver)
 
