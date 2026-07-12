@@ -1323,6 +1323,101 @@ def test_source_rejection_receipt_is_total() -> None:
         )
         _assert_invalid(wrong_code, resolver=vector.resolver)
 
+    nullable_evidence_owners = {
+        "fixture_manifest_sha256": ("ADMISSION_MANIFEST_MISMATCH",),
+        "raw_payload_sha256": ("ADMISSION_NOT_LOCAL",),
+        "source_id": ("ADMISSION_PROFILE_MISMATCH",),
+        "source_kind": ("ADMISSION_PROFILE_MISMATCH",),
+        "source_revision": ("ADMISSION_PROFILE_MISMATCH", "ADMISSION_POINT_IN_TIME_MISSING"),
+        "market_id": ("ADMISSION_PROFILE_MISMATCH",),
+        "relative_path": ("ADMISSION_NOT_LOCAL",),
+        "media_type": ("ADMISSION_PROFILE_MISMATCH",),
+        "byte_length": ("ADMISSION_NOT_LOCAL",),
+        "availability_slot": ("ADMISSION_POINT_IN_TIME_MISSING",),
+    }
+    for field, owner_codes in nullable_evidence_owners.items():
+        for quarantine in (False, True):
+            quarantine_suffix = ("ADMISSION_SET_NOT_CLOSED",) if quarantine else ()
+            for owner_code in owner_codes:
+                correctly_coded = build_source_admission_receipt(
+                    reason_codes=(owner_code, *quarantine_suffix),
+                    **{**source_inputs, field: None},
+                )
+                assert correctly_coded["status"] == ("QUARANTINED" if quarantine else "REJECTED")
+                assert not _issues(correctly_coded, resolver=vector.resolver)
+            wrong_code = build_source_admission_receipt(
+                reason_codes=("ADMISSION_RIGHTS_MISSING", *quarantine_suffix),
+                **{**source_inputs, field: None},
+            )
+            _assert_invalid(wrong_code, resolver=vector.resolver)
+
+    manifest_stage_blocked = build_source_admission_receipt(
+        reason_codes=("ADMISSION_MANIFEST_MISMATCH",),
+        **{
+            **source_inputs,
+            "fixture_manifest_sha256": None,
+            "raw_payload_sha256": None,
+            "relative_path": None,
+            "byte_length": None,
+            "source_id": None,
+            "source_kind": None,
+            "source_revision": None,
+            "market_id": None,
+            "media_type": None,
+            "availability_slot": None,
+        },
+    )
+    local_stage_blocked = build_source_admission_receipt(
+        reason_codes=("ADMISSION_NOT_LOCAL",),
+        **{
+            **source_inputs,
+            "raw_payload_sha256": None,
+            "relative_path": None,
+            "byte_length": None,
+            "source_id": None,
+            "source_kind": None,
+            "source_revision": None,
+            "market_id": None,
+            "media_type": None,
+            "availability_slot": None,
+        },
+    )
+    profile_stage_blocked = build_source_admission_receipt(
+        reason_codes=("ADMISSION_PROFILE_MISMATCH", "ADMISSION_POINT_IN_TIME_MISSING"),
+        **{
+            **source_inputs,
+            "source_id": None,
+            "source_kind": None,
+            "source_revision": None,
+            "market_id": None,
+            "media_type": None,
+            "availability_slot": None,
+        },
+    )
+    for earlier_stage_receipt in (manifest_stage_blocked, local_stage_blocked, profile_stage_blocked):
+        assert not _issues(earlier_stage_receipt, resolver=vector.resolver)
+
+    profile_with_missing_time = build_source_admission_receipt(
+        reason_codes=("ADMISSION_PROFILE_MISMATCH",),
+        **{**source_inputs, "source_id": None, "observed_at": None},
+    )
+    _assert_invalid(profile_with_missing_time, resolver=vector.resolver)
+    profile_with_owned_missing_time = build_source_admission_receipt(
+        reason_codes=("ADMISSION_PROFILE_MISMATCH", "ADMISSION_POINT_IN_TIME_MISSING"),
+        **{**source_inputs, "source_id": None, "observed_at": None},
+    )
+    assert not _issues(profile_with_owned_missing_time, resolver=vector.resolver)
+    profile_with_missing_availability = build_source_admission_receipt(
+        reason_codes=("ADMISSION_PROFILE_MISMATCH",),
+        **{**source_inputs, "source_id": None, "availability_slot": None},
+    )
+    _assert_invalid(profile_with_missing_availability, resolver=vector.resolver)
+    profile_with_owned_missing_availability = build_source_admission_receipt(
+        reason_codes=("ADMISSION_PROFILE_MISMATCH", "ADMISSION_POINT_IN_TIME_MISSING"),
+        **{**source_inputs, "source_id": None, "availability_slot": None},
+    )
+    assert not _issues(profile_with_owned_missing_availability, resolver=vector.resolver)
+
     wrong_status = _reseal({**rejected, "status": "ADMITTED"})
     rejected_conflict = _reseal({**quarantined, "status": "REJECTED"})
     admitted_with_code = _reseal({**admitted, "reason_codes": ["ADMISSION_RIGHTS_MISSING"]})

@@ -157,7 +157,7 @@ def _nullable_ref(name: str) -> JsonObject:
 
 
 def _shared_scalar_definitions() -> JsonObject:
-    """Return the frozen scalar aliases embedded in every primary schema."""
+    """Return the frozen scalar aliases embedded in every generated contract schema."""
     return {
         "sha256": {"type": "string", "pattern": _SHA256_PATTERN},
         "ContentID": {"type": "string", "pattern": _SHA256_PATTERN},

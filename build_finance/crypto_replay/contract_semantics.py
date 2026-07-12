@@ -1,4 +1,4 @@
-"""Pure cross-field semantics for the eight primary replay contracts.
+"""Pure cross-field semantics for primary and supporting replay contracts.
 
 JSON Schema owns lexical shape.  These validators own only relationships
 that the generated schema subset cannot express.  They perform no I/O and do
@@ -1892,15 +1892,61 @@ def validate_source_admission_receipt_semantics(
                     "missing rights evidence requires ADMISSION_RIGHTS_MISSING",
                 )
             )
-    for field in ("observed_at", "ingested_at"):
-        if document[field] is None and "ADMISSION_POINT_IN_TIME_MISSING" not in reason_set:
+
+    def require_null_owner(field: str, owner_codes: frozenset[str], message: str) -> None:
+        if document[field] is None and reason_set.isdisjoint(owner_codes):
             issues.append(
                 _issue(
                     "semantic_reason_completeness",
                     (field,),
-                    "missing witness time requires ADMISSION_POINT_IN_TIME_MISSING",
+                    message,
                 )
             )
+
+    manifest_owner = frozenset({"ADMISSION_MANIFEST_MISMATCH"})
+    local_owner = frozenset({"ADMISSION_NOT_LOCAL"})
+    profile_owner = frozenset({"ADMISSION_PROFILE_MISMATCH"})
+    revision_owners = frozenset({"ADMISSION_PROFILE_MISMATCH", "ADMISSION_POINT_IN_TIME_MISSING"})
+    point_in_time_owner = frozenset({"ADMISSION_POINT_IN_TIME_MISSING"})
+
+    require_null_owner(
+        "fixture_manifest_sha256",
+        manifest_owner,
+        "missing manifest identity requires ADMISSION_MANIFEST_MISMATCH",
+    )
+    manifest_blocked = document["fixture_manifest_sha256"] is None and not reason_set.isdisjoint(manifest_owner)
+
+    local_fields = ("raw_payload_sha256", "relative_path", "byte_length")
+    if not manifest_blocked:
+        for field in local_fields:
+            require_null_owner(field, local_owner, "missing local evidence requires ADMISSION_NOT_LOCAL")
+    local_blocked = manifest_blocked or (
+        any(document[field] is None for field in local_fields) and not reason_set.isdisjoint(local_owner)
+    )
+
+    profile_field_owners = {
+        "source_id": profile_owner,
+        "source_kind": profile_owner,
+        "source_revision": revision_owners,
+        "market_id": profile_owner,
+        "media_type": profile_owner,
+    }
+    if not local_blocked:
+        for field, owner_codes in profile_field_owners.items():
+            require_null_owner(
+                field, owner_codes, "missing parsed source identity requires a profile/point-in-time code"
+            )
+        require_null_owner(
+            "availability_slot",
+            point_in_time_owner,
+            "missing availability evidence requires ADMISSION_POINT_IN_TIME_MISSING",
+        )
+    for field in ("observed_at", "ingested_at"):
+        require_null_owner(
+            field,
+            point_in_time_owner,
+            "missing witness evidence requires ADMISSION_POINT_IN_TIME_MISSING",
+        )
 
     for field in ("source_id", "source_kind", "source_revision", "market_id"):
         value = document[field]
