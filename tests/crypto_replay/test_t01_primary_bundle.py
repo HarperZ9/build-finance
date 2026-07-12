@@ -332,6 +332,197 @@ def test_in_memory_resolver_keeps_content_and_retained_byte_keys_separate() -> N
         resolver.retain_bytes(digest, payload + b"collision-probe")
 
 
+def _raw_event_example() -> dict[str, Any]:
+    return json.loads((EXAMPLE_ROOT / "raw-event.json").read_text(encoding="utf-8"))
+
+
+def _resolver_fingerprint(resolver: Any) -> tuple[Any, ...]:
+    return (
+        resolver.content_ids,
+        resolver.byte_sha256s,
+        tuple(
+            (resolved.record, resolved.assurance, json.dumps(resolved.document, sort_keys=True))
+            for resolved in resolver.resolved_contents
+        ),
+    )
+
+
+def _assert_retained_entry_unchanged(
+    resolver: Any,
+    content_id: str,
+    record: bytes,
+    assurance: str,
+) -> None:
+    from build_finance.crypto_replay.canonical import canonical_record_bytes, parse_canonical_record
+    from build_finance.crypto_replay.content_ids import verify_content_id
+
+    resolved = resolver.resolve_object(content_id)
+    assert resolved is not None
+    assert resolved.record == record
+    assert resolved.assurance == assurance
+    assert resolved.document == parse_canonical_record(record)
+    assert canonical_record_bytes(dict(resolved.document)) == record
+    assert verify_content_id(resolved.document)
+
+
+def test_resolver_derives_assurance_and_all_failed_insertions_are_atomic() -> None:
+    from build_finance.crypto_replay.canonical import canonical_record_bytes
+    from build_finance.crypto_replay.content_ids import compute_content_id, seal_content_id
+    from tests.crypto_replay.support.builders import (
+        InMemoryResolver,
+        build_digest_only_supporting_document,
+    )
+
+    resolver = InMemoryResolver()
+    empty = _resolver_fingerprint(resolver)
+    minimal_primary = seal_content_id({"schema": "trading.raw-event/v1"})
+    minimal_record = canonical_record_bytes(minimal_primary)
+
+    with pytest.raises(ValueError):
+        resolver.retain_record(minimal_record, assurance="SCHEMA_VALID")
+    assert _resolver_fingerprint(resolver) == empty
+
+    invalid_id = dict(minimal_primary)
+    invalid_id["event_id"] = "0" * 64
+    with pytest.raises(ValueError, match="self-ID"):
+        resolver.retain_record(canonical_record_bytes(invalid_id), assurance="SCHEMA_VALID")
+    assert _resolver_fingerprint(resolver) == empty
+
+    with pytest.raises(ValueError):
+        resolver.retain_record(b"{}\n\n", assurance="SCHEMA_VALID")
+    assert _resolver_fingerprint(resolver) == empty
+
+    valid_record = canonical_record_bytes(_raw_event_example())
+    with pytest.raises(ValueError, match="assurance"):
+        resolver.retain_record(valid_record, assurance="FORGED")  # type: ignore[arg-type]
+    assert _resolver_fingerprint(resolver) == empty
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        resolver.retain_bytes("0" * 64, b"digest-mismatch")
+    assert _resolver_fingerprint(resolver) == empty
+
+    retained_payload = b"SYNTHETIC_T01_CONTRACT_VECTOR\natomic-collision\n"
+    retained_sha256 = hashlib.sha256(retained_payload).hexdigest()
+    resolver.retain_bytes(retained_sha256, retained_payload)
+    before_collision = _resolver_fingerprint(resolver)
+    with pytest.raises(ValueError, match="different bytes"):
+        resolver.retain_bytes(retained_sha256, retained_payload + b"different")
+    assert _resolver_fingerprint(resolver) == before_collision
+
+    direct = resolver.retain_record(valid_record, assurance="SCHEMA_VALID")
+    direct_id = compute_content_id(direct)
+    direct_content = resolver.resolve_object(direct_id)
+    assert direct_content is not None
+    assert direct_content.assurance == "SCHEMA_VALID"
+    before_idempotent = _resolver_fingerprint(resolver)
+    resolver.retain_record(valid_record, assurance="SCHEMA_VALID")
+    assert _resolver_fingerprint(resolver) == before_idempotent
+
+    supporting_resolver = InMemoryResolver()
+    supporting = build_digest_only_supporting_document(
+        {
+            "schema": "trading.fixture-manifest/v1",
+            "t01_vector_classification": "SYNTHETIC_DIGEST_ONLY",
+            "nested_probe": {"values": ["one"]},
+        },
+        supporting_resolver,
+    )
+    supporting_id = compute_content_id(supporting)
+    supporting_content = supporting_resolver.resolve_object(supporting_id)
+    assert supporting_content is not None
+    assert supporting_content.assurance == "DIGEST_ONLY"
+
+    escalation_resolver = InMemoryResolver()
+    before_escalation = _resolver_fingerprint(escalation_resolver)
+    with pytest.raises(ValueError, match="PRIMARY|primary"):
+        escalation_resolver.retain_record(supporting_content.record, assurance="SCHEMA_VALID")
+    assert _resolver_fingerprint(escalation_resolver) == before_escalation
+
+
+def test_documents_returned_by_retain_and_build_do_not_alias_retained_evidence() -> None:
+    from build_finance.crypto_replay.canonical import canonical_record_bytes
+    from build_finance.crypto_replay.content_ids import compute_content_id
+    from tests.crypto_replay.support.builders import InMemoryResolver, build_primary_document
+
+    unsealed = _raw_event_example()
+    unsealed.pop("event_id")
+    build_resolver = InMemoryResolver()
+    built = build_primary_document(unsealed, build_resolver)
+    built_id = compute_content_id(built)
+    built_resolved = build_resolver.resolve_object(built_id)
+    assert built_resolved is not None
+    built["market"]["base_amount_atoms"] = "0"
+    _assert_retained_entry_unchanged(
+        build_resolver,
+        built_id,
+        built_resolved.record,
+        "SCHEMA_VALID",
+    )
+
+    retain_resolver = InMemoryResolver()
+    retained = retain_resolver.retain_record(
+        canonical_record_bytes(_raw_event_example()),
+        assurance="SCHEMA_VALID",
+    )
+    retained_id = compute_content_id(retained)
+    retained_resolved = retain_resolver.resolve_object(retained_id)
+    assert retained_resolved is not None
+    retained["quality_flags"].append("NON_EXECUTABLE")
+    _assert_retained_entry_unchanged(
+        retain_resolver,
+        retained_id,
+        retained_resolved.record,
+        "SCHEMA_VALID",
+    )
+
+
+def test_resolver_views_return_mutation_isolated_documents() -> None:
+    from build_finance.crypto_replay.content_ids import compute_content_id
+    from tests.crypto_replay.support.primary_vectors import build_primary_vector_set
+
+    vectors = build_primary_vector_set()
+    event = next(document for document in vectors.documents if document["schema"] == "trading.raw-event/v1")
+    event_id = compute_content_id(event)
+    retained = vectors.resolver.resolve_object(event_id)
+    assert retained is not None
+
+    retained.document["market"]["route_capacity_base_atoms"] = "0"
+    _assert_retained_entry_unchanged(vectors.resolver, event_id, retained.record, "SCHEMA_VALID")
+
+    from_collection = next(
+        resolved for resolved in vectors.resolver.resolved_contents if compute_content_id(resolved.document) == event_id
+    )
+    from_collection.document["quality_flags"].append("NON_EXECUTABLE")
+    _assert_retained_entry_unchanged(vectors.resolver, event_id, retained.record, "SCHEMA_VALID")
+
+
+def test_scenario_and_supporting_views_do_not_alias_retained_evidence() -> None:
+    from build_finance.crypto_replay.content_ids import compute_content_id
+    from tests.crypto_replay.support.primary_vectors import build_primary_vector_set
+
+    vectors = build_primary_vector_set()
+    scenario_event = next(
+        document
+        for document in vectors.disabled_primary_vectors.documents
+        if document["schema"] == "trading.raw-event/v1"
+    )
+    event_id = compute_content_id(scenario_event)
+    event_content = vectors.resolver.resolve_object(event_id)
+    assert event_content is not None
+    scenario_event["market"]["liquidity_quote_atoms"] = "0"
+    _assert_retained_entry_unchanged(vectors.resolver, event_id, event_content.record, "SCHEMA_VALID")
+
+    supporting = vectors.supporting_contents[0]
+    supporting_id = compute_content_id(supporting.document)
+    supporting.document["mutation_probe"] = {"nested": ["changed"]}
+    _assert_retained_entry_unchanged(
+        vectors.resolver,
+        supporting_id,
+        supporting.record,
+        "DIGEST_ONLY",
+    )
+
+
 def test_primary_examples_cover_exactly_eight_schema_ids() -> None:
     from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_IDS
 
