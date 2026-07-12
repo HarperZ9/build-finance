@@ -908,6 +908,191 @@ def test_all_supporting_contracts_are_closed() -> None:
         mutation = _reseal({**document, "unknown_t02_property": True})
         _assert_invalid(mutation, resolver=resolver)
 
+    reconciliation = vector.documents["trading.reconciliation-receipt/v1"]
+    wrong_special_owner = _reseal(
+        {
+            **reconciliation,
+            "status": "KILLED",
+            "reason_codes": ["RECONCILIATION_IDEMPOTENCY_CONFLICT", "RECONCILIATION_MISMATCH"],
+            "kill_latched": True,
+        }
+    )
+    invalid_genesis = _reseal(
+        {
+            **reconciliation,
+            "reconciliation_kind": "GENESIS",
+            "portfolio_state_after_id": reconciliation["portfolio_state_before_id"],
+        }
+    )
+    invalid_terminal_promotion = _reseal(
+        {
+            **reconciliation,
+            "reconciliation_kind": "TERMINAL_KILL_PROMOTION",
+        }
+    )
+    duplicate_assets = deepcopy(reconciliation)
+    duplicate_assets.update(
+        {
+            "status": "KILLED",
+            "reason_codes": ["RECONCILIATION_ASSET_RESIDUAL", "RECONCILIATION_MISMATCH"],
+            "kill_latched": True,
+            "asset_residuals": [
+                deepcopy(reconciliation["asset_residuals"][0]),
+                {**deepcopy(reconciliation["asset_residuals"][0]), "residual_atoms": "1"},
+                deepcopy(reconciliation["asset_residuals"][1]),
+            ],
+        }
+    )
+    duplicate_accounts = deepcopy(reconciliation)
+    duplicate_accounts.update(
+        {
+            "status": "KILLED",
+            "reason_codes": ["RECONCILIATION_ACCOUNT_RESIDUAL", "RECONCILIATION_MISMATCH"],
+            "kill_latched": True,
+            "account_residuals": [
+                {"asset_mint": BASE_MINT, "account": "POSITION_AVAILABLE", "residual_atoms": "0"},
+                {"asset_mint": BASE_MINT, "account": "POSITION_AVAILABLE", "residual_atoms": "1"},
+            ],
+        }
+    )
+    equal_integrity = deepcopy(reconciliation)
+    footprint = _digest("equal-integrity-footprint")
+    equal_integrity.update(
+        {
+            "status": "KILLED",
+            "reconciliation_kind": "MODEL_ATTEMPT_INTEGRITY",
+            "reason_codes": ["RECONCILIATION_MODEL_ATTEMPT_INTEGRITY", "RECONCILIATION_MISMATCH"],
+            "portfolio_state_after_id": reconciliation["portfolio_state_before_id"],
+            "causation_ids": sorted(_digest(f"integrity-cause-{index}") for index in range(4)),
+            "integrity_validation_attempt_key_sha256": _digest("integrity-attempt-key"),
+            "integrity_expected_footprint_sha256": footprint,
+            "integrity_observed_footprint_sha256": footprint,
+            "integrity_ledger_head_before_check_id": _digest("integrity-ledger-head"),
+            "kill_latched": True,
+        }
+    )
+    phantom_residual_code = _reseal(
+        {
+            **reconciliation,
+            "status": "KILLED",
+            "reason_codes": ["RECONCILIATION_ACCOUNT_RESIDUAL", "RECONCILIATION_MISMATCH"],
+            "kill_latched": True,
+        }
+    )
+    missing_asset_code = deepcopy(reconciliation)
+    missing_asset_code.update(
+        {
+            "status": "KILLED",
+            "reason_codes": ["RECONCILIATION_ACCOUNT_RESIDUAL", "RECONCILIATION_MISMATCH"],
+            "asset_residuals": [
+                {**deepcopy(reconciliation["asset_residuals"][0]), "residual_atoms": "1"},
+                deepcopy(reconciliation["asset_residuals"][1]),
+            ],
+            "account_residuals": [{"asset_mint": BASE_MINT, "account": "POSITION_AVAILABLE", "residual_atoms": "1"}],
+            "kill_latched": True,
+        }
+    )
+    for mutation in (
+        wrong_special_owner,
+        invalid_genesis,
+        invalid_terminal_promotion,
+        _reseal(duplicate_assets),
+        _reseal(duplicate_accounts),
+        _reseal(equal_integrity),
+        phantom_residual_code,
+        _reseal(missing_asset_code),
+    ):
+        _assert_invalid(mutation, resolver=resolver)
+
+    run = vector.documents["trading.run-receipt/v1"]
+    duplicate_scopes = _reseal(
+        {
+            **run,
+            "model_signal_mode": "CACHED_FIXTURES",
+            "model_registry_sha256": _digest("duplicate-scope-registry"),
+            "model_signal_manifest_sha256": _digest("duplicate-scope-manifest"),
+            "model_decision_budget_ns": "2",
+            "selected_model_scopes": [
+                {
+                    "market_id": MARKET_ID,
+                    "decision_sequence": "1",
+                    "horizon_ns": "1",
+                    "producer_scope_key_sha256": _digest("duplicate-scope-a"),
+                },
+                {
+                    "market_id": MARKET_ID,
+                    "decision_sequence": "1",
+                    "horizon_ns": "2",
+                    "producer_scope_key_sha256": _digest("duplicate-scope-b"),
+                },
+            ],
+        }
+    )
+    _assert_invalid(duplicate_scopes, resolver=resolver)
+
+    benchmark = vector.documents["trading.benchmark-receipt/v1"]
+    _assert_invalid(
+        _reseal({**benchmark, "reason_codes": ["BENCHMARK_GATE_FAILED"]}),
+        resolver=resolver,
+    )
+    process_row = {
+        "case_id": "latency-core",
+        "repetition_index": "0",
+        "terminal_status": "PROCESS_FAILED",
+        "run_receipt_id": run["run_receipt_id"],
+        "ledger_root_id": None,
+        "failure_receipt_id": None,
+        "execution_quarantine_receipt_id": None,
+        "process_failure_code": "LAUNCH_FAILED",
+        "process_exit_code": "1",
+        "stdout_sha256": _digest("launch-stdout"),
+        "stderr_sha256": _digest("launch-stderr"),
+        "output_sha256": _digest("launch-output"),
+        "measurement_artifact_sha256": vector.documents["trading.benchmark-measurement/v1"]["benchmark_measurement_id"],
+    }
+    scheduled_benchmark = {
+        **benchmark,
+        "status": "FAIL",
+        "reason_codes": ["BENCHMARK_RUN_FAILED"],
+        "benchmark_manifest_sha256": _digest("scheduled-manifest"),
+        "preregistered_thresholds_sha256": _digest("scheduled-thresholds"),
+        "hardware_profile_sha256": _digest("scheduled-hardware"),
+        "metrics_artifact_sha256": _digest("scheduled-metrics"),
+        "run_outputs": [process_row],
+    }
+    launch_with_exit = _reseal(scheduled_benchmark)
+    nonzero_without_exit = _reseal(
+        {
+            **scheduled_benchmark,
+            "run_outputs": [{**process_row, "process_failure_code": "NONZERO_EXIT", "process_exit_code": None}],
+        }
+    )
+    nonzero_with_zero_exit = _reseal(
+        {
+            **scheduled_benchmark,
+            "run_outputs": [{**process_row, "process_failure_code": "NONZERO_EXIT", "process_exit_code": "0"}],
+        }
+    )
+    for mutation in (launch_with_exit, nonzero_without_exit, nonzero_with_zero_exit):
+        _assert_invalid(mutation, resolver=resolver)
+
+    long_identity = "x" * 257
+    long_run = _reseal(
+        {
+            **run,
+            "os_name": long_identity,
+            "tool_versions": [{"name": long_identity, "version": long_identity}],
+        }
+    )
+    long_measurement = _reseal(
+        {
+            **vector.documents["trading.benchmark-measurement/v1"],
+            "case_id": long_identity,
+        }
+    )
+    assert not _issues(long_run, resolver=resolver)
+    assert not _issues(long_measurement, resolver=resolver)
+
 
 def test_supporting_self_ids_recompute() -> None:
     """T01 already owns the exact supporting ID inventory and hash omission rule."""

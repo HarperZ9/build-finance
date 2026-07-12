@@ -120,6 +120,42 @@ MODEL_VALIDATION_REASON_PRECEDENCE = (
     "SIG_UNCERTAIN_OR_OOD",
     "SIG_DRIFT_DISABLED",
 )
+RECONCILIATION_REASON_PRECEDENCE = (
+    "RECONCILIATION_IDEMPOTENCY_CONFLICT",
+    "RECONCILIATION_MODEL_ATTEMPT_INTEGRITY",
+    "RECONCILIATION_EXECUTION_TRANSITION_INTEGRITY",
+    "RECONCILIATION_ARITHMETIC_RANGE",
+    "RECONCILIATION_ACCOUNT_RESIDUAL",
+    "RECONCILIATION_ASSET_RESIDUAL",
+    "RECONCILIATION_PNL_RESIDUAL",
+    "RECONCILIATION_FEE_RESIDUAL",
+    "RECONCILIATION_EQUITY_RESIDUAL",
+    "RECONCILIATION_RESERVATION_RESIDUAL",
+    "RECONCILIATION_INTENT_CARDINALITY",
+    "RECONCILIATION_INTENT_RESERVATION_BIJECTION",
+    "RECONCILIATION_ABSOLUTE_STATE_INVARIANT",
+    "RECONCILIATION_RUN_END_UNCLOSED",
+    "RECONCILIATION_MISMATCH",
+)
+BENCHMARK_REASON_PRECEDENCE = (
+    "BENCHMARK_FIXTURE_NOT_ADMITTED",
+    "BENCHMARK_CONFIG_INVALID",
+    "BENCHMARK_RUN_CLOSURE_FAILED",
+    "BENCHMARK_PREREGISTRATION_MISSING",
+    "BENCHMARK_RUN_FAILED",
+    "BENCHMARK_METRICS_INVALID",
+    "BENCHMARK_REPRODUCIBILITY_FAILED",
+    "BENCHMARK_GATE_FAILED",
+)
+BENCHMARK_RANGE_FIELD_PRECEDENCE = (
+    "MEASURED_WALL_DURATION",
+    "PROCESS_CPU_TIME",
+    "WALL_DURATION",
+    "PEAK_RSS_BYTES",
+    "ALLOCATION_COUNT",
+    "INPUT_BYTES",
+    "OUTPUT_BYTES",
+)
 _MAX_RUN_CLOSURE_PROOF_ROWS_V0 = 1_000_000
 _Q18_UNIT = 1_000_000_000_000_000_000
 
@@ -135,6 +171,16 @@ def _u64(value: object) -> int | None:
         return parse_bounded_decimal_string(value, minimum=0, maximum=_MAX_U64)
     except ValueError:
         return None
+
+
+def _uint(value: object) -> int | None:
+    if not isinstance(value, str) or not value or (value != "0" and value.startswith("0")) or not value.isascii():
+        return None
+    if any(character < "0" or character > "9" for character in value):
+        return None
+    if len(value) > len(str(_MAX_U64)):
+        return _MAX_U64 + 1
+    return int(value)
 
 
 def _i128(value: object) -> int | None:
@@ -3001,6 +3047,765 @@ def validate_model_validation_receipt_semantics(
     return tuple(issues)
 
 
+def validate_reconciliation_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate reconciliation status, residual, ordering, and evidence-group shapes."""
+    issues: list[ValidationIssue] = []
+    reason_codes, reason_issues = _check_reason_order(
+        document["reason_codes"],
+        RECONCILIATION_REASON_PRECEDENCE,
+        path=("reason_codes",),
+    )
+    issues.extend(reason_issues)
+    status = document["status"]
+    kind = document["reconciliation_kind"]
+    if status == "PASS":
+        if reason_codes:
+            issues.append(_issue("semantic_reconciliation_status", ("reason_codes",), "PASS requires no reasons"))
+    else:
+        if len(reason_codes) < 2 or reason_codes[-1] != "RECONCILIATION_MISMATCH":
+            issues.append(
+                _issue(
+                    "semantic_reconciliation_status",
+                    ("reason_codes",),
+                    "KILLED requires a nonempty reason tuple ending in RECONCILIATION_MISMATCH",
+                )
+            )
+        if document["kill_latched"] is not True:
+            issues.append(_issue("semantic_kill_latch", ("kill_latched",), "KILLED must latch the kill state"))
+    if kind in ("GENESIS", "TERMINAL_KILL_PROMOTION") and status != "PASS":
+        issues.append(_issue("semantic_reconciliation_kind", ("status",), f"{kind} must pass"))
+    if kind in ("RISK_KILL", "TERMINAL_KILL_PROMOTION") and document["kill_latched"] is not True:
+        issues.append(_issue("semantic_kill_latch", ("kill_latched",), f"{kind} must retain the kill latch"))
+    special_reasons = {
+        "IDEMPOTENCY_CONFLICT": (
+            "RECONCILIATION_IDEMPOTENCY_CONFLICT",
+            "RECONCILIATION_MISMATCH",
+        ),
+        "MODEL_ATTEMPT_INTEGRITY": (
+            "RECONCILIATION_MODEL_ATTEMPT_INTEGRITY",
+            "RECONCILIATION_MISMATCH",
+        ),
+        "EXECUTION_TRANSITION_INTEGRITY": (
+            "RECONCILIATION_EXECUTION_TRANSITION_INTEGRITY",
+            "RECONCILIATION_MISMATCH",
+        ),
+        "ARITHMETIC_RANGE": (
+            "RECONCILIATION_ARITHMETIC_RANGE",
+            "RECONCILIATION_MISMATCH",
+        ),
+    }
+    expected_special = special_reasons.get(str(kind))
+    if expected_special is not None and (status != "KILLED" or reason_codes != expected_special):
+        issues.append(
+            _issue(
+                "semantic_reconciliation_kind",
+                ("reason_codes",),
+                f"{kind} requires its exact terminal reason tuple",
+            )
+        )
+    if (
+        kind == "FINAL_GATE"
+        and status == "KILLED"
+        and reason_codes
+        != (
+            "RECONCILIATION_RUN_END_UNCLOSED",
+            "RECONCILIATION_MISMATCH",
+        )
+    ):
+        issues.append(
+            _issue("semantic_reconciliation_kind", ("reason_codes",), "killed FINAL_GATE has one exact reason tuple")
+        )
+    owner_by_reason = {
+        "RECONCILIATION_IDEMPOTENCY_CONFLICT": "IDEMPOTENCY_CONFLICT",
+        "RECONCILIATION_MODEL_ATTEMPT_INTEGRITY": "MODEL_ATTEMPT_INTEGRITY",
+        "RECONCILIATION_EXECUTION_TRANSITION_INTEGRITY": "EXECUTION_TRANSITION_INTEGRITY",
+        "RECONCILIATION_ARITHMETIC_RANGE": "ARITHMETIC_RANGE",
+        "RECONCILIATION_RUN_END_UNCLOSED": "FINAL_GATE",
+        "RECONCILIATION_INTENT_CARDINALITY": "GROUP_GATE",
+        "RECONCILIATION_INTENT_RESERVATION_BIJECTION": "GROUP_GATE",
+        "RECONCILIATION_ABSOLUTE_STATE_INVARIANT": "GROUP_GATE",
+    }
+    for code, owning_kind in owner_by_reason.items():
+        if code in reason_codes and kind != owning_kind:
+            issues.append(_issue("semantic_reason_owner", ("reason_codes",), f"{code} is owned only by {owning_kind}"))
+
+    for field in ("decision_sequence", "ingest_sequence", "equal_time_group", "replay_clock_ns"):
+        value = document[field]
+        if value is not None and _u64(value) is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+    if kind == "GENESIS" and (
+        document["decision_sequence"] is not None
+        or document["ingest_sequence"] != "0"
+        or document["equal_time_group"] != "0"
+        or document["replay_clock_ns"] != "0"
+    ):
+        issues.append(
+            _issue(
+                "semantic_genesis_coordinates",
+                ("reconciliation_kind",),
+                "GENESIS has null decision and zero boundary coordinates",
+            )
+        )
+    scalar_residual_fields = (
+        "realized_pnl_residual_quote_atoms",
+        "unrealized_pnl_residual_quote_atoms",
+        "fee_residual_quote_atoms",
+        "peak_equity_residual_quote_atoms",
+        "drawdown_residual_bps",
+        "equity_residual_quote_atoms",
+    )
+    scalar_residuals: dict[str, int | None] = {}
+    for field in scalar_residual_fields:
+        parsed = _i128(document[field])
+        scalar_residuals[field] = parsed
+        if parsed is None:
+            issues.append(_issue("semantic_i128", (field,), "residual exceeds the signed-i128 range"))
+        elif status == "PASS" and parsed != 0:
+            issues.append(_issue("semantic_pass_residual", (field,), "PASS requires a zero residual"))
+    unmatched = _u64(document["unmatched_reservation_count"])
+    if unmatched is None:
+        issues.append(_issue("semantic_u64", ("unmatched_reservation_count",), "value exceeds the u64 authority range"))
+    elif status == "PASS" and unmatched != 0:
+        issues.append(
+            _issue(
+                "semantic_pass_residual",
+                ("unmatched_reservation_count",),
+                "PASS requires no unmatched reservation",
+            )
+        )
+
+    causes = document["causation_ids"]
+    assert isinstance(causes, list)
+    if causes != sorted(causes, key=_utf8_sort_key):
+        issues.append(_issue("semantic_causation_order", ("causation_ids",), "causes must be digest-byte sorted"))
+    expected_cause_count = (
+        3
+        if kind in ("FINAL_GATE", "IDEMPOTENCY_CONFLICT")
+        else 4
+        if kind
+        in (
+            "MODEL_ATTEMPT_INTEGRITY",
+            "EXECUTION_TRANSITION_INTEGRITY",
+        )
+        else 1
+    )
+    if len(causes) != expected_cause_count:
+        issues.append(_issue("semantic_causation_count", ("causation_ids",), "cause cardinality does not match kind"))
+
+    asset_values = document["asset_residuals"]
+    account_values = document["account_residuals"]
+    assert isinstance(asset_values, list) and isinstance(account_values, list)
+    asset_rows = [row for row in asset_values if isinstance(row, Mapping)]
+    account_rows = [row for row in account_values if isinstance(row, Mapping)]
+    if asset_rows != sorted(asset_rows, key=lambda row: _utf8_sort_key(str(row["asset_mint"]))):
+        issues.append(_issue("semantic_asset_order", ("asset_residuals",), "asset residuals must be mint sorted"))
+    asset_keys = [str(row["asset_mint"]) for row in asset_rows]
+    if len(asset_keys) != len(set(asset_keys)):
+        issues.append(_issue("semantic_asset_key", ("asset_residuals",), "asset mints must be unique"))
+    if account_rows != sorted(
+        account_rows,
+        key=lambda row: (_utf8_sort_key(str(row["asset_mint"])), _utf8_sort_key(str(row["account"]))),
+    ):
+        issues.append(_issue("semantic_account_order", ("account_residuals",), "account residuals must be key sorted"))
+    account_keys = [(str(row["asset_mint"]), str(row["account"])) for row in account_rows]
+    if len(account_keys) != len(set(account_keys)):
+        issues.append(_issue("semantic_account_key", ("account_residuals",), "asset/account keys must be unique"))
+    for field, rows in (("asset_residuals", asset_rows), ("account_residuals", account_rows)):
+        for index, row in enumerate(rows):
+            residual = _i128(row["residual_atoms"])
+            if residual is None:
+                issues.append(
+                    _issue("semantic_i128", (field, index, "residual_atoms"), "residual exceeds signed-i128 range")
+                )
+            elif status == "PASS" and residual != 0:
+                issues.append(
+                    _issue("semantic_pass_residual", (field, index, "residual_atoms"), "PASS requires zero residuals")
+                )
+
+    derived_residual_codes: set[str] = set()
+    if any(_i128(row["residual_atoms"]) not in (None, 0) for row in account_rows):
+        derived_residual_codes.add("RECONCILIATION_ACCOUNT_RESIDUAL")
+    if any(_i128(row["residual_atoms"]) not in (None, 0) for row in asset_rows):
+        derived_residual_codes.add("RECONCILIATION_ASSET_RESIDUAL")
+    if scalar_residuals["realized_pnl_residual_quote_atoms"] not in (None, 0) or scalar_residuals[
+        "unrealized_pnl_residual_quote_atoms"
+    ] not in (None, 0):
+        derived_residual_codes.add("RECONCILIATION_PNL_RESIDUAL")
+    if scalar_residuals["fee_residual_quote_atoms"] not in (None, 0):
+        derived_residual_codes.add("RECONCILIATION_FEE_RESIDUAL")
+    if any(
+        scalar_residuals[field] not in (None, 0)
+        for field in ("peak_equity_residual_quote_atoms", "drawdown_residual_bps", "equity_residual_quote_atoms")
+    ):
+        derived_residual_codes.add("RECONCILIATION_EQUITY_RESIDUAL")
+    if unmatched not in (None, 0):
+        derived_residual_codes.add("RECONCILIATION_RESERVATION_RESIDUAL")
+    owned_reason_by_kind = {
+        "FINAL_GATE": {"RECONCILIATION_RUN_END_UNCLOSED"},
+        "IDEMPOTENCY_CONFLICT": {"RECONCILIATION_IDEMPOTENCY_CONFLICT"},
+        "MODEL_ATTEMPT_INTEGRITY": {"RECONCILIATION_MODEL_ATTEMPT_INTEGRITY"},
+        "EXECUTION_TRANSITION_INTEGRITY": {"RECONCILIATION_EXECUTION_TRANSITION_INTEGRITY"},
+        "ARITHMETIC_RANGE": {"RECONCILIATION_ARITHMETIC_RANGE"},
+    }
+    owned_reasons = set(owned_reason_by_kind.get(str(kind), set()))
+    if kind == "GROUP_GATE":
+        owned_reasons.update(
+            code
+            for code in (
+                "RECONCILIATION_INTENT_CARDINALITY",
+                "RECONCILIATION_INTENT_RESERVATION_BIJECTION",
+                "RECONCILIATION_ABSOLUTE_STATE_INVARIANT",
+            )
+            if code in reason_codes
+        )
+    if status == "KILLED":
+        applicable = derived_residual_codes | owned_reasons
+        expected_reasons = tuple(
+            code for code in RECONCILIATION_REASON_PRECEDENCE if code in applicable or code == "RECONCILIATION_MISMATCH"
+        )
+        if reason_codes != expected_reasons:
+            issues.append(
+                _issue(
+                    "semantic_residual_reasons",
+                    ("reason_codes",),
+                    "reason codes must exactly match locally observable residuals and kind-owned invariants",
+                )
+            )
+
+    grouped_fields = {
+        "IDEMPOTENCY_CONFLICT": (
+            "idempotency_conflict_scope",
+            "idempotency_key_sha256",
+            "original_object_id",
+            "conflicting_body_sha256",
+        ),
+        "MODEL_ATTEMPT_INTEGRITY": ("integrity_validation_attempt_key_sha256",),
+        "EXECUTION_TRANSITION_INTEGRITY": ("integrity_transition_key_sha256",),
+        "ARITHMETIC_RANGE": (
+            "arithmetic_range_key_sha256",
+            "arithmetic_operands_sha256",
+            "arithmetic_operation",
+        ),
+    }
+    integrity_fields = (
+        "integrity_expected_footprint_sha256",
+        "integrity_observed_footprint_sha256",
+        "integrity_ledger_head_before_check_id",
+    )
+    for owning_kind, fields in grouped_fields.items():
+        for field in fields:
+            if (kind == owning_kind) != (document[field] is not None):
+                issues.append(
+                    _issue("semantic_evidence_group", (field,), f"{field} is non-null exactly for {owning_kind}")
+                )
+    integrity_kind = kind in ("MODEL_ATTEMPT_INTEGRITY", "EXECUTION_TRANSITION_INTEGRITY")
+    for field in integrity_fields:
+        if integrity_kind != (document[field] is not None):
+            issues.append(_issue("semantic_evidence_group", (field,), "integrity footprint fields are all-or-none"))
+    if (
+        integrity_kind
+        and document["integrity_expected_footprint_sha256"] == document["integrity_observed_footprint_sha256"]
+    ):
+        issues.append(
+            _issue(
+                "semantic_integrity_difference",
+                ("integrity_observed_footprint_sha256",),
+                "integrity failure requires different expected and observed footprints",
+            )
+        )
+    no_promotion_kinds = {
+        "GENESIS",
+        "GROUP_GATE",
+        "FINAL_GATE",
+        "IDEMPOTENCY_CONFLICT",
+        "MODEL_ATTEMPT_INTEGRITY",
+        "EXECUTION_TRANSITION_INTEGRITY",
+        "ARITHMETIC_RANGE",
+    }
+    if kind in no_promotion_kinds and document["portfolio_state_before_id"] != document["portfolio_state_after_id"]:
+        issues.append(_issue("semantic_state_identity", ("portfolio_state_after_id",), f"{kind} requires before=after"))
+    if (
+        kind == "TERMINAL_KILL_PROMOTION"
+        and document["portfolio_state_before_id"] == document["portfolio_state_after_id"]
+    ):
+        issues.append(
+            _issue(
+                "semantic_state_identity",
+                ("portfolio_state_after_id",),
+                "TERMINAL_KILL_PROMOTION must promote a distinct protective state",
+            )
+        )
+    exact_zero_kinds = {
+        "GENESIS",
+        "IDEMPOTENCY_CONFLICT",
+        "MODEL_ATTEMPT_INTEGRITY",
+        "EXECUTION_TRANSITION_INTEGRITY",
+        "ARITHMETIC_RANGE",
+        "TERMINAL_KILL_PROMOTION",
+    }
+    if kind in exact_zero_kinds and (
+        asset_rows or account_rows or unmatched != 0 or any(value != 0 for value in scalar_residuals.values())
+    ):
+        issues.append(
+            _issue(
+                "semantic_zero_shape",
+                ("reconciliation_kind",),
+                f"{kind} requires empty touched rows and exact zero scalar residuals",
+            )
+        )
+    return tuple(issues)
+
+
+def validate_run_receipt_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate local run-input ordering, mode, schedule, and public-seed shape."""
+    issues: list[ValidationIssue] = []
+    parsed: dict[str, int] = {}
+    for field in ("replay_tick_ns", "model_decision_budget_ns", "terminal_equal_time_group"):
+        value = _u64(document[field])
+        if value is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+        else:
+            parsed[field] = value
+    if parsed.get("replay_tick_ns") == 0:
+        issues.append(_issue("semantic_replay_tick", ("replay_tick_ns",), "replay tick must be positive"))
+    if parsed.get("terminal_equal_time_group") == 0:
+        issues.append(
+            _issue("semantic_terminal_group", ("terminal_equal_time_group",), "terminal group must be one-based")
+        )
+
+    source_values = document["source_admission_receipt_ids"]
+    assert isinstance(source_values, list)
+    if source_values != sorted(source_values, key=_utf8_sort_key):
+        issues.append(
+            _issue("semantic_source_order", ("source_admission_receipt_ids",), "source IDs must be digest-byte sorted")
+        )
+
+    scope_values = document["selected_model_scopes"]
+    assert isinstance(scope_values, list)
+    scopes = [row for row in scope_values if isinstance(row, Mapping)]
+    scope_keys: list[tuple[int, bytes]] = []
+    for index, row in enumerate(scopes):
+        decision = _u64(row["decision_sequence"])
+        horizon = _u64(row["horizon_ns"])
+        if decision is None or decision == 0:
+            issues.append(
+                _issue(
+                    "semantic_model_scope",
+                    ("selected_model_scopes", index, "decision_sequence"),
+                    "selected decision must be positive u64",
+                )
+            )
+        if horizon is None:
+            issues.append(
+                _issue(
+                    "semantic_u64",
+                    ("selected_model_scopes", index, "horizon_ns"),
+                    "horizon exceeds the u64 authority range",
+                )
+            )
+        if decision is not None:
+            scope_keys.append((decision, _utf8_sort_key(str(row["market_id"]))))
+    if scope_keys != sorted(scope_keys):
+        issues.append(
+            _issue("semantic_model_scope_order", ("selected_model_scopes",), "scopes must be numeric-decision sorted")
+        )
+    if len(scope_keys) != len(set(scope_keys)):
+        issues.append(
+            _issue(
+                "semantic_model_scope_key",
+                ("selected_model_scopes",),
+                "each decision/market scope key must be unique",
+            )
+        )
+
+    group_values = document["availability_groups"]
+    assert isinstance(group_values, list)
+    groups = [row for row in group_values if isinstance(row, Mapping)]
+    previous_slot = 0
+    previous_cutoff = -1
+    for index, row in enumerate(groups, start=1):
+        slot = _u64(row["availability_slot"])
+        group = _u64(row["equal_time_group"])
+        cutoff = _u64(row["admission_cutoff"])
+        if slot is None or group is None or cutoff is None:
+            issues.append(_issue("semantic_u64", ("availability_groups", index - 1), "schedule values must fit u64"))
+            continue
+        if slot <= previous_slot or group != index or cutoff < previous_cutoff:
+            issues.append(
+                _issue(
+                    "semantic_availability_schedule",
+                    ("availability_groups", index - 1),
+                    "slots increase, groups are contiguous, and cutoffs never decrease",
+                )
+            )
+        previous_slot = slot
+        previous_cutoff = cutoff
+
+    tool_values = document["tool_versions"]
+    assert isinstance(tool_values, list)
+    tool_rows = [row for row in tool_values if isinstance(row, Mapping)]
+    tool_names = [str(row["name"]) for row in tool_rows]
+    if len(tool_names) != len(set(tool_names)) or tool_names != sorted(tool_names, key=_utf8_sort_key):
+        issues.append(_issue("semantic_tool_order", ("tool_versions",), "tool names must be unique and UTF-8 sorted"))
+
+    mode = document["model_signal_mode"]
+    registry_id = document["model_registry_sha256"]
+    manifest_id = document["model_signal_manifest_sha256"]
+    budget = parsed.get("model_decision_budget_ns")
+    tick = parsed.get("replay_tick_ns")
+    if mode == "DISABLED":
+        if registry_id is not None or manifest_id is not None or scopes or budget != 0:
+            issues.append(
+                _issue(
+                    "semantic_model_mode",
+                    ("model_signal_mode",),
+                    "disabled mode has null IDs, no scopes, and zero budget",
+                )
+            )
+    elif (
+        registry_id is None
+        or manifest_id is None
+        or not scopes
+        or budget is None
+        or tick is None
+        or not 0 < budget < tick
+    ):
+        issues.append(
+            _issue(
+                "semantic_model_mode",
+                ("model_signal_mode",),
+                "cached mode requires both IDs, scopes, and a positive sub-tick budget",
+            )
+        )
+
+    seed_hex = document["public_seed_hex"]
+    assert isinstance(seed_hex, str)
+    try:
+        seed_bytes = bytes.fromhex(seed_hex)
+    except ValueError:
+        seed_bytes = b""
+    if (
+        len(seed_bytes) != 32
+        or seed_bytes.hex() != seed_hex
+        or sha256_hex(seed_bytes) != document["public_seed_sha256"]
+    ):
+        issues.append(
+            _issue("semantic_public_seed", ("public_seed_hex",), "seed hex must decode to and hash the exact 32 bytes")
+        )
+    return tuple(issues)
+
+
+def validate_benchmark_measurement_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate retained sample arrays and the total raw-counter range mapping."""
+    issues: list[ValidationIssue] = []
+    phase_order = ("admission", "feature", "risk", "fill", "accounting", "end_to_end")
+    phase_units = {
+        "admission": "RAW_EVENT",
+        "feature": "FEATURE_SNAPSHOT",
+        "risk": "RISK_DECISION",
+        "fill": "SIMULATED_FILL_RECEIPT",
+        "accounting": "RECONCILIATION_RECEIPT",
+        "end_to_end": "EQUAL_TIME_GROUP",
+    }
+    phase_values = document["phase_samples"]
+    assert isinstance(phase_values, list)
+    phase_rows = [row for row in phase_values if isinstance(row, Mapping)]
+    if tuple(row.get("phase") for row in phase_rows) != phase_order:
+        issues.append(_issue("semantic_phase_order", ("phase_samples",), "phase rows must use the fixed order"))
+    for index, row in enumerate(phase_rows):
+        phase = row.get("phase")
+        if isinstance(phase, str) and row.get("unit") != phase_units.get(phase):
+            issues.append(
+                _issue("semantic_phase_unit", ("phase_samples", index, "unit"), "phase work unit is not canonical")
+            )
+        samples = row.get("samples_ns")
+        assert isinstance(samples, list)
+        sample_count = _u64(row.get("sample_count"))
+        if sample_count != len(samples):
+            issues.append(
+                _issue(
+                    "semantic_sample_count",
+                    ("phase_samples", index, "sample_count"),
+                    "sample_count must equal the retained sample-array length",
+                )
+            )
+        for sample_index, sample in enumerate(samples):
+            if _u64(sample) is None:
+                issues.append(
+                    _issue(
+                        "semantic_u64",
+                        ("phase_samples", index, "samples_ns", sample_index),
+                        "individual timer sample exceeds the u64 authority range",
+                    )
+                )
+
+    if len(phase_rows) == len(phase_order):
+        admission_count = _u64(phase_rows[0].get("sample_count"))
+        end_to_end_count = _u64(phase_rows[-1].get("sample_count"))
+        if admission_count != _u64(document["measured_event_count"]):
+            issues.append(
+                _issue(
+                    "semantic_measurement_census",
+                    ("phase_samples", 0, "sample_count"),
+                    "admission samples must equal measured_event_count",
+                )
+            )
+        if end_to_end_count != _u64(document["measured_group_count"]):
+            issues.append(
+                _issue(
+                    "semantic_measurement_census",
+                    ("phase_samples", 5, "sample_count"),
+                    "end-to-end samples must equal measured_group_count",
+                )
+            )
+
+    raw_values = document["raw_counters"]
+    assert isinstance(raw_values, list)
+    raw_rows = [row for row in raw_values if isinstance(row, Mapping)]
+    if tuple(row.get("counter") for row in raw_rows) != BENCHMARK_RANGE_FIELD_PRECEDENCE:
+        issues.append(_issue("semantic_counter_order", ("raw_counters",), "raw counters must use fixed precedence"))
+    raw_by_counter = {str(row.get("counter")): row.get("raw_value") for row in raw_rows}
+
+    if len(phase_rows) == len(phase_order):
+        end_samples = phase_rows[-1].get("samples_ns")
+        assert isinstance(end_samples, list)
+        parsed_end_samples = tuple(_u64(sample) for sample in end_samples)
+        if all(sample is not None for sample in parsed_end_samples):
+            measured_sum = sum(sample for sample in parsed_end_samples if sample is not None)
+            if raw_by_counter.get("MEASURED_WALL_DURATION") != str(measured_sum):
+                issues.append(
+                    _issue(
+                        "semantic_measured_wall",
+                        ("raw_counters", 0, "raw_value"),
+                        "measured wall raw value must equal the unbounded end-to-end sample sum",
+                    )
+                )
+
+    converted_fields = {
+        "MEASURED_WALL_DURATION": "measured_wall_duration_ns",
+        "PROCESS_CPU_TIME": "process_cpu_time_ns",
+        "WALL_DURATION": "wall_duration_ns",
+        "PEAK_RSS_BYTES": "peak_rss_bytes",
+        "ALLOCATION_COUNT": "allocation_count",
+        "INPUT_BYTES": "input_bytes",
+        "OUTPUT_BYTES": "output_bytes",
+    }
+    failed_fields: list[str] = []
+    for counter in BENCHMARK_RANGE_FIELD_PRECEDENCE:
+        raw = raw_by_counter.get(counter)
+        field = converted_fields[counter]
+        if raw is None:
+            if counter != "ALLOCATION_COUNT" or document[field] is not None:
+                issues.append(
+                    _issue("semantic_raw_counter", (field,), "only unsupported allocation count may map null to null")
+                )
+            continue
+        parsed = _uint(raw)
+        if parsed is None:
+            continue
+        if parsed > _MAX_U64:
+            failed_fields.append(counter)
+            if document[field] is not None:
+                issues.append(_issue("semantic_range_mapping", (field,), "out-of-range counter must map to null"))
+        elif document[field] != raw:
+            issues.append(_issue("semantic_range_mapping", (field,), "fitting counter must preserve its exact value"))
+
+    declared_failures = document["range_failure_fields"]
+    assert isinstance(declared_failures, list)
+    if tuple(declared_failures) != tuple(failed_fields):
+        issues.append(
+            _issue(
+                "semantic_range_failures",
+                ("range_failure_fields",),
+                "range failures must be the complete precedence-ordered conversion failures",
+            )
+        )
+    expected_status = "RANGE_FAILED" if failed_fields else "COMPLETE"
+    if document["measurement_status"] != expected_status:
+        issues.append(
+            _issue("semantic_measurement_status", ("measurement_status",), "status must derive from range failures")
+        )
+    expected_first = failed_fields[0] if failed_fields else None
+    if document["first_range_failure"] != expected_first:
+        issues.append(
+            _issue("semantic_first_range_failure", ("first_range_failure",), "first failure must follow precedence")
+        )
+
+    warmup_events = _u64(document["warmup_event_count"])
+    warmup_groups = _u64(document["warmup_group_count"])
+    boundary = document["warmup_through_equal_time_group"]
+    if warmup_events == 0 and warmup_groups == 0:
+        if boundary is not None:
+            issues.append(
+                _issue("semantic_warmup_boundary", ("warmup_through_equal_time_group",), "zero warmup has no boundary")
+            )
+    elif boundary is None:
+        issues.append(
+            _issue("semantic_warmup_boundary", ("warmup_through_equal_time_group",), "warmup requires a boundary")
+        )
+    return tuple(issues)
+
+
+def validate_benchmark_receipt_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate benchmark admission/terminal shape without executing or aggregating a benchmark."""
+    issues: list[ValidationIssue] = []
+    reason_codes, reason_issues = _check_reason_order(
+        document["reason_codes"],
+        BENCHMARK_REASON_PRECEDENCE,
+        path=("reason_codes",),
+    )
+    issues.extend(reason_issues)
+    status = document["status"]
+    sample_count = _u64(document["sample_count"])
+    if sample_count is None:
+        issues.append(_issue("semantic_u64", ("sample_count",), "sample count exceeds the u64 authority range"))
+    output_values = document["run_outputs"]
+    assert isinstance(output_values, list)
+    outputs = [row for row in output_values if isinstance(row, Mapping)]
+    preflight_reasons = frozenset(BENCHMARK_REASON_PRECEDENCE[:4])
+    scheduled_reasons = frozenset(BENCHMARK_REASON_PRECEDENCE[4:])
+    if status == "INELIGIBLE":
+        if (
+            not reason_codes
+            or any(code not in preflight_reasons for code in reason_codes)
+            or sample_count != 0
+            or outputs
+            or document["metrics_artifact_sha256"] is not None
+        ):
+            issues.append(
+                _issue(
+                    "semantic_benchmark_status",
+                    ("status",),
+                    "ineligible receipt has reasons, zero samples, no outputs, and no metrics",
+                )
+            )
+    else:
+        attachment_fields = (
+            "benchmark_manifest_sha256",
+            "preregistered_thresholds_sha256",
+            "hardware_profile_sha256",
+            "metrics_artifact_sha256",
+        )
+        if any(document[field] is None for field in attachment_fields) or not outputs:
+            issues.append(
+                _issue(
+                    "semantic_benchmark_status",
+                    ("status",),
+                    "scheduled receipt requires all validated hashes, metrics, and outputs",
+                )
+            )
+        if status == "PASS" and (reason_codes or sample_count in (None, 0)):
+            issues.append(_issue("semantic_benchmark_status", ("status",), "PASS requires no reasons and samples"))
+        if status == "FAIL" and (not reason_codes or any(code not in scheduled_reasons for code in reason_codes)):
+            issues.append(
+                _issue("semantic_benchmark_status", ("reason_codes",), "FAIL requires scheduled-only reasons")
+            )
+
+    output_keys: list[tuple[bytes, bytes, int]] = []
+    repetitions: dict[tuple[str, str], list[int]] = {}
+    has_failed_run = False
+    for index, row in enumerate(outputs):
+        repetition = _u64(row["repetition_index"])
+        if repetition is None:
+            issues.append(
+                _issue(
+                    "semantic_u64",
+                    ("run_outputs", index, "repetition_index"),
+                    "repetition exceeds the u64 authority range",
+                )
+            )
+            continue
+        case_id = str(row["case_id"])
+        run_id = str(row["run_receipt_id"])
+        output_keys.append((_utf8_sort_key(case_id), _utf8_sort_key(run_id), repetition))
+        repetitions.setdefault((case_id, run_id), []).append(repetition)
+        terminal = row["terminal_status"]
+        has_failed_run = has_failed_run or terminal != "RUN_END"
+        expected_nonnull: set[str]
+        if terminal == "RUN_END":
+            expected_nonnull = {"ledger_root_id"}
+        elif terminal == "KILLED":
+            expected_nonnull = {"failure_receipt_id"}
+        elif terminal == "QUARANTINED":
+            expected_nonnull = {"execution_quarantine_receipt_id"}
+        else:
+            expected_nonnull = {"process_failure_code", "stdout_sha256", "stderr_sha256"}
+        terminal_fields = {
+            "ledger_root_id",
+            "failure_receipt_id",
+            "execution_quarantine_receipt_id",
+            "process_failure_code",
+            "stdout_sha256",
+            "stderr_sha256",
+        }
+        actual_nonnull = {field for field in terminal_fields if row[field] is not None}
+        if actual_nonnull != expected_nonnull:
+            issues.append(
+                _issue(
+                    "semantic_terminal_shape",
+                    ("run_outputs", index),
+                    "terminal-specific fields do not match terminal_status",
+                )
+            )
+        if terminal != "PROCESS_FAILED" and row["process_exit_code"] is not None:
+            issues.append(
+                _issue(
+                    "semantic_terminal_shape",
+                    ("run_outputs", index, "process_exit_code"),
+                    "exit code is process-failure-only",
+                )
+            )
+        if row["process_exit_code"] is not None and _i128(row["process_exit_code"]) is None:
+            issues.append(
+                _issue(
+                    "semantic_i128",
+                    ("run_outputs", index, "process_exit_code"),
+                    "process exit code exceeds signed-i128 range",
+                )
+            )
+        if terminal == "PROCESS_FAILED":
+            failure_code = row["process_failure_code"]
+            exit_code = None if row["process_exit_code"] is None else _i128(row["process_exit_code"])
+            if failure_code == "LAUNCH_FAILED" and (
+                row["process_exit_code"] is not None or row["output_sha256"] != sha256_hex(b"")
+            ):
+                issues.append(
+                    _issue(
+                        "semantic_process_failure",
+                        ("run_outputs", index),
+                        "LAUNCH_FAILED has no exit status and hashes empty functional output",
+                    )
+                )
+            if failure_code == "NONZERO_EXIT" and (exit_code is None or exit_code == 0):
+                issues.append(
+                    _issue(
+                        "semantic_process_failure",
+                        ("run_outputs", index, "process_exit_code"),
+                        "NONZERO_EXIT requires an exact nonzero signed exit status",
+                    )
+                )
+    if output_keys != sorted(output_keys):
+        issues.append(_issue("semantic_run_output_order", ("run_outputs",), "run outputs are not canonically sorted"))
+    if any(values != list(range(len(values))) for values in repetitions.values()):
+        issues.append(
+            _issue("semantic_repetition_sequence", ("run_outputs",), "repetitions must be contiguous from zero")
+        )
+    has_reason = "BENCHMARK_RUN_FAILED" in reason_codes
+    if has_reason != has_failed_run:
+        issues.append(
+            _issue(
+                "semantic_benchmark_run_failure",
+                ("reason_codes",),
+                "BENCHMARK_RUN_FAILED must exactly match non-RUN_END outcomes",
+            )
+        )
+    return tuple(issues)
+
+
 SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.raw-event/v1": validate_raw_event_semantics,
     "trading.feature-snapshot/v1": validate_feature_snapshot_semantics,
@@ -3022,6 +3827,10 @@ SUPPORTING_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.model-registry/v1": validate_model_registry_semantics,
     "trading.model-signal-manifest/v1": validate_model_signal_manifest_semantics,
     "trading.model-validation-receipt/v1": validate_model_validation_receipt_semantics,
+    "trading.reconciliation-receipt/v1": validate_reconciliation_receipt_semantics,
+    "trading.run-receipt/v1": validate_run_receipt_semantics,
+    "trading.benchmark-measurement/v1": validate_benchmark_measurement_semantics,
+    "trading.benchmark-receipt/v1": validate_benchmark_receipt_semantics,
 }
 
 

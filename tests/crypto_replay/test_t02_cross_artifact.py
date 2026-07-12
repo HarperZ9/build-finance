@@ -270,7 +270,7 @@ def _build_cached_model_case(vector: T02Vector) -> tuple[dict[str, Any], Any]:
                     "producer_scope_key_sha256": candidate["requested_producer_scope_key_sha256"],
                 }
             ],
-            "model_decision_budget_ns": "1",
+            "model_decision_budget_ns": "2",
         }
     )
     return cached_run, _make_bundle(
@@ -348,7 +348,7 @@ def test_run_gate_recomputes_model_capacity_and_fixture_tick() -> None:
                     "producer_scope_key_sha256": candidate["requested_producer_scope_key_sha256"],
                 }
             ],
-            "model_decision_budget_ns": "1",
+            "model_decision_budget_ns": "2",
         }
     )
     cached_bundle = _make_bundle(
@@ -448,11 +448,56 @@ def test_run_input_gate_recomputes_normalized_event_set_from_bodies() -> None:
     changed_root = derive_normalized_event_set(changed_bundle)
     assert canonical_json_bytes(changed_root) != canonical_json_bytes(reconstructed)
     _assert_rejected(vector, bundle=changed_bundle)
+
+    invalid_event_sets: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    duplicate_ingest = _reseal({**vector.raw_events[1], "ingest_sequence": "1"})
+    invalid_event_sets.append((vector.raw_events[0], duplicate_ingest))
+    gapped_ingest = _reseal({**vector.raw_events[1], "ingest_sequence": "3"})
+    invalid_event_sets.append((vector.raw_events[0], gapped_ingest))
+    swapped_ingest_first = _reseal({**vector.raw_events[0], "ingest_sequence": "2"})
+    swapped_ingest_second = _reseal({**vector.raw_events[1], "ingest_sequence": "1"})
+    invalid_event_sets.append((swapped_ingest_first, swapped_ingest_second))
+    swapped_source_first = _reseal({**vector.raw_events[0], "source_sequence": "2"})
+    swapped_source_second = _reseal({**vector.raw_events[1], "source_sequence": "1"})
+    invalid_event_sets.append((swapped_source_first, swapped_source_second))
+    wrong_fixture_event = _reseal({**vector.raw_events[0], "fixture_manifest_sha256": _digest("wrong-event-fixture")})
+    invalid_event_sets.append((wrong_fixture_event, vector.raw_events[1]))
+    wrong_source_event = _reseal({**vector.raw_events[0], "source_admission_receipt_id": _digest("wrong-event-source")})
+    invalid_event_sets.append((wrong_source_event, vector.raw_events[1]))
+    wrong_payload_event = _reseal({**vector.raw_events[0], "raw_payload_sha256": _digest("wrong-event-payload")})
+    invalid_event_sets.append((wrong_payload_event, vector.raw_events[1]))
+    wrong_decimals_event = _reseal({**vector.raw_events[0], "base_decimals": 8})
+    invalid_event_sets.append((wrong_decimals_event, vector.raw_events[1]))
+    wrong_market_event = _reseal({**vector.raw_events[0], "market_id": "undeclared/market:jupiter"})
+    invalid_event_sets.append((wrong_market_event, vector.raw_events[1]))
+    wrong_group_event = _reseal({**vector.raw_events[1], "equal_time_group": "1"})
+    invalid_event_sets.append((vector.raw_events[0], wrong_group_event))
+    wrong_clock_event = _reseal({**vector.raw_events[1], "replay_clock_ns": "0"})
+    invalid_event_sets.append((vector.raw_events[0], wrong_clock_event))
+    for events in invalid_event_sets:
+        with pytest.raises(ValueError):
+            derive_normalized_event_set(replace(bundle, normalized_events=events))
+
+    with pytest.raises(ValueError):
+        derive_normalized_event_set(
+            replace(
+                bundle,
+                source_admission_receipts=(vector.source_receipts[0],),
+                normalized_events=(vector.raw_events[0],),
+            )
+        )
+
     dropped_bundle = replace(bundle, normalized_events=(vector.raw_events[0],))
-    dropped_root = derive_normalized_event_set(dropped_bundle)
-    assert dropped_root["raw_event_count"] == "1"
+    with pytest.raises(ValueError):
+        derive_normalized_event_set(dropped_bundle)
     _assert_rejected(vector, bundle=dropped_bundle)
 
+    dropped_root = {
+        "schema": "trading.normalized-event-set/v1",
+        "fixture_manifest_sha256": vector.documents["trading.fixture-manifest/v1"]["fixture_manifest_sha256"],
+        "raw_event_count": "1",
+        "event_ids": [vector.raw_events[0]["event_id"]],
+    }
     dropped_digest = sha256_hex(canonical_json_bytes(dropped_root))
     changed_counter = {
         **vector.attachments["trading.counter-capacity/v1"],
@@ -511,6 +556,11 @@ def _config_mode_case(
             "raw_byte_length": "0" if raw_bytes is None else str(len(raw_bytes)),
         }
     )
+    availability_schedule = {
+        **deepcopy(vector.attachments["trading.availability-schedule/v1"]),
+        "config_admission_receipt_id": config_receipt["config_admission_receipt_id"],
+    }
+    availability_digest = sha256_hex(canonical_json_bytes(availability_schedule))
     closure = _reseal(
         {
             **vector.documents["trading.run-closure-receipt/v1"],
@@ -518,6 +568,7 @@ def _config_mode_case(
             "reason_codes": [],
             "config_admission_receipt_id": config_receipt["config_admission_receipt_id"],
             "validated_config_sha256": None,
+            "availability_schedule_sha256": availability_digest,
             "terminal_equal_time_group": "2",
             "proof_row_limit": None,
             "proof_row_count_total": "0",
@@ -530,6 +581,7 @@ def _config_mode_case(
             **vector.documents["trading.run-receipt/v1"],
             "config_admission_receipt_id": config_receipt["config_admission_receipt_id"],
             "validated_config_sha256": None,
+            "availability_schedule_sha256": availability_digest,
             "run_closure_receipt_id": closure["run_closure_receipt_id"],
         }
     )
@@ -539,6 +591,7 @@ def _config_mode_case(
         replay_risk_config=None,
         raw_config_bytes=raw_bytes,
         run_closure_receipt=closure,
+        availability_schedule=availability_schedule,
     )
 
 
@@ -601,7 +654,6 @@ def test_run_input_oracle_binds_canonical_availability_schedule() -> None:
 
     config_cases = (
         ("MISSING", None),
-        ("INVALID", b""),
         ("INVALID", b"SYNTHETIC INVALID CONFIG BYTES\n"),
         ("VALID", vector.raw_config_bytes),
     )
@@ -628,7 +680,10 @@ def test_run_input_oracle_binds_canonical_availability_schedule() -> None:
         run_receipt=missing_run,
         bundle=replace(missing_bundle, raw_config_bytes=b""),
     )
-    invalid_run, invalid_bundle = built_cases[("INVALID", b"")]
+    empty_invalid_run, empty_invalid_bundle = _config_mode_case(vector, status="INVALID", raw_bytes=b"")
+    _assert_rejected(vector, run_receipt=empty_invalid_run, bundle=empty_invalid_bundle)
+    invalid_bytes = b"SYNTHETIC INVALID CONFIG BYTES\n"
+    invalid_run, invalid_bundle = built_cases[("INVALID", invalid_bytes)]
     _assert_rejected(
         vector,
         run_receipt=invalid_run,

@@ -358,14 +358,14 @@ def test_counter_capacity_preflight_is_total() -> None:
     }
     assert derive_from_retained(replace(bundle, counter_capacity=caller_counts)) == retained
 
-    one_event = derive_from_retained(replace(bundle, normalized_events=(vector.raw_events[0],)))
-    assert one_event["raw_event_count"] == "1"
-    assert one_event["ledger_sequence_next_upper_bound"] == "42"
+    # Task 9 predecessor-test correction: retained graph derivation is fail-closed,
+    # so dropping one admitted source's event cannot become a smaller valid run.
+    with pytest.raises(ValueError):
+        derive_from_retained(replace(bundle, normalized_events=(vector.raw_events[0],)))
     one_group_schedule = deepcopy(vector.attachments["trading.availability-schedule/v1"])
     one_group_schedule["availability_groups"] = one_group_schedule["availability_groups"][:1]
     one_group = derive_from_retained(replace(bundle, availability_schedule=one_group_schedule))
-    assert one_group["availability_group_count"] == "1"
-    assert one_group["decision_attempt_upper_bound"] == "1"
+    assert one_group == retained
 
     totalize_counts = _future_symbol(
         "build_finance.crypto_replay.run_inputs",
@@ -380,6 +380,16 @@ def test_counter_capacity_preflight_is_total() -> None:
         "model_candidate_count": 0,
         "model_signal_mode": "DISABLED",
     }
+    one_event_group = totalize_counts(
+        **{
+            **common_counts,
+            "raw_event_count": 1,
+            "availability_group_count": 1,
+        }
+    )
+    assert one_event_group["raw_event_count"] == "1"
+    assert one_event_group["availability_group_count"] == "1"
+    assert one_event_group["decision_attempt_upper_bound"] == "1"
     for field, wrong in (
         ("source_admission_count", True),
         ("raw_event_count", -1),

@@ -1273,6 +1273,312 @@ def model_validation_receipt_schema() -> JsonObject:
     )
 
 
+def reconciliation_receipt_schema() -> JsonObject:
+    """Return the closed observational reconciliation receipt schema."""
+    schema_id = "trading.reconciliation-receipt/v1"
+    reason_codes = [
+        "RECONCILIATION_IDEMPOTENCY_CONFLICT",
+        "RECONCILIATION_MODEL_ATTEMPT_INTEGRITY",
+        "RECONCILIATION_EXECUTION_TRANSITION_INTEGRITY",
+        "RECONCILIATION_ARITHMETIC_RANGE",
+        "RECONCILIATION_ACCOUNT_RESIDUAL",
+        "RECONCILIATION_ASSET_RESIDUAL",
+        "RECONCILIATION_PNL_RESIDUAL",
+        "RECONCILIATION_FEE_RESIDUAL",
+        "RECONCILIATION_EQUITY_RESIDUAL",
+        "RECONCILIATION_RESERVATION_RESIDUAL",
+        "RECONCILIATION_INTENT_CARDINALITY",
+        "RECONCILIATION_INTENT_RESERVATION_BIJECTION",
+        "RECONCILIATION_ABSOLUTE_STATE_INVARIANT",
+        "RECONCILIATION_RUN_END_UNCLOSED",
+        "RECONCILIATION_MISMATCH",
+    ]
+    asset_residual = _closed_object(
+        {
+            "asset_mint": _ref("bounded_utf8_registry_string"),
+            "residual_atoms": _ref("i128s"),
+        }
+    )
+    account_residual = _closed_object(
+        {
+            "asset_mint": _ref("bounded_utf8_registry_string"),
+            "account": {"enum": _STATE_BEARING_ACCOUNTS},
+            "residual_atoms": _ref("i128s"),
+        }
+    )
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "reconciliation_receipt_id": _ref("ContentID"),
+            "status": {"enum": ["PASS", "KILLED"]},
+            "reconciliation_kind": {
+                "enum": [
+                    "GENESIS",
+                    "INTENT_RESERVATION",
+                    "FILL_TRANSITION",
+                    "GROUP_MARK",
+                    "RISK_KILL",
+                    "GROUP_GATE",
+                    "FINAL_GATE",
+                    "IDEMPOTENCY_CONFLICT",
+                    "MODEL_ATTEMPT_INTEGRITY",
+                    "EXECUTION_TRANSITION_INTEGRITY",
+                    "ARITHMETIC_RANGE",
+                    "TERMINAL_KILL_PROMOTION",
+                ]
+            },
+            "reason_codes": _array({"enum": reason_codes}, unique=True),
+            "decision_sequence": _nullable_ref("u64s"),
+            "ingest_sequence": _ref("u64s"),
+            "equal_time_group": _ref("u64s"),
+            "replay_clock_ns": _ref("u64s"),
+            "portfolio_state_before_id": _ref("ContentID"),
+            "portfolio_state_after_id": _ref("ContentID"),
+            "causation_ids": _array(_ref("CausalDigest"), unique=True),
+            "asset_residuals": _array(asset_residual, unique=True),
+            "account_residuals": _array(account_residual, unique=True),
+            "realized_pnl_residual_quote_atoms": _ref("i128s"),
+            "unrealized_pnl_residual_quote_atoms": _ref("i128s"),
+            "fee_residual_quote_atoms": _ref("i128s"),
+            "peak_equity_residual_quote_atoms": _ref("i128s"),
+            "drawdown_residual_bps": _ref("i128s"),
+            "equity_residual_quote_atoms": _ref("i128s"),
+            "unmatched_reservation_count": _ref("u64s"),
+            "idempotency_conflict_scope": {"anyOf": [{"enum": ["RISK", "FILL"]}, {"type": "null"}]},
+            "idempotency_key_sha256": _nullable_ref("sha256"),
+            "original_object_id": _nullable_ref("ContentID"),
+            "conflicting_body_sha256": _nullable_ref("sha256"),
+            "integrity_validation_attempt_key_sha256": _nullable_ref("sha256"),
+            "integrity_transition_key_sha256": _nullable_ref("sha256"),
+            "integrity_expected_footprint_sha256": _nullable_ref("sha256"),
+            "integrity_observed_footprint_sha256": _nullable_ref("sha256"),
+            "integrity_ledger_head_before_check_id": _nullable_ref("ContentID"),
+            "arithmetic_range_key_sha256": _nullable_ref("sha256"),
+            "arithmetic_operands_sha256": _nullable_ref("sha256"),
+            "arithmetic_operation": {
+                "anyOf": [
+                    {
+                        "enum": [
+                            "GROUP_MARK_VALUE",
+                            "SUMMARY_EQUITY",
+                            "LEDGER_POSTING",
+                            "RESIDUAL_SERIALIZATION",
+                        ]
+                    },
+                    {"type": "null"},
+                ]
+            },
+            "kill_latched": {"type": "boolean"},
+        },
+    )
+
+
+def run_receipt_schema() -> JsonObject:
+    """Return the closed pre-output run-input receipt schema."""
+    schema_id = "trading.run-receipt/v1"
+    selected_scope = _closed_object(
+        {
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "decision_sequence": _ref("u64s"),
+            "horizon_ns": _ref("u64s"),
+            "producer_scope_key_sha256": _ref("sha256"),
+        }
+    )
+    availability_group = _closed_object(
+        {
+            "availability_slot": _ref("u64s"),
+            "equal_time_group": _ref("u64s"),
+            "admission_cutoff": _ref("u64s"),
+        }
+    )
+    tool_version = _closed_object(
+        {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+        }
+    )
+    source_ids = _array(_ref("ContentID"), unique=True)
+    source_ids["minItems"] = 1
+    availability_groups = _array(availability_group, unique=True)
+    availability_groups["minItems"] = 1
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "schema_bundle_sha256": _ref("sha256"),
+            "admission_code_sha256": _ref("sha256"),
+            "normalization_code_sha256": _ref("sha256"),
+            "availability_grouping_code_sha256": _ref("sha256"),
+            "run_closure_code_sha256": _ref("sha256"),
+            "feature_code_sha256": _ref("sha256"),
+            "baseline_code_sha256": _ref("sha256"),
+            "risk_code_sha256": _ref("sha256"),
+            "fill_code_sha256": _ref("sha256"),
+            "accounting_code_sha256": _ref("sha256"),
+            "benchmark_code_sha256": _ref("sha256"),
+            "public_seed_sha256": _ref("sha256"),
+            "source_tree_sha256": _ref("sha256"),
+            "source_admission_receipt_ids": source_ids,
+            "availability_schedule_sha256": _ref("sha256"),
+            "config_admission_receipt_id": _ref("ContentID"),
+            "validated_config_sha256": _nullable_ref("ContentID"),
+            "run_closure_receipt_id": _ref("ContentID"),
+            "model_registry_sha256": _nullable_ref("ContentID"),
+            "model_signal_manifest_sha256": _nullable_ref("ContentID"),
+            "selected_model_scopes": _array(selected_scope, unique=True),
+            "replay_tick_ns": _ref("u64s"),
+            "model_decision_budget_ns": _ref("u64s"),
+            "model_signal_mode": {"enum": ["DISABLED", "CACHED_FIXTURES"]},
+            "run_end_position_policy": {"enum": ["FORCE_CLOSE_NEXT_EVENT", "LEAVE_MARKED_OPEN"]},
+            "terminal_equal_time_group": _ref("u64s"),
+            "availability_groups": availability_groups,
+            "os_name": {"type": "string", "minLength": 1},
+            "architecture": {"type": "string", "minLength": 1},
+            "runtime_name": {"type": "string", "minLength": 1},
+            "runtime_version": {"type": "string", "minLength": 1},
+            "decimal_version": {"type": "string", "minLength": 1},
+            "jcs_implementation": {"type": "string", "minLength": 1},
+            "jcs_version": {"type": "string", "minLength": 1},
+            "tool_versions": _array(tool_version, unique=True),
+            "public_seed_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        },
+    )
+
+
+_BENCHMARK_RANGE_FIELDS = [
+    "MEASURED_WALL_DURATION",
+    "PROCESS_CPU_TIME",
+    "WALL_DURATION",
+    "PEAK_RSS_BYTES",
+    "ALLOCATION_COUNT",
+    "INPUT_BYTES",
+    "OUTPUT_BYTES",
+]
+
+
+def benchmark_measurement_schema() -> JsonObject:
+    """Return the closed observational benchmark-measurement schema."""
+    schema_id = "trading.benchmark-measurement/v1"
+    raw_counter = _closed_object(
+        {
+            "counter": {"enum": _BENCHMARK_RANGE_FIELDS},
+            "raw_value": {"anyOf": [_ref("uints"), {"type": "null"}]},
+        }
+    )
+    raw_counters = _array(raw_counter, unique=True, maximum=len(_BENCHMARK_RANGE_FIELDS))
+    raw_counters["minItems"] = len(_BENCHMARK_RANGE_FIELDS)
+    phase_sample = _closed_object(
+        {
+            "phase": {"enum": ["admission", "feature", "risk", "fill", "accounting", "end_to_end"]},
+            "unit": {
+                "enum": [
+                    "RAW_EVENT",
+                    "FEATURE_SNAPSHOT",
+                    "RISK_DECISION",
+                    "SIMULATED_FILL_RECEIPT",
+                    "RECONCILIATION_RECEIPT",
+                    "EQUAL_TIME_GROUP",
+                ]
+            },
+            "sample_count": _ref("u64s"),
+            "samples_ns": _array(_ref("u64s")),
+        }
+    )
+    phase_samples = _array(phase_sample, unique=True, maximum=6)
+    phase_samples["minItems"] = 6
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "benchmark_measurement_id": _ref("ContentID"),
+            "measurement_status": {"enum": ["COMPLETE", "RANGE_FAILED"]},
+            "first_range_failure": {"anyOf": [{"enum": _BENCHMARK_RANGE_FIELDS}, {"type": "null"}]},
+            "range_failure_fields": _array(
+                {"enum": _BENCHMARK_RANGE_FIELDS},
+                unique=True,
+                maximum=len(_BENCHMARK_RANGE_FIELDS),
+            ),
+            "raw_counters": raw_counters,
+            "run_receipt_id": _ref("ContentID"),
+            "case_id": {"type": "string", "minLength": 1},
+            "repetition_index": _ref("u64s"),
+            "benchmark_manifest_sha256": _ref("sha256"),
+            "hardware_profile_sha256": _ref("sha256"),
+            "measurement_tool_sha256": _ref("sha256"),
+            "warmup_event_count": _ref("u64s"),
+            "measured_event_count": _ref("u64s"),
+            "warmup_group_count": _ref("u64s"),
+            "measured_group_count": _ref("u64s"),
+            "warmup_through_equal_time_group": _nullable_ref("u64s"),
+            "phase_samples": phase_samples,
+            "measured_wall_duration_ns": _nullable_ref("u64s"),
+            "process_cpu_time_ns": _nullable_ref("u64s"),
+            "wall_duration_ns": _nullable_ref("u64s"),
+            "peak_rss_bytes": _nullable_ref("u64s"),
+            "allocation_count": _nullable_ref("u64s"),
+            "input_bytes": _nullable_ref("u64s"),
+            "output_bytes": _nullable_ref("u64s"),
+        },
+    )
+
+
+def benchmark_receipt_schema() -> JsonObject:
+    """Return the closed benchmark admission/terminal-shape receipt schema."""
+    schema_id = "trading.benchmark-receipt/v1"
+    reason_codes = [
+        "BENCHMARK_FIXTURE_NOT_ADMITTED",
+        "BENCHMARK_CONFIG_INVALID",
+        "BENCHMARK_RUN_CLOSURE_FAILED",
+        "BENCHMARK_PREREGISTRATION_MISSING",
+        "BENCHMARK_RUN_FAILED",
+        "BENCHMARK_METRICS_INVALID",
+        "BENCHMARK_REPRODUCIBILITY_FAILED",
+        "BENCHMARK_GATE_FAILED",
+    ]
+    run_output = _closed_object(
+        {
+            "case_id": {"type": "string", "minLength": 1},
+            "repetition_index": _ref("u64s"),
+            "terminal_status": {"enum": ["RUN_END", "KILLED", "QUARANTINED", "PROCESS_FAILED"]},
+            "run_receipt_id": _ref("ContentID"),
+            "ledger_root_id": _nullable_ref("ContentID"),
+            "failure_receipt_id": _nullable_ref("ContentID"),
+            "execution_quarantine_receipt_id": _nullable_ref("ContentID"),
+            "process_failure_code": {
+                "anyOf": [
+                    {"enum": ["LAUNCH_FAILED", "TIMEOUT", "NONZERO_EXIT", "SIGNALLED", "OUTPUT_INVALID"]},
+                    {"type": "null"},
+                ]
+            },
+            "process_exit_code": _nullable_ref("i128s"),
+            "stdout_sha256": _nullable_ref("sha256"),
+            "stderr_sha256": _nullable_ref("sha256"),
+            "output_sha256": _ref("sha256"),
+            "measurement_artifact_sha256": _ref("ContentID"),
+        }
+    )
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "benchmark_receipt_id": _ref("ContentID"),
+            "status": {"enum": ["PASS", "FAIL", "INELIGIBLE"]},
+            "reason_codes": _array({"enum": reason_codes}, unique=True),
+            "benchmark_request_sha256": _ref("sha256"),
+            "benchmark_manifest_sha256": _nullable_ref("sha256"),
+            "preregistered_thresholds_sha256": _nullable_ref("sha256"),
+            "hardware_profile_sha256": _nullable_ref("sha256"),
+            "metrics_artifact_sha256": _nullable_ref("sha256"),
+            "percentile_method": {"const": "NEAREST_RANK_CEIL"},
+            "sample_count": _ref("u64s"),
+            "run_outputs": _array(run_output, unique=True),
+        },
+    )
+
+
 PRIMARY_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.raw-event/v1": raw_event_schema(),
     "trading.feature-snapshot/v1": feature_snapshot_schema(),
@@ -1293,6 +1599,10 @@ SUPPORTING_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.model-registry/v1": model_registry_schema(),
     "trading.model-signal-manifest/v1": model_signal_manifest_schema(),
     "trading.model-validation-receipt/v1": model_validation_receipt_schema(),
+    "trading.reconciliation-receipt/v1": reconciliation_receipt_schema(),
+    "trading.run-receipt/v1": run_receipt_schema(),
+    "trading.benchmark-measurement/v1": benchmark_measurement_schema(),
+    "trading.benchmark-receipt/v1": benchmark_receipt_schema(),
 }
 ATTACHMENT_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {}
 

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -91,6 +92,107 @@ def test_causal_digest_kind_and_resolution_are_closed() -> None:
         )
         assert result["accepted"] is False
         assert result["issue_codes"]
+
+    class MisindexedResolver:
+        def resolve_object(self, _digest_value: str) -> Any:
+            return resolver.resolve_object(content_id)
+
+        def resolve_bytes(self, _digest_value: str) -> None:
+            return None
+
+    misindexed = _ledger_contract(
+        "classify_causal_digest",
+        digest=_digest("misindexed-query"),
+        resolver=MisindexedResolver(),
+        typed_key_preimages=typed_preimages,
+    )
+    assert misindexed["accepted"] is False
+    aliased = _ledger_contract(
+        "classify_causal_digest",
+        digest=typed_key_digest,
+        resolver=resolver,
+        typed_key_preimages={typed_key_digest: typed_key, _digest("typed-alias"): typed_key},
+    )
+    assert aliased["accepted"] is False
+    assert aliased["issue_codes"] == ("CAUSAL_DIGEST_PREIMAGE_MISMATCH",)
+    absolute_attempt = {
+        "schema": "trading.model-validation-attempt-key/v1",
+        "model_signal_manifest_sha256": _digest("absolute-manifest"),
+        "relative_path": "/signals/absolute.json",
+        "raw_signal_sha256": _digest("absolute-signal"),
+        "feature_snapshot_id": _digest("absolute-snapshot"),
+        "decision_sequence": "1",
+        "requested_producer_scope_key_sha256": _digest("absolute-scope"),
+        "horizon_ns": "1",
+    }
+    absolute_digest = sha256_hex(canonical_json_bytes(absolute_attempt))
+    absolute = _ledger_contract(
+        "classify_causal_digest",
+        digest=absolute_digest,
+        resolver=resolver,
+        typed_key_preimages={absolute_digest: absolute_attempt},
+    )
+    assert absolute["accepted"] is False
+    invalid_typed_keys = [
+        {**absolute_attempt, "relative_path": "signals/\x00bad.json"},
+        {
+            "schema": "trading.risk-idempotency-key/v1",
+            "run_receipt_id": vector.documents["trading.run-receipt/v1"]["run_receipt_id"],
+            "equal_time_group": "1",
+            "market_id": "x" * 129,
+        },
+        {
+            "schema": "trading.execution-transition-key/v1",
+            "run_receipt_id": vector.documents["trading.run-receipt/v1"]["run_receipt_id"],
+            "equal_time_group": "1",
+            "phase": [],
+            "market_id": None,
+            "item_sequence": None,
+        },
+        {
+            "schema": "trading.reconciliation-arithmetic-range-key/v1",
+            "run_receipt_id": vector.documents["trading.run-receipt/v1"]["run_receipt_id"],
+            "portfolio_state_before_id": _digest("range-state"),
+            "ingest_sequence": "1",
+            "equal_time_group": "1",
+            "replay_clock_ns": "0",
+            "arithmetic_operation": [],
+            "arithmetic_operands_sha256": _digest("range-operands"),
+        },
+    ]
+    for invalid_key in invalid_typed_keys:
+        invalid_digest = sha256_hex(canonical_json_bytes(invalid_key))
+        result = _ledger_contract(
+            "classify_causal_digest",
+            digest=invalid_digest,
+            resolver=resolver,
+            typed_key_preimages={invalid_digest: invalid_key},
+        )
+        assert result["accepted"] is False
+
+    class WrongResolution:
+        def __init__(self, *, object_result: Any = None, byte_result: bytes | None = None) -> None:
+            self.object_result = object_result
+            self.byte_result = byte_result
+
+        def resolve_object(self, _digest_value: str) -> Any:
+            return self.object_result
+
+        def resolve_bytes(self, _digest_value: str) -> bytes | None:
+            return self.byte_result
+
+    unrelated_object = resolver.resolve_object(content_id)
+    for wrong_resolver in (
+        WrongResolution(object_result=unrelated_object),
+        WrongResolution(byte_result=b"wrong retained bytes"),
+    ):
+        result = _ledger_contract(
+            "classify_causal_digest",
+            digest=typed_key_digest,
+            resolver=wrong_resolver,
+            typed_key_preimages=typed_preimages,
+        )
+        assert result["accepted"] is False
 
 
 def test_every_record_type_causation_set_is_exact() -> None:
@@ -254,6 +356,32 @@ def test_every_record_type_causation_set_is_exact() -> None:
         result = _ledger_contract("derive_record_contract", record_type=unknown, context=context)
         assert result["accepted"] is False
         assert result["issue_codes"] == ("LEDGER_RECORD_TYPE_UNKNOWN",)
+    malformed_feature = _ledger_contract(
+        "derive_record_contract",
+        record_type="FEATURE_SNAPSHOT",
+        context={**context, "causal_raw_event_ids": [[]]},
+    )
+    malformed_fill = _ledger_contract(
+        "derive_record_contract",
+        record_type="SIMULATED_FILL",
+        context={**context, "fill_reason_codes": [[]]},
+    )
+    assert malformed_feature["accepted"] is False
+    assert malformed_fill["accepted"] is False
+    same_state_reconciliation = _ledger_contract(
+        "derive_record_contract",
+        record_type="RECONCILIATION",
+        context={
+            **context,
+            "portfolio_state_after_id": ids["state-before"],
+        },
+    )
+    assert same_state_reconciliation == {
+        "accepted": True,
+        "issue_codes": (),
+        "object_schema": object_schemas["RECONCILIATION"],
+        "causation_ids": tuple(sorted({ids["state-before"], ids["fill"]})),
+    }
 
 
 def test_initial_ledger_prefix_order_is_exact() -> None:
@@ -309,6 +437,18 @@ def test_initial_ledger_prefix_order_is_exact() -> None:
         result = _ledger_contract("validate_initial_prefix", rows=variant)
         assert result["accepted"] is False
         assert result["issue_codes"]
+
+    oversized_sequence = deepcopy(rows)
+    oversized_sequence[0]["admission_sequence"] = "9" * 100_000
+    with patch(
+        "build_finance.crypto_replay.ledger_contract.parse_bounded_decimal_string",
+        side_effect=AssertionError("oversized u64 reached integer parsing"),
+    ):
+        result = _ledger_contract("validate_initial_prefix", rows=oversized_sequence)
+    assert result == {
+        "accepted": False,
+        "issue_codes": ("LEDGER_INITIAL_PREFIX_SEQUENCE",),
+    }
 
 
 def test_fill_ledger_record_cannot_self_cause() -> None:
