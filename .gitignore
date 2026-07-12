@@ -34,3 +34,6 @@ CLAUDE.local.md
 
 # Node
 node_modules/
+
+# Crypto replay gate output
+.artifacts/crypto-replay/

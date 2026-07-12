@@ -1,0 +1,5 @@
+/build_finance/crypto_replay/** text eol=lf
+/tests/crypto_replay/** text eol=lf
+/docs/crypto-replay/** text eol=lf
+/scripts/capture_crypto_replay_gate.py text eol=lf
+/scripts/verify_crypto_replay_artifacts.py text eol=lf
