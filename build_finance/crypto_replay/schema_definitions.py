@@ -832,6 +832,80 @@ _CONFIG_ADMISSION_REASON_CODES = [
     "CONFIG_RANGE_INVALID",
 ]
 
+_RUN_CLOSURE_REASON_CODES = [
+    "ADMISSION_COUNTER_CAPACITY",
+    "ADMISSION_RUN_END_PROOF_BUDGET",
+    "ADMISSION_RUN_END_UNCLOSED",
+]
+
+_RUN_CLOSURE_MARKET_REASON_CODES = [
+    "CLOSURE_H_MISSING",
+    "CLOSURE_CANDIDATE_CARDINALITY",
+    "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+    "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+    "CLOSURE_IDENTITY_MISMATCH",
+    "CLOSURE_DECIMALS_MISMATCH",
+    "CLOSURE_Q_CAP_RANGE",
+    "CLOSURE_CAPACITY_INSUFFICIENT",
+    "CLOSURE_REFERENCE_SET_INVALID",
+    "CLOSURE_PROOF_ROW_COUNT_RANGE",
+    "CLOSURE_STATE_ENVELOPE_RANGE",
+    "CLOSURE_PROOF_PREDICATE_FAILED",
+]
+
+_QUARANTINE_REASON_CODES = [
+    "QUARANTINE_INITIAL_PREFIX_ANCHOR_MISSING",
+    "QUARANTINE_LEDGER_SLOT_MISSING",
+    "QUARANTINE_LEDGER_SLOT_WRONG",
+    "QUARANTINE_LEDGER_SLOT_EXTRA",
+    "QUARANTINE_APPEND_SLOT_OCCUPIED",
+    "QUARANTINE_COMPONENT_MISSING",
+    "QUARANTINE_COMPONENT_WRONG",
+    "QUARANTINE_COMPONENT_EXTRA",
+    "QUARANTINE_FOOTPRINT_MISMATCH",
+]
+
+_QUARANTINE_COMPONENT_KINDS = [
+    "JOURNAL_KEY",
+    "CANONICAL_OBJECT",
+    "LEDGER_SEQUENCE_START",
+    "LEDGER_SEQUENCE_END",
+    "CONSUMED_PRODUCER_SEQUENCE",
+    "CLAIMED_REQUEST_KEY",
+    "PRIOR_LEDGER_HEAD",
+    "PRIOR_PORTFOLIO_STATE",
+    "RESULTING_LEDGER_HEAD",
+    "RESULTING_PORTFOLIO_STATE",
+    "NEXT_LEDGER_SEQUENCE",
+    "NEXT_STATE_SEQUENCE",
+    "NEXT_DECISION_SEQUENCE",
+    "NEXT_INTENT_SEQUENCE",
+    "NEXT_FILL_RECEIPT_SEQUENCE",
+]
+
+_MODEL_VALIDATION_REASON_CODES = [
+    "SIG_BYTES_INVALID",
+    "SIG_SCHEMA_UNKNOWN",
+    "SIG_ID_MISMATCH",
+    "SIG_ORDER_SHAPED",
+    "SIG_MODEL_UNPINNED",
+    "SIG_RUNTIME_SUBSTITUTION",
+    "SIG_SCOPE_MISMATCH",
+    "SIG_FEATURE_MISMATCH",
+    "SIG_PRODUCER_SEQUENCE_INVALID",
+    "SIG_REPLAYED",
+    "SIG_TIME_INVALID",
+    "SIG_TTL_RANGE",
+    "SIG_EXPIRED",
+    "SIG_DEADLINE_MISS",
+    "SIG_NUMERIC_INVALID",
+    "SIG_PROBABILITY_INVALID",
+    "SIG_ACTION_INCONSISTENT",
+    "SIG_CALIBRATION_UNKNOWN",
+    "SIG_UNCERTAIN_OR_OOD",
+    "SIG_DRIFT_DISABLED",
+]
+
 _BASELINE_IDS = [
     "ALWAYS_HOLD_V1",
     "MEAN_REVERSION_V1",
@@ -991,6 +1065,214 @@ def config_admission_receipt_schema() -> JsonObject:
     )
 
 
+def run_closure_receipt_schema() -> JsonObject:
+    """Return the exhaustive closed RunClosureReceipt schema."""
+    schema_id = "trading.run-closure-receipt/v1"
+    nullable_u64 = _nullable_ref("u64s")
+    nullable_sha256 = _nullable_ref("sha256")
+    market_proof = _closed_object(
+        {
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "failure_codes": _array({"enum": _RUN_CLOSURE_MARKET_REASON_CODES}, unique=True),
+            "earliest_trigger_equal_time_group": nullable_u64,
+            "fill_event_id": _nullable_ref("ContentID"),
+            "q_cap_base_atoms": nullable_u64,
+            "capacity_base_atoms": nullable_u64,
+            "fill_candidate_semantic_sha256": nullable_sha256,
+            "reference_price_count": nullable_u64,
+            "adverse_fill_extreme_count": nullable_u64,
+            "proof_row_count": nullable_u64,
+            "state_envelope_sha256": nullable_sha256,
+            "proof_domain": {
+                "anyOf": [{"const": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1"}, {"type": "null"}]
+            },
+            "reference_set_root_sha256": nullable_sha256,
+            "proof_root_sha256": nullable_sha256,
+        }
+    )
+    source_ids = _array(_ref("ContentID"), unique=True)
+    source_ids["minItems"] = 1
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_closure_receipt_id": _ref("ContentID"),
+            "status": {"enum": ["NOT_REQUIRED_ZERO_AUTHORITY", "PASS", "FAIL"]},
+            "reason_codes": _array({"enum": _RUN_CLOSURE_REASON_CODES}, unique=True),
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "config_admission_receipt_id": _ref("ContentID"),
+            "validated_config_sha256": _nullable_ref("ContentID"),
+            "model_signal_mode": {"enum": ["DISABLED", "CACHED_FIXTURES"]},
+            "model_registry_sha256": _nullable_ref("ContentID"),
+            "model_signal_manifest_sha256": _nullable_ref("ContentID"),
+            "schema_bundle_sha256": _ref("sha256"),
+            "admission_code_sha256": _ref("sha256"),
+            "normalization_code_sha256": _ref("sha256"),
+            "availability_grouping_code_sha256": _ref("sha256"),
+            "run_closure_code_sha256": _ref("sha256"),
+            "risk_code_sha256": _ref("sha256"),
+            "feature_code_sha256": _ref("sha256"),
+            "fill_code_sha256": _ref("sha256"),
+            "accounting_code_sha256": _ref("sha256"),
+            "source_admission_receipt_ids": source_ids,
+            "availability_schedule_sha256": _ref("sha256"),
+            "counter_capacity_sha256": _ref("sha256"),
+            "counter_capacity_status": {"enum": ["WITHIN_LIMIT", "EXCEEDED"]},
+            "run_end_position_policy": {"enum": ["FORCE_CLOSE_NEXT_EVENT", "LEAVE_MARKED_OPEN"]},
+            "terminal_equal_time_group": nullable_u64,
+            "proof_row_limit": nullable_u64,
+            "proof_row_count_total": nullable_u64,
+            "proof_budget_status": {"enum": ["NOT_REQUIRED", "WITHIN_LIMIT", "EXCEEDED"]},
+            "market_proofs": _array(market_proof, unique=True),
+        },
+    )
+
+
+def execution_quarantine_receipt_schema() -> JsonObject:
+    """Return the exhaustive closed out-of-band quarantine receipt schema."""
+    schema_id = "trading.execution-quarantine-receipt/v1"
+    classification: JsonObject = {"enum": ["MISSING", "WRONG", "EXTRA"]}
+    slot_observation = _closed_object(
+        {
+            "ledger_sequence": _ref("u64s"),
+            "expected_ledger_record_id": _nullable_ref("ContentID"),
+            "observed_ledger_record_id": _nullable_ref("ContentID"),
+            "observed_byte_sha256": _nullable_ref("sha256"),
+            "classification": classification,
+        }
+    )
+    component_observation = _closed_object(
+        {
+            "component_kind": {"enum": _QUARANTINE_COMPONENT_KINDS},
+            "ordinal": _nullable_ref("u64s"),
+            "expected_component_sha256": _nullable_ref("sha256"),
+            "observed_component_sha256": _nullable_ref("sha256"),
+            "classification": classification,
+        }
+    )
+    reasons = _array({"enum": _QUARANTINE_REASON_CODES}, unique=True)
+    reasons["minItems"] = 1
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "execution_quarantine_receipt_id": _ref("ContentID"),
+            "status": {"const": "QUARANTINED"},
+            "reason_codes": reasons,
+            "run_receipt_id": _ref("ContentID"),
+            "transition_kind": {"enum": ["MODEL_ATTEMPT", "EXECUTION_TRANSITION"]},
+            "transition_key_sha256": _ref("sha256"),
+            "expected_footprint_sha256": _ref("sha256"),
+            "observed_footprint_sha256": _ref("sha256"),
+            "last_verified_ledger_head_id": _nullable_ref("ContentID"),
+            "last_verified_portfolio_state_id": _nullable_ref("ContentID"),
+            "first_unsafe_ledger_sequence": _nullable_ref("u64s"),
+            "slot_observations": _array(slot_observation, unique=True),
+            "component_observations": _array(component_observation, unique=True),
+        },
+    )
+
+
+def model_registry_schema() -> JsonObject:
+    """Return the exhaustive closed immutable model registry schema."""
+    schema_id = "trading.model-registry/v1"
+    promotion = _closed_object(
+        {
+            "producer_scope_key_sha256": _ref("sha256"),
+            "producer_id": _ref("bounded_utf8_registry_string"),
+            "model_id": _ref("bounded_utf8_registry_string"),
+            "model_version": _ref("bounded_utf8_registry_string"),
+            "model_artifact_sha256": _ref("sha256"),
+            "adapter_sha256": _nullable_ref("sha256"),
+            "runtime_profile_id": _ref("bounded_utf8_registry_string"),
+            "calibration_version": _ref("bounded_utf8_registry_string"),
+            "calibration_sha256": _ref("sha256"),
+            "feature_set_version": _ref("bounded_utf8_registry_string"),
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "horizon_ns": _ref("u64s"),
+            "max_ttl_ns": _ref("u64s"),
+            "max_uncertainty_q18": _ref("uq18s"),
+            "max_ood_score_q18": _ref("uq18s"),
+            "status": {"enum": ["ENABLED", "DISABLED"]},
+        }
+    )
+    promotions = _array(promotion, unique=True)
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "model_registry_sha256": _ref("ContentID"),
+            "promotions": promotions,
+        },
+    )
+
+
+def model_signal_manifest_schema() -> JsonObject:
+    """Return the exhaustive closed cached model-signal manifest schema."""
+    schema_id = "trading.model-signal-manifest/v1"
+    candidate = _closed_object(
+        {
+            "relative_path": _ref("safe_relative_path"),
+            "media_type": {"const": "application/json"},
+            "raw_signal_sha256": _ref("sha256"),
+            "raw_byte_length": _ref("u64s"),
+            "declared_signal_id": _nullable_ref("ContentID"),
+            "feature_snapshot_id": _ref("ContentID"),
+            "decision_sequence": _ref("u64s"),
+            "producer_scope_key_sha256": _nullable_ref("sha256"),
+            "producer_sequence": _nullable_ref("u64s"),
+            "horizon_ns": _ref("u64s"),
+            "issued_replay_clock_ns": _ref("u64s"),
+            "available_replay_clock_ns": _ref("u64s"),
+            "decision_close_replay_clock_ns": _ref("u64s"),
+            "requested_producer_scope_key_sha256": _ref("sha256"),
+        }
+    )
+    candidates = _array(candidate, unique=True)
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "model_signal_manifest_sha256": _ref("ContentID"),
+            "model_registry_sha256": _ref("ContentID"),
+            "candidates": candidates,
+        },
+    )
+
+
+def model_validation_receipt_schema() -> JsonObject:
+    """Return the exhaustive closed model-validation evidence schema."""
+    schema_id = "trading.model-validation-receipt/v1"
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "model_validation_receipt_id": _ref("ContentID"),
+            "validation_attempt_key_sha256": _ref("sha256"),
+            "status": {"enum": ["ACCEPTED", "REJECTED", "EXPIRED", "DRIFT_DISABLED"]},
+            "reason_codes": _array({"enum": _MODEL_VALIDATION_REASON_CODES}, unique=True),
+            "raw_signal_sha256": _ref("sha256"),
+            "declared_signal_id": _nullable_ref("ContentID"),
+            "accepted_signal_id": _nullable_ref("ContentID"),
+            "feature_snapshot_id": _ref("ContentID"),
+            "decision_sequence": _ref("u64s"),
+            "producer_sequence": _nullable_ref("u64s"),
+            "producer_scope_key_sha256": _nullable_ref("sha256"),
+            "issued_replay_clock_ns": _nullable_ref("u64s"),
+            "available_replay_clock_ns": _ref("u64s"),
+            "decision_close_replay_clock_ns": _ref("u64s"),
+            "expires_replay_clock_ns": _nullable_ref("u64s"),
+            "canonical_action": {"enum": ["ABSTAIN", "LONG_BIAS", "EXIT_BIAS"]},
+            "canonical_score_q18": _ref("sq18s"),
+            "canonical_probability_abstain_q18": _ref("uq18s"),
+            "canonical_probability_long_bias_q18": _ref("uq18s"),
+            "canonical_probability_exit_bias_q18": _ref("uq18s"),
+            "canonical_uncertainty_q18": _ref("uq18s"),
+            "canonical_ood_score_q18": _ref("uq18s"),
+        },
+    )
+
+
 PRIMARY_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.raw-event/v1": raw_event_schema(),
     "trading.feature-snapshot/v1": feature_snapshot_schema(),
@@ -1006,6 +1288,11 @@ SUPPORTING_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.replay-risk-config/v1": replay_risk_config_schema(),
     "trading.source-admission-receipt/v1": source_admission_receipt_schema(),
     "trading.config-admission-receipt/v1": config_admission_receipt_schema(),
+    "trading.run-closure-receipt/v1": run_closure_receipt_schema(),
+    "trading.execution-quarantine-receipt/v1": execution_quarantine_receipt_schema(),
+    "trading.model-registry/v1": model_registry_schema(),
+    "trading.model-signal-manifest/v1": model_signal_manifest_schema(),
+    "trading.model-validation-receipt/v1": model_validation_receipt_schema(),
 }
 ATTACHMENT_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {}
 

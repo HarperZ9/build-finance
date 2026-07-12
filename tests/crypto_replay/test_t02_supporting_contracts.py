@@ -834,6 +834,8 @@ def _assert_independent_basic_oracles(
 
     schema_id = str(document["schema"])
     schema = SUPPORTING_SCHEMA_DOCUMENTS[schema_id]
+    assert verify_content_id(document)
+    _schema_is_recursively_closed(schema)
     Draft202012Validator.check_schema(schema)
     oracle = Draft202012Validator(schema)
     assert not tuple(oracle.iter_errors(document))
@@ -1627,6 +1629,7 @@ def test_missing_and_invalid_config_receipts_serialize() -> None:
 def test_run_closure_receipt_is_total_by_config_status() -> None:
     vector = build_t02_vector()
     closure = vector.documents["trading.run-closure-receipt/v1"]
+    _assert_independent_basic_oracles(closure, resolver=vector.resolver)
     assert not _issues(closure, resolver=vector.resolver)
     zero_authority_rows: list[tuple[dict[str, Any], SyntheticResolver, dict[str, Any]]] = []
     status_inputs = (
@@ -1751,10 +1754,389 @@ def test_run_closure_receipt_is_total_by_config_status() -> None:
     ):
         _assert_invalid(mutation, resolver=resolver)
 
+    market_row = {
+        "market_id": MARKET_ID,
+        "failure_codes": [],
+        "earliest_trigger_equal_time_group": "3",
+        "fill_event_id": _digest("force-fill-event"),
+        "q_cap_base_atoms": "1",
+        "capacity_base_atoms": "1",
+        "fill_candidate_semantic_sha256": _digest("force-candidate-semantic"),
+        "reference_price_count": "1",
+        "adverse_fill_extreme_count": "2",
+        "proof_row_count": "2",
+        "state_envelope_sha256": _digest("force-state-envelope"),
+        "proof_domain": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1",
+        "reference_set_root_sha256": _digest("force-reference-root"),
+        "proof_root_sha256": _digest("force-proof-root"),
+    }
+
+    def force_receipt(
+        *,
+        status: str,
+        reasons: list[str],
+        proof_limit: str,
+        proof_total: str | None,
+        budget_status: str,
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        return _reseal(
+            {
+                **closure,
+                "status": status,
+                "reason_codes": reasons,
+                "run_end_position_policy": "FORCE_CLOSE_NEXT_EVENT",
+                "terminal_equal_time_group": "3" if status == "PASS" else None,
+                "proof_row_limit": proof_limit,
+                "proof_row_count_total": proof_total,
+                "proof_budget_status": budget_status,
+                "market_proofs": [row],
+            }
+        )
+
+    passing_force = force_receipt(
+        status="PASS",
+        reasons=[],
+        proof_limit="2",
+        proof_total="2",
+        budget_status="WITHIN_LIMIT",
+        row=market_row,
+    )
+    budget_row = {**market_row, "proof_domain": None, "proof_root_sha256": None}
+    budget_failure = force_receipt(
+        status="FAIL",
+        reasons=["ADMISSION_RUN_END_PROOF_BUDGET", "ADMISSION_RUN_END_UNCLOSED"],
+        proof_limit="1",
+        proof_total="2",
+        budget_status="EXCEEDED",
+        row=budget_row,
+    )
+    preproof_row = {
+        **market_row,
+        "failure_codes": ["CLOSURE_CAPACITY_INSUFFICIENT"],
+        "q_cap_base_atoms": "2",
+        "capacity_base_atoms": "1",
+        "proof_row_count": "4",
+        "proof_domain": None,
+        "proof_root_sha256": None,
+    }
+    preproof_failure = force_receipt(
+        status="FAIL",
+        reasons=["ADMISSION_RUN_END_UNCLOSED"],
+        proof_limit="4",
+        proof_total="4",
+        budget_status="WITHIN_LIMIT",
+        row=preproof_row,
+    )
+    enumeration_row = {
+        **market_row,
+        "failure_codes": ["CLOSURE_PROOF_PREDICATE_FAILED"],
+        "proof_root_sha256": None,
+    }
+    enumeration_failure = force_receipt(
+        status="FAIL",
+        reasons=["ADMISSION_RUN_END_UNCLOSED"],
+        proof_limit="2",
+        proof_total="2",
+        budget_status="WITHIN_LIMIT",
+        row=enumeration_row,
+    )
+    force_receipts = (passing_force, budget_failure, preproof_failure, enumeration_failure)
+    force_resolver = SyntheticResolver(
+        (*vector.documents.values(), *force_receipts, *vector.source_receipts, *vector.raw_events),
+        tuple(vector.attachment_payloads.values()),
+    )
+    for receipt in force_receipts:
+        assert not _issues(receipt, resolver=force_resolver)
+
+    force_counter_failure = _reseal(
+        {
+            **passing_force,
+            "status": "FAIL",
+            "reason_codes": ["ADMISSION_COUNTER_CAPACITY", "ADMISSION_RUN_END_UNCLOSED"],
+            "counter_capacity_sha256": exceeded_digest,
+            "counter_capacity_status": "EXCEEDED",
+            "terminal_equal_time_group": None,
+        }
+    )
+    assert not _issues(force_counter_failure, resolver=force_resolver)
+
+    second_market_row = {
+        **market_row,
+        "market_id": "z-synthetic-market",
+        "fill_event_id": _digest("force-fill-event-z"),
+        "fill_candidate_semantic_sha256": _digest("force-candidate-semantic-z"),
+        "state_envelope_sha256": _digest("force-state-envelope-z"),
+        "reference_set_root_sha256": _digest("force-reference-root-z"),
+        "proof_root_sha256": _digest("force-proof-root-z"),
+    }
+    two_market_force = _reseal(
+        {
+            **passing_force,
+            "proof_row_count_total": "4",
+            "proof_row_limit": "4",
+            "market_proofs": [market_row, second_market_row],
+        }
+    )
+    assert not _issues(two_market_force, resolver=force_resolver)
+    max_terminal = _reseal({**closure, "terminal_equal_time_group": str(MAX_U64)})
+    assert not _issues(max_terminal, resolver=force_resolver)
+
+    closure_mutations = (
+        _reseal({**closure, "reason_codes": ["ADMISSION_RUN_END_UNCLOSED", "ADMISSION_COUNTER_CAPACITY"]}),
+        _reseal({**closure, "reason_codes": ["ADMISSION_RUN_END_UNCLOSED", "ADMISSION_RUN_END_UNCLOSED"]}),
+        _reseal({**closure, "reason_codes": ["ADMISSION_UNKNOWN"]}),
+        _reseal({**closure, "source_admission_receipt_ids": list(reversed(closure["source_admission_receipt_ids"]))}),
+        _reseal(
+            {
+                **closure,
+                "source_admission_receipt_ids": [
+                    closure["source_admission_receipt_ids"][0],
+                    closure["source_admission_receipt_ids"][0],
+                ],
+            }
+        ),
+        force_receipt(
+            status="PASS",
+            reasons=[],
+            proof_limit=str(MAX_PROOF_ROWS + 1),
+            proof_total="2",
+            budget_status="WITHIN_LIMIT",
+            row=market_row,
+        ),
+        force_receipt(
+            status="FAIL",
+            reasons=["ADMISSION_RUN_END_UNCLOSED"],
+            proof_limit="2",
+            proof_total="2",
+            budget_status="WITHIN_LIMIT",
+            row={**preproof_row, "proof_domain": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1"},
+        ),
+        force_receipt(
+            status="FAIL",
+            reasons=["ADMISSION_RUN_END_UNCLOSED"],
+            proof_limit="2",
+            proof_total="2",
+            budget_status="WITHIN_LIMIT",
+            row={**enumeration_row, "proof_root_sha256": _digest("forbidden-enumeration-root")},
+        ),
+        _reseal({**closure, "model_registry_sha256": _digest("forbidden-disabled-registry")}),
+        _reseal(
+            {
+                **closure,
+                "model_signal_mode": "CACHED_FIXTURES",
+                "model_registry_sha256": _digest("cached-registry"),
+                "model_signal_manifest_sha256": None,
+            }
+        ),
+        _reseal({**closure, "terminal_equal_time_group": "02"}),
+        _reseal({**closure, "terminal_equal_time_group": str(MAX_U64 + 1)}),
+        _reseal({**two_market_force, "market_proofs": list(reversed(two_market_force["market_proofs"]))}),
+        _reseal(
+            {
+                **two_market_force,
+                "market_proofs": [market_row, {**second_market_row, "market_id": MARKET_ID}],
+            }
+        ),
+        _reseal({**capacity_failures[0], "proof_row_limit": "1"}),
+        _reseal(
+            {
+                **valid_capacity_failure,
+                "proof_row_count_total": "2",
+                "proof_budget_status": "WITHIN_LIMIT",
+                "market_proofs": [market_row],
+            }
+        ),
+        _reseal(
+            {
+                **force_counter_failure,
+                "proof_row_count_total": "0",
+                "proof_budget_status": "NOT_REQUIRED",
+                "market_proofs": [],
+            }
+        ),
+        force_receipt(
+            status="FAIL",
+            reasons=["ADMISSION_RUN_END_UNCLOSED"],
+            proof_limit="4",
+            proof_total="4",
+            budget_status="WITHIN_LIMIT",
+            row={
+                **preproof_row,
+                "failure_codes": [
+                    "CLOSURE_CAPACITY_INSUFFICIENT",
+                    "CLOSURE_PROOF_PREDICATE_FAILED",
+                ],
+            },
+        ),
+        force_receipt(
+            status="FAIL",
+            reasons=["ADMISSION_RUN_END_UNCLOSED"],
+            proof_limit="2",
+            proof_total="2",
+            budget_status="WITHIN_LIMIT",
+            row={
+                **market_row,
+                "failure_codes": [
+                    "CLOSURE_CANDIDATE_CARDINALITY",
+                    "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+                ],
+                "fill_event_id": None,
+                "capacity_base_atoms": None,
+                "fill_candidate_semantic_sha256": None,
+                "proof_domain": None,
+                "proof_root_sha256": None,
+            },
+        ),
+        _reseal({**passing_force, "proof_row_count_total": "1"}),
+    )
+    for mutation in closure_mutations:
+        _assert_invalid(mutation, resolver=force_resolver)
+
+    def phase_row(*codes: str, market_id: str = MARKET_ID) -> dict[str, Any]:
+        row = {**market_row, "market_id": market_id, "failure_codes": list(codes)}
+        code_set = set(codes)
+        if "CLOSURE_H_MISSING" in code_set:
+            row["earliest_trigger_equal_time_group"] = None
+            row["state_envelope_sha256"] = None
+        if code_set.intersection(
+            {
+                "CLOSURE_H_MISSING",
+                "CLOSURE_CANDIDATE_CARDINALITY",
+                "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+            }
+        ):
+            row["fill_event_id"] = None
+            row["capacity_base_atoms"] = None
+            row["fill_candidate_semantic_sha256"] = None
+        if "CLOSURE_Q_CAP_RANGE" in code_set:
+            row["q_cap_base_atoms"] = None
+            row["proof_row_count"] = None
+        if "CLOSURE_REFERENCE_SET_INVALID" in code_set:
+            row["reference_price_count"] = None
+            row["reference_set_root_sha256"] = None
+            row["proof_row_count"] = None
+        if "CLOSURE_PROOF_ROW_COUNT_RANGE" in code_set:
+            row["proof_row_count"] = None
+        if "CLOSURE_STATE_ENVELOPE_RANGE" in code_set:
+            row["state_envelope_sha256"] = None
+        row["proof_domain"] = None
+        row["proof_root_sha256"] = None
+        return row
+
+    candidate_later = (
+        "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+        "CLOSURE_IDENTITY_MISMATCH",
+        "CLOSURE_DECIMALS_MISMATCH",
+        "CLOSURE_CAPACITY_INSUFFICIENT",
+    )
+    run_closure_phase_precedence = (
+        "CLOSURE_H_MISSING",
+        "CLOSURE_CANDIDATE_CARDINALITY",
+        "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+        "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+        "CLOSURE_IDENTITY_MISMATCH",
+        "CLOSURE_DECIMALS_MISMATCH",
+        "CLOSURE_Q_CAP_RANGE",
+        "CLOSURE_CAPACITY_INSUFFICIENT",
+        "CLOSURE_REFERENCE_SET_INVALID",
+        "CLOSURE_PROOF_ROW_COUNT_RANGE",
+        "CLOSURE_STATE_ENVELOPE_RANGE",
+        "CLOSURE_PROOF_PREDICATE_FAILED",
+    )
+    phase_order = {code: index for index, code in enumerate(run_closure_phase_precedence)}
+    invalid_phase_pairs = {
+        *(
+            tuple(sorted(("CLOSURE_H_MISSING", code), key=lambda value: phase_order[value]))
+            for code in (
+                "CLOSURE_CANDIDATE_CARDINALITY",
+                "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+                *candidate_later,
+                "CLOSURE_STATE_ENVELOPE_RANGE",
+                "CLOSURE_PROOF_PREDICATE_FAILED",
+            )
+        ),
+        *(
+            tuple(sorted(("CLOSURE_CANDIDATE_CARDINALITY", code), key=lambda value: phase_order[value]))
+            for code in (
+                "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+                *candidate_later,
+                "CLOSURE_PROOF_PREDICATE_FAILED",
+            )
+        ),
+        *(
+            tuple(sorted(("CLOSURE_CANDIDATE_SCHEMA_INVALID", code), key=lambda value: phase_order[value]))
+            for code in (
+                *candidate_later,
+                "CLOSURE_PROOF_PREDICATE_FAILED",
+            )
+        ),
+        tuple(
+            sorted(
+                ("CLOSURE_Q_CAP_RANGE", "CLOSURE_CAPACITY_INSUFFICIENT"),
+                key=lambda value: phase_order[value],
+            )
+        ),
+        tuple(
+            sorted(
+                ("CLOSURE_Q_CAP_RANGE", "CLOSURE_PROOF_ROW_COUNT_RANGE"),
+                key=lambda value: phase_order[value],
+            )
+        ),
+        tuple(
+            sorted(
+                ("CLOSURE_REFERENCE_SET_INVALID", "CLOSURE_PROOF_ROW_COUNT_RANGE"),
+                key=lambda value: phase_order[value],
+            )
+        ),
+        *(
+            tuple((code, "CLOSURE_PROOF_PREDICATE_FAILED"))
+            for code in run_closure_phase_precedence
+            if code != "CLOSURE_PROOF_PREDICATE_FAILED"
+        ),
+    }
+    for codes in invalid_phase_pairs:
+        row = phase_row(*codes)
+        count_range = "CLOSURE_PROOF_ROW_COUNT_RANGE" in codes
+        total = None if count_range else ("0" if row["proof_row_count"] is None else row["proof_row_count"])
+        budget = "EXCEEDED" if count_range else "WITHIN_LIMIT"
+        reasons = (
+            ["ADMISSION_RUN_END_PROOF_BUDGET", "ADMISSION_RUN_END_UNCLOSED"]
+            if count_range
+            else ["ADMISSION_RUN_END_UNCLOSED"]
+        )
+        _assert_invalid(
+            force_receipt(
+                status="FAIL",
+                reasons=reasons,
+                proof_limit="2",
+                proof_total=total,
+                budget_status=budget,
+                row=row,
+            ),
+            resolver=force_resolver,
+        )
+
+    cross_row_preproof = phase_row("CLOSURE_CAPACITY_INSUFFICIENT", market_id="a-market")
+    cross_row_predicate = phase_row("CLOSURE_PROOF_PREDICATE_FAILED", market_id="b-market")
+    cross_row_closure = _reseal(
+        {
+            **passing_force,
+            "status": "FAIL",
+            "reason_codes": ["ADMISSION_RUN_END_UNCLOSED"],
+            "terminal_equal_time_group": None,
+            "proof_row_limit": "4",
+            "proof_row_count_total": "4",
+            "market_proofs": [cross_row_preproof, cross_row_predicate],
+        }
+    )
+    _assert_invalid(cross_row_closure, resolver=force_resolver)
+
 
 def test_execution_quarantine_receipt_is_exhaustive() -> None:
     vector = build_t02_vector()
     base = vector.documents["trading.execution-quarantine-receipt/v1"]
+    _assert_independent_basic_oracles(base, resolver=vector.resolver)
     assert not _issues(base, resolver=vector.resolver)
     wrong = _reseal(
         {
@@ -1798,11 +2180,244 @@ def test_execution_quarantine_receipt_is_exhaustive() -> None:
     )
     for receipt in (wrong, extra):
         assert not _issues(receipt, resolver=vector.resolver)
+
+    component_kinds = (
+        "JOURNAL_KEY",
+        "CANONICAL_OBJECT",
+        "LEDGER_SEQUENCE_START",
+        "LEDGER_SEQUENCE_END",
+        "CONSUMED_PRODUCER_SEQUENCE",
+        "CLAIMED_REQUEST_KEY",
+        "PRIOR_LEDGER_HEAD",
+        "PRIOR_PORTFOLIO_STATE",
+        "RESULTING_LEDGER_HEAD",
+        "RESULTING_PORTFOLIO_STATE",
+        "NEXT_LEDGER_SEQUENCE",
+        "NEXT_STATE_SEQUENCE",
+        "NEXT_DECISION_SEQUENCE",
+        "NEXT_INTENT_SEQUENCE",
+        "NEXT_FILL_RECEIPT_SEQUENCE",
+    )
+    component_receipts: list[dict[str, Any]] = []
+    for index, component_kind in enumerate(component_kinds):
+        for classification in ("MISSING", "WRONG", "EXTRA"):
+            expected = None if classification == "EXTRA" else _digest(f"component-expected-{index}-{classification}")
+            observed = None if classification == "MISSING" else _digest(f"component-observed-{index}-{classification}")
+            classification_code = {
+                "MISSING": "QUARANTINE_COMPONENT_MISSING",
+                "WRONG": "QUARANTINE_COMPONENT_WRONG",
+                "EXTRA": "QUARANTINE_COMPONENT_EXTRA",
+            }[classification]
+            component_receipts.append(
+                _reseal(
+                    {
+                        **base,
+                        "reason_codes": [classification_code, "QUARANTINE_FOOTPRINT_MISMATCH"],
+                        "last_verified_ledger_head_id": _digest("verified-head"),
+                        "last_verified_portfolio_state_id": _digest("verified-state"),
+                        "first_unsafe_ledger_sequence": None,
+                        "slot_observations": [],
+                        "component_observations": [
+                            {
+                                "component_kind": component_kind,
+                                "ordinal": "0" if component_kind == "CANONICAL_OBJECT" else None,
+                                "expected_component_sha256": expected,
+                                "observed_component_sha256": observed,
+                                "classification": classification,
+                            }
+                        ],
+                    }
+                )
+            )
+    component_resolver = SyntheticResolver(
+        (*vector.documents.values(), *component_receipts, *vector.source_receipts, *vector.raw_events),
+        tuple(vector.attachment_payloads.values()),
+    )
+    for receipt in component_receipts:
+        assert not _issues(receipt, resolver=component_resolver)
+
+    mixed = _reseal(
+        {
+            **wrong,
+            "last_verified_ledger_head_id": _digest("verified-head"),
+            "last_verified_portfolio_state_id": _digest("verified-state"),
+            "reason_codes": [
+                "QUARANTINE_LEDGER_SLOT_WRONG",
+                "QUARANTINE_APPEND_SLOT_OCCUPIED",
+                "QUARANTINE_COMPONENT_EXTRA",
+                "QUARANTINE_FOOTPRINT_MISMATCH",
+            ],
+            "component_observations": [
+                {
+                    "component_kind": "CANONICAL_OBJECT",
+                    "ordinal": "0",
+                    "expected_component_sha256": None,
+                    "observed_component_sha256": _digest("extra-object-component"),
+                    "classification": "EXTRA",
+                }
+            ],
+        }
+    )
+    assert not _issues(mixed, resolver=component_resolver)
+    malformed_wrong = _reseal(
+        {
+            **wrong,
+            "slot_observations": [
+                {
+                    **wrong["slot_observations"][0],
+                    "observed_ledger_record_id": None,
+                }
+            ],
+        }
+    )
+    assert not _issues(malformed_wrong, resolver=component_resolver)
+    numeric_slots = _reseal(
+        {
+            **base,
+            "reason_codes": [
+                "QUARANTINE_LEDGER_SLOT_MISSING",
+                "QUARANTINE_LEDGER_SLOT_WRONG",
+                "QUARANTINE_LEDGER_SLOT_EXTRA",
+                "QUARANTINE_APPEND_SLOT_OCCUPIED",
+                "QUARANTINE_FOOTPRINT_MISMATCH",
+            ],
+            "last_verified_ledger_head_id": _digest("verified-head"),
+            "last_verified_portfolio_state_id": _digest("verified-state"),
+            "first_unsafe_ledger_sequence": "2",
+            "slot_observations": [
+                (
+                    {
+                        **base["slot_observations"][0],
+                        "ledger_sequence": str(sequence),
+                    }
+                    if sequence == 2
+                    else {
+                        "ledger_sequence": str(sequence),
+                        "expected_ledger_record_id": (
+                            None if sequence == 10 else _digest(f"numeric-expected-{sequence}")
+                        ),
+                        "observed_ledger_record_id": _digest(f"numeric-observed-{sequence}"),
+                        "observed_byte_sha256": _digest(f"numeric-bytes-{sequence}"),
+                        "classification": "EXTRA" if sequence == 10 else "WRONG",
+                    }
+                )
+                for sequence in range(2, 11)
+            ],
+        }
+    )
+    assert not _issues(numeric_slots, resolver=component_resolver)
+    canonical_objects = _reseal(
+        {
+            **base,
+            "reason_codes": [
+                "QUARANTINE_COMPONENT_MISSING",
+                "QUARANTINE_COMPONENT_EXTRA",
+                "QUARANTINE_FOOTPRINT_MISMATCH",
+            ],
+            "last_verified_ledger_head_id": _digest("verified-head"),
+            "last_verified_portfolio_state_id": _digest("verified-state"),
+            "first_unsafe_ledger_sequence": None,
+            "slot_observations": [],
+            "component_observations": [
+                {
+                    "component_kind": "CANONICAL_OBJECT",
+                    "ordinal": "0",
+                    "expected_component_sha256": _digest("canonical-object-0"),
+                    "observed_component_sha256": None,
+                    "classification": "MISSING",
+                },
+                {
+                    "component_kind": "CANONICAL_OBJECT",
+                    "ordinal": "2",
+                    "expected_component_sha256": None,
+                    "observed_component_sha256": _digest("canonical-object-2"),
+                    "classification": "EXTRA",
+                },
+            ],
+        }
+    )
+    assert not _issues(canonical_objects, resolver=component_resolver)
     malformed = _reseal({**wrong, "reason_codes": ["QUARANTINE_FOOTPRINT_MISMATCH"]})
     mixed_anchor = _reseal({**base, "last_verified_ledger_head_id": _digest("head")})
     empty_observations = _reseal({**base, "slot_observations": [], "component_observations": []})
-    for mutation in (malformed, mixed_anchor, empty_observations):
+    wrong_first_slot = _reseal({**wrong, "first_unsafe_ledger_sequence": "1"})
+    wrong_component_ordinal = deepcopy(component_receipts[0])
+    wrong_component_ordinal["component_observations"][0]["ordinal"] = "0"
+    wrong_component_ordinal = _reseal(wrong_component_ordinal)
+    missing_canonical_ordinal = next(
+        deepcopy(receipt)
+        for receipt in component_receipts
+        if receipt["component_observations"][0]["component_kind"] == "CANONICAL_OBJECT"
+    )
+    missing_canonical_ordinal["component_observations"][0]["ordinal"] = None
+    missing_canonical_ordinal = _reseal(missing_canonical_ordinal)
+    duplicate_slot = deepcopy(wrong)
+    duplicate_slot["slot_observations"].append(deepcopy(duplicate_slot["slot_observations"][0]))
+    duplicate_slot = _reseal(duplicate_slot)
+    reversed_numeric_slots = deepcopy(numeric_slots)
+    reversed_numeric_slots["slot_observations"].reverse()
+    reversed_numeric_slots = _reseal(reversed_numeric_slots)
+    reversed_components = deepcopy(canonical_objects)
+    reversed_components["component_observations"].reverse()
+    reversed_components = _reseal(reversed_components)
+    duplicate_components = deepcopy(canonical_objects)
+    duplicate_components["component_observations"].append(deepcopy(duplicate_components["component_observations"][0]))
+    duplicate_components = _reseal(duplicate_components)
+    gapped_numeric_slots = deepcopy(numeric_slots)
+    del gapped_numeric_slots["slot_observations"][4]
+    gapped_numeric_slots = _reseal(gapped_numeric_slots)
+    extreme_gap_slots = deepcopy(numeric_slots)
+    extreme_gap_slots.update(
+        {
+            "reason_codes": [
+                "QUARANTINE_LEDGER_SLOT_MISSING",
+                "QUARANTINE_LEDGER_SLOT_EXTRA",
+                "QUARANTINE_APPEND_SLOT_OCCUPIED",
+                "QUARANTINE_FOOTPRINT_MISMATCH",
+            ],
+            "first_unsafe_ledger_sequence": "0",
+            "slot_observations": [
+                {**numeric_slots["slot_observations"][0], "ledger_sequence": "0"},
+                {
+                    **numeric_slots["slot_observations"][-1],
+                    "ledger_sequence": str(MAX_U64),
+                },
+            ],
+        }
+    )
+    extreme_gap_slots = _reseal(extreme_gap_slots)
+    assert "semantic_slot_window" in {issue.code for issue in _issues(extreme_gap_slots, resolver=component_resolver)}
+    slot_overflow = deepcopy(base)
+    slot_overflow["slot_observations"][0]["ledger_sequence"] = str(MAX_U64 + 1)
+    slot_overflow["first_unsafe_ledger_sequence"] = str(MAX_U64 + 1)
+    slot_overflow = _reseal(slot_overflow)
+    slot_leading_zero = deepcopy(base)
+    slot_leading_zero["slot_observations"][0]["ledger_sequence"] = "00"
+    slot_leading_zero["first_unsafe_ledger_sequence"] = "00"
+    slot_leading_zero = _reseal(slot_leading_zero)
+    for mutation in (
+        malformed,
+        mixed_anchor,
+        empty_observations,
+        wrong_first_slot,
+        wrong_component_ordinal,
+        missing_canonical_ordinal,
+        duplicate_slot,
+        reversed_numeric_slots,
+        reversed_components,
+        duplicate_components,
+        gapped_numeric_slots,
+        slot_overflow,
+        slot_leading_zero,
+        _reseal({**base, "observed_footprint_sha256": base["expected_footprint_sha256"]}),
+    ):
         _assert_invalid(mutation, resolver=vector.resolver)
+
+    assert _issues(base, resolver=vector.resolver, expected_schema="trading.ledger-record/v1")
+    from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_DOCUMENTS
+
+    ledger_record_types = PRIMARY_SCHEMA_DOCUMENTS["trading.ledger-record/v1"]["properties"]["record_type"]["enum"]
+    assert "EXECUTION_QUARANTINE" not in ledger_record_types
 
 
 def test_source_admission_is_config_independent() -> None:
@@ -1848,24 +2463,203 @@ def test_model_registry_and_signal_manifest_are_set_closed() -> None:
     vector = build_t02_vector()
     registry = vector.documents["trading.model-registry/v1"]
     manifest = vector.documents["trading.model-signal-manifest/v1"]
+    _assert_independent_basic_oracles(registry, resolver=vector.resolver)
+    _assert_independent_basic_oracles(manifest, resolver=vector.resolver)
     assert not _issues(registry, resolver=vector.resolver)
     assert not _issues(manifest, resolver=vector.resolver)
     promotion = registry["promotions"][0]
     candidate = manifest["candidates"][0]
     assert candidate["requested_producer_scope_key_sha256"] == promotion["producer_scope_key_sha256"]
+
+    def scope_key(row: dict[str, Any]) -> str:
+        scope_fields = (
+            "adapter_sha256",
+            "calibration_sha256",
+            "calibration_version",
+            "feature_set_version",
+            "horizon_ns",
+            "market_id",
+            "model_artifact_sha256",
+            "model_id",
+            "model_version",
+            "producer_id",
+            "runtime_profile_id",
+        )
+        return sha256_hex(canonical_json_bytes({field: row[field] for field in scope_fields}))
+
+    assert promotion["producer_scope_key_sha256"] == scope_key(promotion)
+    second_promotion = deepcopy(promotion)
+    second_promotion["producer_id"] = "synthetic-producer-2"
+    second_promotion["producer_scope_key_sha256"] = scope_key(second_promotion)
+    two_promotions = deepcopy(registry)
+    two_promotions["promotions"] = sorted(
+        [deepcopy(promotion), second_promotion],
+        key=lambda row: row["producer_scope_key_sha256"].encode("utf-8"),
+    )
+    two_promotions = _reseal(two_promotions)
+    assert not _issues(two_promotions, resolver=vector.resolver)
+
+    enabled_with_adapter = deepcopy(promotion)
+    enabled_with_adapter.update(
+        {
+            "adapter_sha256": _digest("static-adapter"),
+            "max_uncertainty_q18": "1000000000000000000",
+            "max_ood_score_q18": "1000000000000000000",
+            "status": "ENABLED",
+        }
+    )
+    enabled_with_adapter["producer_scope_key_sha256"] = scope_key(enabled_with_adapter)
+    enabled_registry = _reseal({**registry, "promotions": [enabled_with_adapter]})
+    assert not _issues(enabled_registry, resolver=vector.resolver)
+
+    second_candidate = deepcopy(candidate)
+    second_candidate.update(
+        {
+            "relative_path": "signals/decision-2.json",
+            "raw_signal_sha256": _digest("second-static-signal"),
+            "raw_byte_length": "0",
+            "declared_signal_id": None,
+            "feature_snapshot_id": _digest("feature-snapshot-2"),
+            "decision_sequence": "2",
+            "producer_sequence": None,
+            "producer_scope_key_sha256": None,
+            "issued_replay_clock_ns": "1",
+            "available_replay_clock_ns": "2",
+            "decision_close_replay_clock_ns": "3",
+        }
+    )
+    two_candidates = deepcopy(manifest)
+    two_candidates["candidates"].append(second_candidate)
+    two_candidates = _reseal(two_candidates)
+    assert not _issues(two_candidates, resolver=vector.resolver)
+
+    composite_candidates: list[dict[str, Any]] = []
+    for producer_sequence, decision_sequence, suffix in (("2", "2", "a"), ("10", "3", "b"), (None, "4", "c")):
+        row = deepcopy(candidate)
+        row.update(
+            {
+                "relative_path": f"signals/composite-{suffix}.json",
+                "raw_signal_sha256": _digest(f"composite-{suffix}"),
+                "raw_byte_length": "1",
+                "declared_signal_id": _digest(f"declared-{suffix}"),
+                "feature_snapshot_id": _digest(f"snapshot-{suffix}"),
+                "decision_sequence": decision_sequence,
+                "producer_sequence": producer_sequence,
+                "producer_scope_key_sha256": (
+                    promotion["producer_scope_key_sha256"] if producer_sequence is not None else None
+                ),
+            }
+        )
+        composite_candidates.append(row)
+
+    def candidate_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        producer_sequence = row["producer_sequence"]
+        return (
+            row["requested_producer_scope_key_sha256"].encode("utf-8"),
+            1 if producer_sequence is None else 0,
+            0 if producer_sequence is None else int(producer_sequence),
+            int(row["decision_sequence"]),
+            row["feature_snapshot_id"].encode("utf-8"),
+            int(row["horizon_ns"]),
+            row["raw_signal_sha256"].encode("utf-8"),
+            row["relative_path"].encode("utf-8"),
+        )
+
+    composite_manifest = _reseal({**manifest, "candidates": sorted(composite_candidates, key=candidate_sort_key)})
+    assert not _issues(composite_manifest, resolver=vector.resolver)
+
+    oversized = deepcopy(candidate)
+    oversized.update(
+        {
+            "relative_path": "signals/oversized.json",
+            "raw_signal_sha256": _digest("oversized-static-bytes"),
+            "raw_byte_length": "16385",
+            "declared_signal_id": None,
+            "producer_sequence": None,
+            "producer_scope_key_sha256": None,
+        }
+    )
+    assert not _issues(_reseal({**manifest, "candidates": [oversized]}), resolver=vector.resolver)
+    partial_hint = deepcopy(candidate)
+    partial_hint.update(
+        {
+            "relative_path": "signals/partial-hint.json",
+            "raw_signal_sha256": _digest("partial-hint-static-bytes"),
+            "raw_byte_length": "1",
+            "declared_signal_id": _digest("partial-declared-signal"),
+            "producer_sequence": None,
+            "producer_scope_key_sha256": None,
+        }
+    )
+    assert not _issues(_reseal({**manifest, "candidates": [partial_hint]}), resolver=vector.resolver)
+
     duplicate_promotion = deepcopy(registry)
     duplicate_promotion["promotions"].append(deepcopy(promotion))
     duplicate_candidate = deepcopy(manifest)
     duplicate_candidate["candidates"].append(deepcopy(candidate))
-    wrong_registry = deepcopy(manifest)
-    wrong_registry["model_registry_sha256"] = _digest("other-registry")
     unsafe_path = deepcopy(manifest)
     unsafe_path["candidates"][0]["relative_path"] = "../signal.json"
+    stale_scope_key = deepcopy(registry)
+    stale_scope_key["promotions"][0]["producer_scope_key_sha256"] = _digest("stale-producer-scope")
+    reversed_promotions = deepcopy(two_promotions)
+    reversed_promotions["promotions"].reverse()
+    reversed_candidates = deepcopy(two_candidates)
+    reversed_candidates["candidates"].reverse()
+    duplicate_path = deepcopy(two_candidates)
+    duplicate_path["candidates"][1]["relative_path"] = candidate["relative_path"]
+    duplicate_request_tuple = deepcopy(two_candidates)
+    duplicate_request_tuple["candidates"][1].update(
+        {
+            "requested_producer_scope_key_sha256": candidate["requested_producer_scope_key_sha256"],
+            "producer_sequence": candidate["producer_sequence"],
+            "raw_signal_sha256": candidate["raw_signal_sha256"],
+        }
+    )
+    empty_registry = _reseal({**registry, "promotions": []})
+    empty_manifest = _reseal({**manifest, "candidates": []})
+    assert not _issues(empty_registry, resolver=vector.resolver)
+    assert not _issues(empty_manifest, resolver=vector.resolver)
+    zero_horizon = deepcopy(registry)
+    zero_horizon["promotions"][0]["horizon_ns"] = "0"
+    zero_horizon["promotions"][0]["producer_scope_key_sha256"] = scope_key(zero_horizon["promotions"][0])
+    uncertainty_over = deepcopy(registry)
+    uncertainty_over["promotions"][0]["max_uncertainty_q18"] = "1000000000000000001"
+    zero_ttl = deepcopy(registry)
+    zero_ttl["promotions"][0]["max_ttl_ns"] = "0"
+    keyed_duplicate = deepcopy(registry)
+    distinct_same_scope = deepcopy(promotion)
+    distinct_same_scope["status"] = "ENABLED"
+    keyed_duplicate["promotions"].append(distinct_same_scope)
+    non_nfc_path = deepcopy(manifest)
+    non_nfc_path["candidates"][0]["relative_path"] = "signals/e\u0301.json"
+    reversed_composite = deepcopy(composite_manifest)
+    reversed_composite["candidates"].reverse()
+    zero_with_hint = deepcopy(candidate)
+    zero_with_hint.update(
+        {
+            "raw_byte_length": "0",
+            "declared_signal_id": _digest("forbidden-zero-byte-hint"),
+        }
+    )
+    oversized_with_hint = deepcopy(oversized)
+    oversized_with_hint["producer_sequence"] = "0"
     for mutation in (
         _reseal(duplicate_promotion),
         _reseal(duplicate_candidate),
-        _reseal(wrong_registry),
         _reseal(unsafe_path),
+        _reseal(stale_scope_key),
+        _reseal(reversed_promotions),
+        _reseal(reversed_candidates),
+        _reseal(duplicate_path),
+        _reseal(duplicate_request_tuple),
+        _reseal(zero_horizon),
+        _reseal(uncertainty_over),
+        _reseal(zero_ttl),
+        _reseal(keyed_duplicate),
+        _reseal(non_nfc_path),
+        _reseal(reversed_composite),
+        _reseal({**manifest, "candidates": [zero_with_hint]}),
+        _reseal({**manifest, "candidates": [oversized_with_hint]}),
     ):
         _assert_invalid(mutation, resolver=vector.resolver)
 
@@ -1873,6 +2667,7 @@ def test_model_registry_and_signal_manifest_are_set_closed() -> None:
 def test_model_validation_fallback_tuple_is_closed() -> None:
     vector = build_t02_vector()
     rejected = vector.documents["trading.model-validation-receipt/v1"]
+    _assert_independent_basic_oracles(rejected, resolver=vector.resolver)
     fallback = {
         "accepted_signal_id": None,
         "canonical_action": "ABSTAIN",
@@ -1898,6 +2693,12 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             "reason_codes": ["SIG_EXPIRED"],
         }
     )
+    expired_with_deadline = _reseal(
+        {
+            **expired,
+            "reason_codes": ["SIG_EXPIRED", "SIG_DEADLINE_MISS"],
+        }
+    )
     drift_disabled = _reseal(
         {
             **rejected,
@@ -1907,9 +2708,98 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             "expires_replay_clock_ns": "2",
         }
     )
-    receipts = (rejected, expired, drift_disabled)
+    rejected_deadline_only = _reseal(
+        {
+            **rejected,
+            **parsed_evidence,
+            "status": "REJECTED",
+            "reason_codes": ["SIG_DEADLINE_MISS"],
+        }
+    )
+    rejected_disabled_ood = _reseal(
+        {
+            **rejected,
+            **parsed_evidence,
+            "status": "REJECTED",
+            "reason_codes": ["SIG_UNCERTAIN_OR_OOD", "SIG_DRIFT_DISABLED"],
+        }
+    )
+    reason_precedence = (
+        "SIG_BYTES_INVALID",
+        "SIG_SCHEMA_UNKNOWN",
+        "SIG_ID_MISMATCH",
+        "SIG_ORDER_SHAPED",
+        "SIG_MODEL_UNPINNED",
+        "SIG_RUNTIME_SUBSTITUTION",
+        "SIG_SCOPE_MISMATCH",
+        "SIG_FEATURE_MISMATCH",
+        "SIG_PRODUCER_SEQUENCE_INVALID",
+        "SIG_REPLAYED",
+        "SIG_TIME_INVALID",
+        "SIG_TTL_RANGE",
+        "SIG_EXPIRED",
+        "SIG_DEADLINE_MISS",
+        "SIG_NUMERIC_INVALID",
+        "SIG_PROBABILITY_INVALID",
+        "SIG_ACTION_INCONSISTENT",
+        "SIG_CALIBRATION_UNKNOWN",
+        "SIG_UNCERTAIN_OR_OOD",
+        "SIG_DRIFT_DISABLED",
+    )
+    singleton_receipts: list[dict[str, Any]] = []
+    for reason in reason_precedence:
+        if reason == "SIG_DRIFT_DISABLED":
+            status = "DRIFT_DISABLED"
+        elif reason == "SIG_EXPIRED":
+            status = "EXPIRED"
+        else:
+            status = "REJECTED"
+        evidence = {} if reason == "SIG_BYTES_INVALID" else parsed_evidence
+        singleton_receipts.append(
+            _reseal(
+                {
+                    **rejected,
+                    **evidence,
+                    "status": status,
+                    "reason_codes": [reason],
+                }
+            )
+        )
+    all_reason_receipt = _reseal({**rejected, "status": "REJECTED", "reason_codes": list(reason_precedence)})
+    accepted_shape = _reseal(
+        {
+            **rejected,
+            **parsed_evidence,
+            "status": "ACCEPTED",
+            "reason_codes": [],
+            "accepted_signal_id": _digest("static-accepted-shape-only"),
+            "canonical_action": "LONG_BIAS",
+            "canonical_score_q18": "1",
+            "canonical_probability_abstain_q18": "0",
+            "canonical_probability_long_bias_q18": "1000000000000000000",
+            "canonical_probability_exit_bias_q18": "0",
+            "canonical_uncertainty_q18": "0",
+            "canonical_ood_score_q18": "0",
+        }
+    )
+    receipts = (
+        rejected,
+        expired,
+        expired_with_deadline,
+        drift_disabled,
+        rejected_deadline_only,
+        rejected_disabled_ood,
+    )
     resolver = SyntheticResolver(
-        (*vector.documents.values(), *receipts, *vector.source_receipts, *vector.raw_events),
+        (
+            *vector.documents.values(),
+            *receipts,
+            *singleton_receipts,
+            all_reason_receipt,
+            accepted_shape,
+            *vector.source_receipts,
+            *vector.raw_events,
+        ),
         (*vector.attachment_payloads.values(),),
     )
     for receipt in receipts:
@@ -1919,8 +2809,16 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
     assert [receipt["status"] for receipt in receipts] == [
         "REJECTED",
         "EXPIRED",
+        "EXPIRED",
         "DRIFT_DISABLED",
+        "REJECTED",
+        "REJECTED",
     ]
+    for reason, receipt in zip(reason_precedence, singleton_receipts, strict=True):
+        assert receipt["reason_codes"] == [reason]
+        assert not _issues(receipt, resolver=resolver)
+    assert not _issues(all_reason_receipt, resolver=resolver)
+    assert not _issues(accepted_shape, resolver=resolver)
     mutations: list[dict[str, Any]] = []
     for receipt in receipts:
         for field, wrong in (
@@ -1928,7 +2826,10 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             ("canonical_action", "LONG_BIAS"),
             ("canonical_score_q18", "1"),
             ("canonical_probability_abstain_q18", "999999999999999999"),
+            ("canonical_probability_long_bias_q18", "1"),
+            ("canonical_probability_exit_bias_q18", "1"),
             ("canonical_uncertainty_q18", "0"),
+            ("canonical_ood_score_q18", "0"),
         ):
             mutations.append(_reseal({**receipt, field: wrong}))
     mutations.extend(
@@ -1936,6 +2837,16 @@ def test_model_validation_fallback_tuple_is_closed() -> None:
             _reseal({**expired, "status": "REJECTED"}),
             _reseal({**drift_disabled, "status": "EXPIRED"}),
             _reseal({**drift_disabled, "reason_codes": ["SIG_EXPIRED"]}),
+            _reseal({**expired_with_deadline, "reason_codes": ["SIG_DEADLINE_MISS", "SIG_EXPIRED"]}),
+            _reseal({**drift_disabled, "reason_codes": ["SIG_DRIFT_DISABLED", "SIG_DRIFT_DISABLED"]}),
+            _reseal({**rejected, "reason_codes": ["SIG_UNKNOWN"]}),
+            _reseal({**rejected_disabled_ood, "status": "DRIFT_DISABLED"}),
+            _reseal({**all_reason_receipt, "reason_codes": list(reversed(reason_precedence))}),
+            _reseal({**accepted_shape, "accepted_signal_id": None}),
+            _reseal({**accepted_shape, "canonical_probability_long_bias_q18": "999999999999999999"}),
+            _reseal({**accepted_shape, "canonical_probability_long_bias_q18": "1000000000000000001"}),
+            _reseal({**rejected, "declared_signal_id": _digest("fabricated-byte-invalid-declaration")}),
+            _reseal({**rejected, "available_replay_clock_ns": None}),
         )
     )
     for mutation in mutations:

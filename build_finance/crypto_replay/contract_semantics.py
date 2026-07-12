@@ -11,9 +11,10 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
+from itertools import pairwise
 from typing import Any, Literal
 
-from build_finance.crypto_replay.canonical import JsonValue
+from build_finance.crypto_replay.canonical import JsonValue, canonical_json_bytes, sha256_hex
 from build_finance.crypto_replay.formats import parse_bounded_decimal_string
 from build_finance.crypto_replay.schema_model import ValidationIssue
 
@@ -50,7 +51,77 @@ CONFIG_ADMISSION_REASON_PRECEDENCE = (
     "CONFIG_ID_MISMATCH",
     "CONFIG_RANGE_INVALID",
 )
+RUN_CLOSURE_REASON_PRECEDENCE = (
+    "ADMISSION_COUNTER_CAPACITY",
+    "ADMISSION_RUN_END_PROOF_BUDGET",
+    "ADMISSION_RUN_END_UNCLOSED",
+)
+RUN_CLOSURE_MARKET_REASON_PRECEDENCE = (
+    "CLOSURE_H_MISSING",
+    "CLOSURE_CANDIDATE_CARDINALITY",
+    "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+    "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+    "CLOSURE_IDENTITY_MISMATCH",
+    "CLOSURE_DECIMALS_MISMATCH",
+    "CLOSURE_Q_CAP_RANGE",
+    "CLOSURE_CAPACITY_INSUFFICIENT",
+    "CLOSURE_REFERENCE_SET_INVALID",
+    "CLOSURE_PROOF_ROW_COUNT_RANGE",
+    "CLOSURE_STATE_ENVELOPE_RANGE",
+    "CLOSURE_PROOF_PREDICATE_FAILED",
+)
+QUARANTINE_REASON_PRECEDENCE = (
+    "QUARANTINE_INITIAL_PREFIX_ANCHOR_MISSING",
+    "QUARANTINE_LEDGER_SLOT_MISSING",
+    "QUARANTINE_LEDGER_SLOT_WRONG",
+    "QUARANTINE_LEDGER_SLOT_EXTRA",
+    "QUARANTINE_APPEND_SLOT_OCCUPIED",
+    "QUARANTINE_COMPONENT_MISSING",
+    "QUARANTINE_COMPONENT_WRONG",
+    "QUARANTINE_COMPONENT_EXTRA",
+    "QUARANTINE_FOOTPRINT_MISMATCH",
+)
+QUARANTINE_COMPONENT_KIND_PRECEDENCE = (
+    "JOURNAL_KEY",
+    "CANONICAL_OBJECT",
+    "LEDGER_SEQUENCE_START",
+    "LEDGER_SEQUENCE_END",
+    "CONSUMED_PRODUCER_SEQUENCE",
+    "CLAIMED_REQUEST_KEY",
+    "PRIOR_LEDGER_HEAD",
+    "PRIOR_PORTFOLIO_STATE",
+    "RESULTING_LEDGER_HEAD",
+    "RESULTING_PORTFOLIO_STATE",
+    "NEXT_LEDGER_SEQUENCE",
+    "NEXT_STATE_SEQUENCE",
+    "NEXT_DECISION_SEQUENCE",
+    "NEXT_INTENT_SEQUENCE",
+    "NEXT_FILL_RECEIPT_SEQUENCE",
+)
+MODEL_VALIDATION_REASON_PRECEDENCE = (
+    "SIG_BYTES_INVALID",
+    "SIG_SCHEMA_UNKNOWN",
+    "SIG_ID_MISMATCH",
+    "SIG_ORDER_SHAPED",
+    "SIG_MODEL_UNPINNED",
+    "SIG_RUNTIME_SUBSTITUTION",
+    "SIG_SCOPE_MISMATCH",
+    "SIG_FEATURE_MISMATCH",
+    "SIG_PRODUCER_SEQUENCE_INVALID",
+    "SIG_REPLAYED",
+    "SIG_TIME_INVALID",
+    "SIG_TTL_RANGE",
+    "SIG_EXPIRED",
+    "SIG_DEADLINE_MISS",
+    "SIG_NUMERIC_INVALID",
+    "SIG_PROBABILITY_INVALID",
+    "SIG_ACTION_INCONSISTENT",
+    "SIG_CALIBRATION_UNKNOWN",
+    "SIG_UNCERTAIN_OR_OOD",
+    "SIG_DRIFT_DISABLED",
+)
 _MAX_RUN_CLOSURE_PROOF_ROWS_V0 = 1_000_000
+_Q18_UNIT = 1_000_000_000_000_000_000
 
 SemanticValidator = Callable[[Mapping[str, JsonValue]], tuple[ValidationIssue, ...]]
 
@@ -2081,6 +2152,792 @@ def validate_config_admission_receipt_semantics(
     return tuple(issues)
 
 
+def _check_reason_order(
+    values: object,
+    precedence: tuple[str, ...],
+    *,
+    path: tuple[str | int, ...],
+) -> tuple[tuple[str, ...], list[ValidationIssue]]:
+    assert isinstance(values, list)
+    codes = tuple(values)
+    issues: list[ValidationIssue] = []
+    try:
+        normalized = _normalize_reason_codes(codes, precedence)
+    except ValueError as error:
+        issues.append(_issue("semantic_reason_codes", path, str(error)))
+        normalized = codes
+    if codes != normalized:
+        issues.append(_issue("semantic_reason_order", path, "reason codes are not in normative precedence"))
+    return codes, issues
+
+
+def _utf8_sort_key(value: str) -> bytes:
+    return value.encode("utf-8", errors="strict")
+
+
+def validate_run_closure_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate Task-8 closure status, reason, budget, and row-presence shape only."""
+    issues: list[ValidationIssue] = []
+    reason_codes, reason_issues = _check_reason_order(
+        document["reason_codes"], RUN_CLOSURE_REASON_PRECEDENCE, path=("reason_codes",)
+    )
+    issues.extend(reason_issues)
+
+    source_ids = document["source_admission_receipt_ids"]
+    assert isinstance(source_ids, list)
+    if source_ids != sorted(source_ids, key=_utf8_sort_key) or len(source_ids) != len(set(source_ids)):
+        issues.append(
+            _issue(
+                "semantic_source_set",
+                ("source_admission_receipt_ids",),
+                "source receipt IDs must be unique and sorted by unsigned UTF-8 bytes",
+            )
+        )
+
+    mode = document["model_signal_mode"]
+    registry_id = document["model_registry_sha256"]
+    manifest_id = document["model_signal_manifest_sha256"]
+    if mode == "DISABLED":
+        if registry_id is not None or manifest_id is not None:
+            issues.append(
+                _issue("semantic_model_mode", ("model_signal_mode",), "disabled mode requires both model IDs null")
+            )
+    elif registry_id is None or manifest_id is None:
+        issues.append(_issue("semantic_model_mode", ("model_signal_mode",), "cached mode requires both model IDs"))
+
+    parsed_scalars: dict[str, int | None] = {}
+    for field in ("terminal_equal_time_group", "proof_row_limit", "proof_row_count_total"):
+        value = document[field]
+        parsed = None if value is None else _u64(value)
+        parsed_scalars[field] = parsed
+        if value is not None and parsed is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+    proof_limit = parsed_scalars["proof_row_limit"]
+    if proof_limit is not None and not 1 <= proof_limit <= _MAX_RUN_CLOSURE_PROOF_ROWS_V0:
+        issues.append(
+            _issue(
+                "semantic_proof_cap",
+                ("proof_row_limit",),
+                "proof-row limit exceeds the effective v0 protocol cap",
+            )
+        )
+
+    market_values = document["market_proofs"]
+    assert isinstance(market_values, list)
+    market_rows = [row for row in market_values if isinstance(row, Mapping)]
+    market_ids = [str(row["market_id"]) for row in market_rows]
+    if market_ids != sorted(market_ids, key=_utf8_sort_key) or len(market_ids) != len(set(market_ids)):
+        issues.append(
+            _issue(
+                "semantic_market_order",
+                ("market_proofs",),
+                "market proof rows must be unique and sorted by unsigned UTF-8 market_id",
+            )
+        )
+
+    row_codes: list[tuple[str, ...]] = []
+    for index, row in enumerate(market_rows):
+        codes, code_issues = _check_reason_order(
+            row["failure_codes"],
+            RUN_CLOSURE_MARKET_REASON_PRECEDENCE,
+            path=("market_proofs", index, "failure_codes"),
+        )
+        issues.extend(code_issues)
+        row_codes.append(codes)
+        code_set = frozenset(codes)
+        candidate_codes = frozenset(
+            {
+                "CLOSURE_CANDIDATE_CARDINALITY",
+                "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+                "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+                "CLOSURE_IDENTITY_MISMATCH",
+                "CLOSURE_DECIMALS_MISMATCH",
+                "CLOSURE_CAPACITY_INSUFFICIENT",
+            }
+        )
+        if "CLOSURE_H_MISSING" in code_set and candidate_codes.intersection(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "a missing trigger horizon skips every candidate-dependent predicate",
+                )
+            )
+        if "CLOSURE_PROOF_PREDICATE_FAILED" in code_set and code_set != {"CLOSURE_PROOF_PREDICATE_FAILED"}:
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "proof-predicate failure is reachable only after every pre-proof code passes",
+                )
+            )
+        if {
+            "CLOSURE_CANDIDATE_CARDINALITY",
+            "CLOSURE_CANDIDATE_SCHEMA_INVALID",
+        }.issubset(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "candidate cardinality and candidate schema failure are mutually exclusive",
+                )
+            )
+        candidate_later_codes = frozenset(
+            {
+                "CLOSURE_CANDIDATE_NON_EXECUTABLE",
+                "CLOSURE_IDENTITY_MISMATCH",
+                "CLOSURE_DECIMALS_MISMATCH",
+                "CLOSURE_CAPACITY_INSUFFICIENT",
+            }
+        )
+        if "CLOSURE_CANDIDATE_CARDINALITY" in code_set and candidate_later_codes.intersection(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "candidate cardinality stops all later candidate predicates",
+                )
+            )
+        if "CLOSURE_CANDIDATE_SCHEMA_INVALID" in code_set and candidate_later_codes.intersection(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "candidate schema failure stops all later candidate predicates",
+                )
+            )
+        if {
+            "CLOSURE_Q_CAP_RANGE",
+            "CLOSURE_CAPACITY_INSUFFICIENT",
+        }.issubset(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "candidate capacity cannot be compared without a representable Q-cap",
+                )
+            )
+        if "CLOSURE_PROOF_ROW_COUNT_RANGE" in code_set and {
+            "CLOSURE_Q_CAP_RANGE",
+            "CLOSURE_REFERENCE_SET_INVALID",
+        }.intersection(code_set):
+            issues.append(
+                _issue(
+                    "semantic_failure_phase",
+                    ("market_proofs", index, "failure_codes"),
+                    "proof-row count runs only after Q-cap and reference-count derivation succeed",
+                )
+            )
+        for field in (
+            "earliest_trigger_equal_time_group",
+            "q_cap_base_atoms",
+            "capacity_base_atoms",
+            "reference_price_count",
+            "adverse_fill_extreme_count",
+            "proof_row_count",
+        ):
+            value = row[field]
+            if value is not None and _u64(value) is None:
+                issues.append(
+                    _issue(
+                        "semantic_u64",
+                        ("market_proofs", index, field),
+                        "value exceeds the u64 authority range",
+                    )
+                )
+        extreme_count = row["adverse_fill_extreme_count"]
+        if extreme_count is not None and _u64(extreme_count) not in (1, 2):
+            issues.append(
+                _issue(
+                    "semantic_extreme_count",
+                    ("market_proofs", index, "adverse_fill_extreme_count"),
+                    "valid-force structural rows require one or two fill extremes",
+                )
+            )
+
+    any_h_missing = any("CLOSURE_H_MISSING" in codes for codes in row_codes)
+    preproof_codes = frozenset(RUN_CLOSURE_MARKET_REASON_PRECEDENCE[:-1])
+    any_preproof_failure = any(preproof_codes.intersection(codes) for codes in row_codes)
+    global_proof_gate_open = document["proof_budget_status"] == "WITHIN_LIMIT" and not any_preproof_failure
+    if any_h_missing and any("CLOSURE_STATE_ENVELOPE_RANGE" in codes for codes in row_codes):
+        issues.append(
+            _issue(
+                "semantic_failure_phase",
+                ("market_proofs",),
+                "state-envelope predicates are globally unreachable when any trigger horizon is absent",
+            )
+        )
+    if not global_proof_gate_open and any("CLOSURE_PROOF_PREDICATE_FAILED" in codes for codes in row_codes):
+        issues.append(
+            _issue(
+                "semantic_failure_phase",
+                ("market_proofs",),
+                "proof-predicate failure is globally unreachable before pre-proof and budget gates pass",
+            )
+        )
+    candidate_blockers = frozenset(
+        {"CLOSURE_H_MISSING", "CLOSURE_CANDIDATE_CARDINALITY", "CLOSURE_CANDIDATE_SCHEMA_INVALID"}
+    )
+
+    def require_presence(index: int, row: Mapping[str, JsonValue], field: str, expected: bool) -> None:
+        actual = row[field] is not None
+        if actual != expected:
+            issues.append(
+                _issue(
+                    "semantic_field_presence",
+                    ("market_proofs", index, field),
+                    f"field must be {'present' if expected else 'null'} under the closed failure matrix",
+                )
+            )
+
+    for index, (row, codes) in enumerate(zip(market_rows, row_codes, strict=True)):
+        code_set = frozenset(codes)
+        h_present = "CLOSURE_H_MISSING" not in code_set
+        candidate_present = h_present and code_set.isdisjoint(candidate_blockers)
+        q_cap_present = "CLOSURE_Q_CAP_RANGE" not in code_set
+        reference_present = "CLOSURE_REFERENCE_SET_INVALID" not in code_set
+        proof_count_present = q_cap_present and reference_present and "CLOSURE_PROOF_ROW_COUNT_RANGE" not in code_set
+        state_present = not any_h_missing and "CLOSURE_STATE_ENVELOPE_RANGE" not in code_set
+        require_presence(index, row, "earliest_trigger_equal_time_group", h_present)
+        for field in ("fill_event_id", "capacity_base_atoms", "fill_candidate_semantic_sha256"):
+            require_presence(index, row, field, candidate_present)
+        require_presence(index, row, "q_cap_base_atoms", q_cap_present)
+        require_presence(index, row, "reference_price_count", reference_present)
+        require_presence(index, row, "reference_set_root_sha256", reference_present)
+        require_presence(index, row, "proof_row_count", proof_count_present)
+        require_presence(index, row, "state_envelope_sha256", state_present)
+        require_presence(index, row, "adverse_fill_extreme_count", True)
+        require_presence(index, row, "proof_domain", global_proof_gate_open)
+        require_presence(
+            index,
+            row,
+            "proof_root_sha256",
+            global_proof_gate_open and "CLOSURE_PROOF_PREDICATE_FAILED" not in code_set,
+        )
+
+    validated_config = document["validated_config_sha256"] is not None
+    status = document["status"]
+    counter_status = document["counter_capacity_status"]
+    policy = document["run_end_position_policy"]
+    budget_status = document["proof_budget_status"]
+    proof_total = parsed_scalars["proof_row_count_total"]
+    terminal_present = document["terminal_equal_time_group"] is not None
+
+    if validated_config and policy == "FORCE_CLOSE_NEXT_EVENT":
+        count_overflow = any("CLOSURE_PROOF_ROW_COUNT_RANGE" in codes for codes in row_codes)
+        if count_overflow:
+            expected_proof_total: int | None = None
+        else:
+            unbounded_total = sum(
+                0
+                if row["proof_row_count"] is None or _u64(row["proof_row_count"]) is None
+                else _u64(row["proof_row_count"]) or 0
+                for row in market_rows
+            )
+            expected_proof_total = unbounded_total if unbounded_total <= _MAX_U64 else None
+        if proof_total != expected_proof_total:
+            issues.append(
+                _issue(
+                    "semantic_proof_total",
+                    ("proof_row_count_total",),
+                    "proof-row total must equal the checked sum of all retained market-row counts",
+                )
+            )
+        expected_budget = (
+            "EXCEEDED"
+            if expected_proof_total is None or (proof_limit is not None and expected_proof_total > proof_limit)
+            else "WITHIN_LIMIT"
+        )
+        if budget_status != expected_budget:
+            issues.append(
+                _issue(
+                    "semantic_proof_budget",
+                    ("proof_budget_status",),
+                    "proof budget status does not match the checked total and effective limit",
+                )
+            )
+
+    if status == "FAIL" and terminal_present:
+        issues.append(_issue("semantic_closure_tuple", ("terminal_equal_time_group",), "FAIL requires null terminal"))
+    if status != "FAIL" and not terminal_present:
+        issues.append(
+            _issue("semantic_closure_tuple", ("terminal_equal_time_group",), "passing closure requires terminal group")
+        )
+
+    if not validated_config:
+        if proof_limit is not None or proof_total != 0 or budget_status != "NOT_REQUIRED" or market_rows:
+            issues.append(
+                _issue(
+                    "semantic_closure_layout",
+                    ("proof_row_limit",),
+                    "missing/invalid config always retains the zero-authority proof layout",
+                )
+            )
+    elif policy == "LEAVE_MARKED_OPEN":
+        if proof_limit is None or proof_total != 0 or budget_status != "NOT_REQUIRED" or market_rows:
+            issues.append(
+                _issue(
+                    "semantic_closure_layout",
+                    ("market_proofs",),
+                    "valid leave-open always retains limit/zero/NOT_REQUIRED/empty proof layout",
+                )
+            )
+    else:
+        if not market_rows or proof_limit is None or budget_status == "NOT_REQUIRED":
+            issues.append(
+                _issue(
+                    "semantic_closure_layout",
+                    ("market_proofs",),
+                    "valid force-close always retains complete market rows and a budget result",
+                )
+            )
+        if budget_status == "EXCEEDED":
+            if proof_total is not None and proof_limit is not None and proof_total <= proof_limit:
+                issues.append(
+                    _issue(
+                        "semantic_proof_budget",
+                        ("proof_row_count_total",),
+                        "EXCEEDED requires total above limit or null",
+                    )
+                )
+        elif budget_status == "WITHIN_LIMIT":
+            if proof_total is None or (proof_limit is not None and proof_total > proof_limit):
+                issues.append(
+                    _issue("semantic_proof_budget", ("proof_row_count_total",), "WITHIN_LIMIT requires bounded total")
+                )
+
+    if counter_status == "EXCEEDED":
+        if status != "FAIL" or reason_codes != (
+            "ADMISSION_COUNTER_CAPACITY",
+            "ADMISSION_RUN_END_UNCLOSED",
+        ):
+            issues.append(
+                _issue("semantic_closure_tuple", ("reason_codes",), "counter exhaustion owns the exact failure tuple")
+            )
+    elif not validated_config:
+        if status != "NOT_REQUIRED_ZERO_AUTHORITY" or reason_codes:
+            issues.append(
+                _issue(
+                    "semantic_closure_tuple",
+                    ("status",),
+                    "missing/invalid config with capacity requires the exact zero-authority status tuple",
+                )
+            )
+    elif policy == "LEAVE_MARKED_OPEN":
+        if status != "PASS" or reason_codes:
+            issues.append(_issue("semantic_closure_tuple", ("status",), "valid leave-open with capacity requires PASS"))
+    elif budget_status == "EXCEEDED":
+        if status != "FAIL" or reason_codes != (
+            "ADMISSION_RUN_END_PROOF_BUDGET",
+            "ADMISSION_RUN_END_UNCLOSED",
+        ):
+            issues.append(
+                _issue("semantic_closure_tuple", ("reason_codes",), "proof budget exhaustion owns its exact tuple")
+            )
+    elif budget_status == "WITHIN_LIMIT":
+        has_failure = any(row_codes)
+        expected_status = "FAIL" if has_failure else "PASS"
+        expected_reasons: tuple[str, ...] = ("ADMISSION_RUN_END_UNCLOSED",) if has_failure else ()
+        if status != expected_status or reason_codes != expected_reasons:
+            issues.append(
+                _issue("semantic_closure_tuple", ("status",), "force-close status does not match row results")
+            )
+    return tuple(issues)
+
+
+def validate_execution_quarantine_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate exact out-of-band slot/component classifiers and reason totality."""
+    issues: list[ValidationIssue] = []
+    reason_codes, reason_issues = _check_reason_order(
+        document["reason_codes"], QUARANTINE_REASON_PRECEDENCE, path=("reason_codes",)
+    )
+    issues.extend(reason_issues)
+    slot_values = document["slot_observations"]
+    component_values = document["component_observations"]
+    assert isinstance(slot_values, list) and isinstance(component_values, list)
+    if not slot_values and not component_values:
+        issues.append(
+            _issue("semantic_quarantine_totality", ("slot_observations",), "at least one observation is required")
+        )
+
+    head = document["last_verified_ledger_head_id"]
+    state = document["last_verified_portfolio_state_id"]
+    if (head is None) != (state is None):
+        issues.append(_issue("semantic_anchor", ("last_verified_ledger_head_id",), "anchors have mixed nullability"))
+    initial_prefix = head is None and state is None
+
+    expected_reasons: set[str] = {"QUARANTINE_FOOTPRINT_MISMATCH"}
+    if initial_prefix:
+        expected_reasons.add("QUARANTINE_INITIAL_PREFIX_ANCHOR_MISSING")
+    if document["expected_footprint_sha256"] == document["observed_footprint_sha256"]:
+        issues.append(
+            _issue(
+                "semantic_footprint_mismatch",
+                ("observed_footprint_sha256",),
+                "mismatch observations require unequal expected and observed footprint digests",
+            )
+        )
+    slot_keys: list[int] = []
+    for index, value in enumerate(slot_values):
+        assert isinstance(value, Mapping)
+        row = value
+        sequence = _u64(row["ledger_sequence"])
+        if sequence is None:
+            issues.append(
+                _issue("semantic_u64", ("slot_observations", index, "ledger_sequence"), "slot exceeds u64 range")
+            )
+        else:
+            slot_keys.append(sequence)
+        classification = row["classification"]
+        expected_id = row["expected_ledger_record_id"]
+        observed_id = row["observed_ledger_record_id"]
+        observed_bytes = row["observed_byte_sha256"]
+        if classification == "MISSING":
+            valid = expected_id is not None and observed_id is None and observed_bytes is None
+            expected_reasons.add("QUARANTINE_LEDGER_SLOT_MISSING")
+        elif classification == "WRONG":
+            valid = expected_id is not None and observed_bytes is not None
+            expected_reasons.update({"QUARANTINE_LEDGER_SLOT_WRONG", "QUARANTINE_APPEND_SLOT_OCCUPIED"})
+        else:
+            valid = expected_id is None and observed_bytes is not None
+            expected_reasons.update({"QUARANTINE_LEDGER_SLOT_EXTRA", "QUARANTINE_APPEND_SLOT_OCCUPIED"})
+        if not valid:
+            issues.append(
+                _issue(
+                    "semantic_slot_classification",
+                    ("slot_observations", index),
+                    "slot observation violates classification nullability",
+                )
+            )
+    if slot_keys != sorted(slot_keys) or len(slot_keys) != len(set(slot_keys)):
+        issues.append(
+            _issue("semantic_slot_order", ("slot_observations",), "slot observations must be unique numeric ascending")
+        )
+    elif any(right != left + 1 for left, right in pairwise(slot_keys)):
+        issues.append(
+            _issue(
+                "semantic_slot_window",
+                ("slot_observations",),
+                "slot observations must form the exact contiguous unsafe window",
+            )
+        )
+    first_unsafe = document["first_unsafe_ledger_sequence"]
+    if slot_values:
+        if _u64(first_unsafe) != (min(slot_keys) if slot_keys else None):
+            issues.append(
+                _issue("semantic_first_unsafe", ("first_unsafe_ledger_sequence",), "first unsafe slot must be minimal")
+            )
+    elif first_unsafe is not None:
+        issues.append(
+            _issue(
+                "semantic_first_unsafe", ("first_unsafe_ledger_sequence",), "component-only receipt requires null slot"
+            )
+        )
+
+    rank = {name: index for index, name in enumerate(QUARANTINE_COMPONENT_KIND_PRECEDENCE)}
+    component_keys: list[tuple[int, int]] = []
+    for index, value in enumerate(component_values):
+        assert isinstance(value, Mapping)
+        row = value
+        kind = str(row["component_kind"])
+        ordinal = row["ordinal"]
+        parsed_ordinal = None if ordinal is None else _u64(ordinal)
+        if kind == "CANONICAL_OBJECT":
+            if parsed_ordinal is None:
+                issues.append(
+                    _issue(
+                        "semantic_component_ordinal",
+                        ("component_observations", index, "ordinal"),
+                        "canonical objects require a u64 ordinal",
+                    )
+                )
+            key_ordinal = -1 if parsed_ordinal is None else parsed_ordinal
+        else:
+            if ordinal is not None:
+                issues.append(
+                    _issue(
+                        "semantic_component_ordinal",
+                        ("component_observations", index, "ordinal"),
+                        "scalar components require null ordinal",
+                    )
+                )
+            key_ordinal = -1
+        component_keys.append((rank[kind], key_ordinal))
+        classification = row["classification"]
+        expected_digest = row["expected_component_sha256"]
+        observed_digest = row["observed_component_sha256"]
+        if classification == "MISSING":
+            valid = expected_digest is not None and observed_digest is None
+            expected_reasons.add("QUARANTINE_COMPONENT_MISSING")
+        elif classification == "WRONG":
+            valid = expected_digest is not None and observed_digest is not None and expected_digest != observed_digest
+            expected_reasons.add("QUARANTINE_COMPONENT_WRONG")
+        else:
+            valid = expected_digest is None and observed_digest is not None
+            expected_reasons.add("QUARANTINE_COMPONENT_EXTRA")
+        if not valid:
+            issues.append(
+                _issue(
+                    "semantic_component_classification",
+                    ("component_observations", index),
+                    "component observation violates classification nullability",
+                )
+            )
+    if component_keys != sorted(component_keys) or len(component_keys) != len(set(component_keys)):
+        issues.append(
+            _issue(
+                "semantic_component_order",
+                ("component_observations",),
+                "component observations must be unique in normative rank/ordinal order",
+            )
+        )
+    expected_ordered = tuple(code for code in QUARANTINE_REASON_PRECEDENCE if code in expected_reasons)
+    if reason_codes != expected_ordered:
+        issues.append(
+            _issue("semantic_quarantine_reasons", ("reason_codes",), "reason set is not exhaustive for observations")
+        )
+    return tuple(issues)
+
+
+_PRODUCER_SCOPE_FIELDS = (
+    "adapter_sha256",
+    "calibration_sha256",
+    "calibration_version",
+    "feature_set_version",
+    "horizon_ns",
+    "market_id",
+    "model_artifact_sha256",
+    "model_id",
+    "model_version",
+    "producer_id",
+    "runtime_profile_id",
+)
+
+
+def validate_model_registry_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate immutable promotion scope keys, order, and scalar bounds."""
+    issues: list[ValidationIssue] = []
+    values = document["promotions"]
+    assert isinstance(values, list)
+    keys: list[str] = []
+    for index, value in enumerate(values):
+        assert isinstance(value, Mapping)
+        row = value
+        key = str(row["producer_scope_key_sha256"])
+        keys.append(key)
+        expected = sha256_hex(canonical_json_bytes({field: row[field] for field in _PRODUCER_SCOPE_FIELDS}))
+        if key != expected:
+            issues.append(
+                _issue(
+                    "semantic_scope_key",
+                    ("promotions", index, "producer_scope_key_sha256"),
+                    "scope key does not hash the exact immutable scope tuple",
+                )
+            )
+        for field in ("horizon_ns", "max_ttl_ns"):
+            parsed = _u64(row[field])
+            if parsed is None or parsed == 0:
+                issues.append(
+                    _issue("semantic_positive_u64", ("promotions", index, field), "value must be a positive u64")
+                )
+        for field in ("max_uncertainty_q18", "max_ood_score_q18"):
+            parsed = _u64(row[field])
+            if parsed is None or parsed > _Q18_UNIT:
+                issues.append(_issue("semantic_uq18", ("promotions", index, field), "value exceeds the uq18 domain"))
+        for field in (
+            "producer_id",
+            "model_id",
+            "model_version",
+            "runtime_profile_id",
+            "calibration_version",
+            "feature_set_version",
+            "market_id",
+        ):
+            if not _valid_utf8_registry(row[field], 128):
+                issues.append(
+                    _issue("semantic_registry", ("promotions", index, field), "registry string exceeds 128 UTF-8 bytes")
+                )
+    if keys != sorted(keys, key=_utf8_sort_key) or len(keys) != len(set(keys)):
+        issues.append(
+            _issue("semantic_promotion_set", ("promotions",), "promotion keys must be unique and UTF-8 sorted")
+        )
+    return tuple(issues)
+
+
+def validate_model_signal_manifest_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate the closed candidate envelope's local set and sort relations."""
+    issues: list[ValidationIssue] = []
+    values = document["candidates"]
+    assert isinstance(values, list)
+    paths: list[str] = []
+    request_tuples: list[tuple[object, object, object]] = []
+    sort_keys: list[tuple[bytes, int, int, int, bytes, int, bytes, bytes]] = []
+    for index, value in enumerate(values):
+        assert isinstance(value, Mapping)
+        row = value
+        path = str(row["relative_path"])
+        paths.append(path)
+        if unicodedata.normalize("NFC", path) != path:
+            issues.append(
+                _issue("semantic_path", ("candidates", index, "relative_path"), "path must be NFC-normalized")
+            )
+        parsed: dict[str, int] = {}
+        for field in (
+            "raw_byte_length",
+            "decision_sequence",
+            "horizon_ns",
+            "issued_replay_clock_ns",
+            "available_replay_clock_ns",
+            "decision_close_replay_clock_ns",
+        ):
+            number = _u64(row[field])
+            if number is None:
+                issues.append(_issue("semantic_u64", ("candidates", index, field), "value exceeds u64"))
+            else:
+                parsed[field] = number
+        producer_value = row["producer_sequence"]
+        producer = None if producer_value is None else _u64(producer_value)
+        if producer_value is not None and producer is None:
+            issues.append(_issue("semantic_u64", ("candidates", index, "producer_sequence"), "value exceeds u64"))
+        raw_length = parsed.get("raw_byte_length")
+        if raw_length is not None and (raw_length == 0 or raw_length > 16_384):
+            for field in ("declared_signal_id", "producer_sequence", "producer_scope_key_sha256"):
+                if row[field] is not None:
+                    issues.append(
+                        _issue(
+                            "semantic_hint_gate",
+                            ("candidates", index, field),
+                            "empty or oversized candidate bytes require all parsed hints null",
+                        )
+                    )
+        request_tuples.append((row["requested_producer_scope_key_sha256"], producer_value, row["raw_signal_sha256"]))
+        sort_keys.append(
+            (
+                _utf8_sort_key(str(row["requested_producer_scope_key_sha256"])),
+                1 if producer is None else 0,
+                0 if producer is None else producer,
+                parsed.get("decision_sequence", -1),
+                _utf8_sort_key(str(row["feature_snapshot_id"])),
+                parsed.get("horizon_ns", -1),
+                _utf8_sort_key(str(row["raw_signal_sha256"])),
+                _utf8_sort_key(path),
+            )
+        )
+    if len(paths) != len(set(paths)):
+        issues.append(_issue("semantic_candidate_set", ("candidates",), "candidate paths must be unique"))
+    if len(request_tuples) != len(set(request_tuples)):
+        issues.append(
+            _issue(
+                "semantic_candidate_set", ("candidates",), "requested scope/sequence/raw digest tuples must be unique"
+            )
+        )
+    if sort_keys != sorted(sort_keys):
+        issues.append(
+            _issue("semantic_candidate_order", ("candidates",), "candidate rows are not in canonical storage order")
+        )
+    return tuple(issues)
+
+
+def validate_model_validation_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate status derivation and the exact non-accepted fallback tuple."""
+    issues: list[ValidationIssue] = []
+    reason_codes, reason_issues = _check_reason_order(
+        document["reason_codes"], MODEL_VALIDATION_REASON_PRECEDENCE, path=("reason_codes",)
+    )
+    issues.extend(reason_issues)
+    reason_set = frozenset(reason_codes)
+    if not reason_codes:
+        expected_status = "ACCEPTED"
+    elif reason_set == {"SIG_DRIFT_DISABLED"}:
+        expected_status = "DRIFT_DISABLED"
+    elif reason_set.issubset({"SIG_EXPIRED", "SIG_DEADLINE_MISS"}) and "SIG_EXPIRED" in reason_set:
+        expected_status = "EXPIRED"
+    else:
+        expected_status = "REJECTED"
+    if document["status"] != expected_status:
+        issues.append(_issue("semantic_status", ("status",), "status does not match the complete reason set"))
+    if "SIG_BYTES_INVALID" in reason_set:
+        for field in (
+            "declared_signal_id",
+            "producer_sequence",
+            "producer_scope_key_sha256",
+            "issued_replay_clock_ns",
+            "expires_replay_clock_ns",
+        ):
+            if document[field] is not None:
+                issues.append(
+                    _issue(
+                        "semantic_byte_gate_evidence",
+                        (field,),
+                        "byte-invalid receipt cannot fabricate parsed candidate evidence",
+                    )
+                )
+
+    for field in (
+        "decision_sequence",
+        "producer_sequence",
+        "issued_replay_clock_ns",
+        "available_replay_clock_ns",
+        "decision_close_replay_clock_ns",
+        "expires_replay_clock_ns",
+    ):
+        value = document[field]
+        if value is not None and _u64(value) is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+    score = _i128(document["canonical_score_q18"])
+    if score is None:
+        issues.append(_issue("semantic_i128", ("canonical_score_q18",), "score exceeds signed-i128 range"))
+    probability_fields = (
+        "canonical_probability_abstain_q18",
+        "canonical_probability_long_bias_q18",
+        "canonical_probability_exit_bias_q18",
+    )
+    probabilities = [_u64(document[field]) for field in probability_fields]
+    for field, value in zip(probability_fields, probabilities, strict=True):
+        if value is None or value > _Q18_UNIT:
+            issues.append(_issue("semantic_uq18", (field,), "probability exceeds the uq18 domain"))
+    if (
+        all(value is not None and value <= _Q18_UNIT for value in probabilities)
+        and sum(value for value in probabilities if value is not None) != _Q18_UNIT
+    ):
+        issues.append(_issue("semantic_probability", probability_fields, "probabilities must sum exactly to unit"))
+    for field in ("canonical_uncertainty_q18", "canonical_ood_score_q18"):
+        value = _u64(document[field])
+        if value is None or value > _Q18_UNIT:
+            issues.append(_issue("semantic_uq18", (field,), "value exceeds the uq18 domain"))
+
+    if expected_status == "ACCEPTED":
+        if document["accepted_signal_id"] is None:
+            issues.append(
+                _issue("semantic_signal_tuple", ("accepted_signal_id",), "accepted status requires signal ID")
+            )
+    else:
+        fallback = {
+            "accepted_signal_id": None,
+            "canonical_action": "ABSTAIN",
+            "canonical_score_q18": "0",
+            "canonical_probability_abstain_q18": str(_Q18_UNIT),
+            "canonical_probability_long_bias_q18": "0",
+            "canonical_probability_exit_bias_q18": "0",
+            "canonical_uncertainty_q18": str(_Q18_UNIT),
+            "canonical_ood_score_q18": str(_Q18_UNIT),
+        }
+        for field, expected in fallback.items():
+            if document[field] != expected:
+                issues.append(
+                    _issue("semantic_fallback", (field,), "non-accepted receipt requires the exact fallback tuple")
+                )
+    return tuple(issues)
+
+
 SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.raw-event/v1": validate_raw_event_semantics,
     "trading.feature-snapshot/v1": validate_feature_snapshot_semantics,
@@ -2097,6 +2954,11 @@ SUPPORTING_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.replay-risk-config/v1": validate_replay_risk_config_semantics,
     "trading.source-admission-receipt/v1": validate_source_admission_receipt_semantics,
     "trading.config-admission-receipt/v1": validate_config_admission_receipt_semantics,
+    "trading.run-closure-receipt/v1": validate_run_closure_receipt_semantics,
+    "trading.execution-quarantine-receipt/v1": validate_execution_quarantine_receipt_semantics,
+    "trading.model-registry/v1": validate_model_registry_semantics,
+    "trading.model-signal-manifest/v1": validate_model_signal_manifest_semantics,
+    "trading.model-validation-receipt/v1": validate_model_validation_receipt_semantics,
 }
 
 

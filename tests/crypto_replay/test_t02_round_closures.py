@@ -336,6 +336,64 @@ def test_counter_capacity_preflight_is_total() -> None:
         for position, (field, _) in enumerate(counter_order):
             assert totalized[field] == (str(MAX_U64) if position < index else None)
 
+    from tests.crypto_replay.test_t02_cross_artifact import _make_bundle
+
+    derive_from_retained = _future_symbol(
+        "build_finance.crypto_replay.run_inputs",
+        "derive_counter_capacity",
+        "counter capacity derived from retained arrays and bodies",
+    )
+    vector = build_t02_vector()
+    bundle = _make_bundle(vector)
+    retained = derive_from_retained(bundle)
+    assert retained == vector.attachments["trading.counter-capacity/v1"]
+
+    caller_counts = {
+        **vector.attachments["trading.counter-capacity/v1"],
+        "source_admission_count": "999",
+        "raw_event_count": "999",
+        "availability_group_count": "999",
+        "market_count": "999",
+        "model_candidate_count": "999",
+    }
+    assert derive_from_retained(replace(bundle, counter_capacity=caller_counts)) == retained
+
+    one_event = derive_from_retained(replace(bundle, normalized_events=(vector.raw_events[0],)))
+    assert one_event["raw_event_count"] == "1"
+    assert one_event["ledger_sequence_next_upper_bound"] == "42"
+    one_group_schedule = deepcopy(vector.attachments["trading.availability-schedule/v1"])
+    one_group_schedule["availability_groups"] = one_group_schedule["availability_groups"][:1]
+    one_group = derive_from_retained(replace(bundle, availability_schedule=one_group_schedule))
+    assert one_group["availability_group_count"] == "1"
+    assert one_group["decision_attempt_upper_bound"] == "1"
+
+    totalize_counts = _future_symbol(
+        "build_finance.crypto_replay.run_inputs",
+        "_derive_counter_capacity_from_counts",
+        "closed count-input validation",
+    )
+    common_counts = {
+        "source_admission_count": 2,
+        "raw_event_count": 2,
+        "availability_group_count": 2,
+        "market_count": 1,
+        "model_candidate_count": 0,
+        "model_signal_mode": "DISABLED",
+    }
+    for field, wrong in (
+        ("source_admission_count", True),
+        ("raw_event_count", -1),
+        ("availability_group_count", 0),
+        ("source_admission_count", MAX_U64 + 1),
+        ("raw_event_count", MAX_U64 + 1),
+        ("availability_group_count", MAX_U64 + 1),
+        ("market_count", 1.0),
+        ("model_candidate_count", "0"),
+        ("model_signal_mode", "UNKNOWN"),
+    ):
+        with pytest.raises(ValueError):
+            totalize_counts(**{**common_counts, field: wrong})
+
 
 def test_run_closure_failed_field_presence_matrix_is_exact() -> None:
     precedence = (
@@ -2218,9 +2276,23 @@ def test_t02_run_closure_enumeration_failure_preserves_other_market_row_shape() 
     )
     _assert_contract_valid(closure, "enumeration failure preserves completed market roots")
     assert closure["market_proofs"][1]["proof_root_sha256"] == _digest("b-market-proof-root")
-    truncated = deepcopy(closure)
-    truncated["market_proofs"] = [failed]
-    _assert_contract_invalid(_reseal(truncated), "enumeration failure may not truncate rows")
+    # Pure receipt semantics cannot infer the external FixtureManifest market
+    # cardinality.  They do own each retained row's complete local shape,
+    # nullability, uniqueness, and deterministic order; Task 9/11 binds the
+    # array cardinality to the resolved fixture market set.
+    one_complete_row = deepcopy(closure)
+    one_complete_row["market_proofs"] = [failed]
+    one_complete_row["proof_row_count_total"] = failed["proof_row_count"]
+    _assert_contract_valid(_reseal(one_complete_row), "one complete enumeration-failure row")
+    partial = deepcopy(closure)
+    partial["market_proofs"][1].pop("state_envelope_sha256")
+    _assert_contract_invalid(_reseal(partial), "preserved nonfailing row cannot be partial")
+    missing_completed_root = deepcopy(closure)
+    missing_completed_root["market_proofs"][1]["proof_root_sha256"] = None
+    _assert_contract_invalid(_reseal(missing_completed_root), "nonfailing enumerated row requires its root")
+    reversed_rows = deepcopy(closure)
+    reversed_rows["market_proofs"].reverse()
+    _assert_contract_invalid(_reseal(reversed_rows), "enumeration rows are market-sorted")
 
 
 def test_t02_force_close_sell_alias_attachment_schema_is_closed() -> None:
