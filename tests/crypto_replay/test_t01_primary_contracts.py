@@ -945,8 +945,17 @@ def test_codegen_scopes_expose_the_exact_frozen_inventory() -> None:
         get_scope_plan("unknown")
 
 
-def test_primary_codegen_check_rejects_missing_extra_and_byte_different_resources(tmp_path: Path) -> None:
+def test_primary_codegen_check_rejects_missing_extra_and_byte_different_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import build_finance.crypto_replay.schema_codegen as schema_codegen
     from build_finance.crypto_replay.schema_codegen import check_resources, write_resources
+    from build_finance.crypto_replay.schema_definitions import (
+        CONTRACT_SPECS_BY_SCHEMA,
+        PRIMARY_SCHEMA_IDS,
+        SUPPORTING_SCHEMA_IDS,
+    )
 
     write_resources("primary", resources_root=tmp_path)
     check_resources("primary", resources_root=tmp_path)
@@ -966,6 +975,78 @@ def test_primary_codegen_check_rejects_missing_extra_and_byte_different_resource
     (tmp_path / "schemas" / "rogue.schema.json").write_bytes(b"{}\n")
     with pytest.raises(ValueError, match="unknown managed schema resource"):
         check_resources("primary", resources_root=tmp_path)
+
+    def tree_snapshot(root: Path) -> tuple[tuple[str, bytes | None], ...]:
+        paths = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
+        return tuple(
+            (path.relative_to(root).as_posix(), None if path.is_dir() else path.read_bytes()) for path in paths
+        )
+
+    primary_owned = f"schemas/{CONTRACT_SPECS_BY_SCHEMA[PRIMARY_SCHEMA_IDS[0]].schema_filename}"
+    supporting_owned = f"schemas/{CONTRACT_SPECS_BY_SCHEMA[SUPPORTING_SCHEMA_IDS[0]].schema_filename}"
+    rogue_write_cases = (
+        ("root-json", "primary", primary_owned, "rogue.json", "unknown managed root resource"),
+        ("root-digest", "primary", primary_owned, "rogue.sha256", "unknown managed root resource"),
+        ("schema-json", "primary", primary_owned, "schemas/rogue.schema.json", "unknown managed schema resource"),
+        ("formula", "supporting", supporting_owned, "formulas/rogue.txt", "unknown managed formula resource"),
+    )
+    for case_name, scope, owned_relative, rogue_relative, message in rogue_write_cases:
+        resources_root = tmp_path / case_name
+        owned_path = resources_root / owned_relative
+        owned_path.parent.mkdir(parents=True)
+        owned_path.write_bytes(b"OWNED SENTINEL\n")
+        rogue_path = resources_root / rogue_relative
+        rogue_path.parent.mkdir(parents=True, exist_ok=True)
+        rogue_path.write_bytes(b"ROGUE SENTINEL\n")
+        before = tree_snapshot(resources_root)
+
+        with pytest.raises(ValueError, match=message):
+            write_resources(scope, resources_root=resources_root)
+
+        assert tree_snapshot(resources_root) == before
+        assert rogue_path.read_bytes() == b"ROGUE SENTINEL\n"
+
+    race_root = tmp_path / "build-race"
+    race_owned_path = race_root / primary_owned
+    race_owned_path.parent.mkdir(parents=True)
+    race_owned_path.write_bytes(b"OWNED SENTINEL\n")
+    race_before = tree_snapshot(race_root)
+    original_build_expected_resources = schema_codegen.build_expected_resources
+
+    def injecting_build_expected_resources(
+        scope: Any,
+        *,
+        resources_root: Path,
+    ) -> tuple[dict[str, bytes], frozenset[str]]:
+        result = original_build_expected_resources(scope, resources_root=resources_root)
+        (resources_root / "rogue.json").write_bytes(b"INJECTED ROGUE\n")
+        return result
+
+    with monkeypatch.context() as race_patch:
+        race_patch.setattr(schema_codegen, "build_expected_resources", injecting_build_expected_resources)
+        with pytest.raises(ValueError, match="unknown managed root resource"):
+            write_resources("primary", resources_root=race_root)
+
+    expected_race_after = tuple(sorted((*race_before, ("rogue.json", b"INJECTED ROGUE\n"))))
+    assert tree_snapshot(race_root) == expected_race_after
+    assert race_owned_path.read_bytes() == b"OWNED SENTINEL\n"
+
+    undefined_root = tmp_path / "known-undefined"
+    with monkeypatch.context() as staged_patch:
+        staged_ids = _write_staged_supporting_resources(staged_patch, undefined_root, count=4)
+        undefined_owned_path = undefined_root / "schemas" / CONTRACT_SPECS_BY_SCHEMA[staged_ids[0]].schema_filename
+        undefined_owned_path.write_bytes(b"OWNED SENTINEL\n")
+        undefined_id = SUPPORTING_SCHEMA_IDS[len(staged_ids)]
+        undefined_path = undefined_root / "schemas" / CONTRACT_SPECS_BY_SCHEMA[undefined_id].schema_filename
+        undefined_path.write_bytes(b"KNOWN UNDEFINED\n")
+        undefined_before = tree_snapshot(undefined_root)
+
+        with pytest.raises(ValueError, match="extra generated schema resource"):
+            write_resources("supporting", resources_root=undefined_root)
+
+        assert tree_snapshot(undefined_root) == undefined_before
+        assert undefined_owned_path.read_bytes() == b"OWNED SENTINEL\n"
+        assert undefined_path.read_bytes() == b"KNOWN UNDEFINED\n"
 
 
 def _staged_supporting_schema(schema_id: str) -> dict[str, Any]:

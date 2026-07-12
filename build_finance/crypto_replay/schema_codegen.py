@@ -360,13 +360,29 @@ def _check_global_managed_inventory(resources_root: Path) -> frozenset[str]:
     return actual_schema_resources
 
 
+def _check_scope_managed_inventory(scope: ScopeName, resources_root: Path) -> frozenset[str]:
+    """Reject unknown global resources and undefined schemas owned by this scope."""
+    actual_schema_resources = _check_global_managed_inventory(resources_root)
+    documents = get_defined_schema_documents()
+    owned_schema_paths = _owned_schema_paths(scope, documents)
+    checked_schema_paths = frozenset(_schema_path(schema_id) for schema_id in get_scope_plan(scope).checked_schema_ids)
+    undefined_owned_resources = actual_schema_resources.intersection(checked_schema_paths).difference(
+        owned_schema_paths
+    )
+    if undefined_owned_resources:
+        raise ValueError(f"extra generated schema resource(s): {sorted(undefined_owned_resources)!r}")
+    return actual_schema_resources
+
+
 def write_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) -> None:
     """Write only scope-owned bytes, never overwriting sealed primary schemas."""
+    _check_scope_managed_inventory(scope, resources_root)
     expected, preserved = build_expected_resources(scope, resources_root=resources_root)
     for relative_path in preserved:
         path = resources_root / relative_path
         if not path.is_file() or path.read_bytes() != expected[relative_path]:
             raise ValueError(f"sealed primary resource is missing or differs: {relative_path}")
+    _check_scope_managed_inventory(scope, resources_root)
     for relative_path, payload in expected.items():
         if relative_path in preserved:
             continue
@@ -377,7 +393,7 @@ def write_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) 
 
 def check_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) -> None:
     """Reject any missing, extra, or byte-different resource owned by scope."""
-    actual_schema_resources = _check_global_managed_inventory(resources_root)
+    _check_scope_managed_inventory(scope, resources_root)
     expected, _ = build_expected_resources(scope, resources_root=resources_root)
     for relative_path, payload in expected.items():
         path = resources_root / relative_path
@@ -385,15 +401,6 @@ def check_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) 
             raise ValueError(f"generated resource is missing: {relative_path}")
         if path.read_bytes() != payload:
             raise ValueError(f"generated resource differs: {relative_path}")
-
-    documents = get_defined_schema_documents()
-    owned_schema_paths = _owned_schema_paths(scope, documents)
-    checked_schema_paths = frozenset(_schema_path(schema_id) for schema_id in get_scope_plan(scope).checked_schema_ids)
-    undefined_owned_resources = actual_schema_resources.intersection(checked_schema_paths).difference(
-        owned_schema_paths
-    )
-    if undefined_owned_resources:
-        raise ValueError(f"extra generated schema resource(s): {sorted(undefined_owned_resources)!r}")
 
 
 def _parser() -> argparse.ArgumentParser:
