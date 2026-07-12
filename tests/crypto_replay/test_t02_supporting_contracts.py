@@ -90,6 +90,9 @@ class SyntheticResolver:
             )
         self._bytes = {sha256_hex(payload): bytes(payload) for payload in retained_bytes}
 
+    def __repr__(self) -> str:
+        return f"SyntheticResolver(objects={len(self._objects)}, retained_byte_digests={len(self._bytes)})"
+
     def resolve_object(self, content_id: str) -> ResolvedContent | None:
         resolved = self._objects.get(content_id)
         if resolved is None:
@@ -812,8 +815,11 @@ def test_all_supporting_contracts_are_closed() -> None:
     )
 
     vector = build_t02_vector()
-    assert set(SUPPORTING_SCHEMA_DOCUMENTS) == set(SUPPORTING_SCHEMA_IDS)
-    assert set(vector.documents) == set(SUPPORTING_SCHEMA_IDS)
+    expected_schema_ids = tuple(sorted(SUPPORTING_SCHEMA_IDS, key=lambda value: value.encode("utf-8")))
+    actual_schema_ids = tuple(sorted(SUPPORTING_SCHEMA_DOCUMENTS, key=lambda value: value.encode("utf-8")))
+    vector_schema_ids = tuple(sorted(vector.documents, key=lambda value: value.encode("utf-8")))
+    assert actual_schema_ids == expected_schema_ids
+    assert vector_schema_ids == expected_schema_ids
     resolver = vector.resolver
     for schema_id in SUPPORTING_SCHEMA_IDS:
         schema = SUPPORTING_SCHEMA_DOCUMENTS[schema_id]
@@ -829,6 +835,7 @@ def test_supporting_self_ids_recompute() -> None:
     from build_finance.crypto_replay.schema_definitions import SUPPORTING_SELF_ID_FIELDS
 
     vector = build_t02_vector()
+    assert repr(vector.resolver) == "SyntheticResolver(objects=16, retained_byte_digests=20)"
     assert set(vector.documents) == set(SUPPORTING_SELF_ID_FIELDS)
     for schema_id, document in vector.documents.items():
         self_id_field = SUPPORTING_SELF_ID_FIELDS[schema_id]
