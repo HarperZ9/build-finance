@@ -779,10 +779,21 @@ def build_t02_vector() -> T02Vector:
     )
 
 
-def _issues(document: dict[str, Any], *, resolver: SyntheticResolver | None = None) -> tuple[Any, ...]:
+def _issues(
+    document: dict[str, Any],
+    *,
+    resolver: SyntheticResolver | None = None,
+    expected_schema: str | None = None,
+) -> tuple[Any, ...]:
     from build_finance.crypto_replay.schema_registry import validate_contract
 
-    return validate_contract(document, expected_schema=document["schema"], resolver=resolver)
+    declared_schema = document.get("schema")
+    target_schema = expected_schema if expected_schema is not None else declared_schema
+    return validate_contract(
+        document,
+        expected_schema=target_schema if isinstance(target_schema, str) else None,
+        resolver=resolver,
+    )
 
 
 def _assert_invalid(document: dict[str, Any], *, resolver: SyntheticResolver | None = None) -> None:
@@ -806,6 +817,72 @@ def _schema_is_recursively_closed(schema: dict[str, Any]) -> None:
                 visit(value)
 
     visit(schema)
+
+
+def _assert_independent_basic_oracles(
+    document: dict[str, Any],
+    *,
+    resolver: SyntheticResolver,
+) -> None:
+    """Cross-check one positive, unknown-key, and missing-key vector."""
+    from jsonschema import Draft202012Validator
+
+    from build_finance.crypto_replay.schema_definitions import (
+        SUPPORTING_SCHEMA_DOCUMENTS,
+        SUPPORTING_SELF_ID_FIELDS,
+    )
+
+    schema_id = str(document["schema"])
+    schema = SUPPORTING_SCHEMA_DOCUMENTS[schema_id]
+    Draft202012Validator.check_schema(schema)
+    oracle = Draft202012Validator(schema)
+    assert not tuple(oracle.iter_errors(document))
+    assert not _issues(document, resolver=resolver)
+
+    unknown = _reseal({**document, "unknown_task7_property": True})
+    assert tuple(oracle.iter_errors(unknown))
+    assert _issues(unknown, resolver=resolver)
+
+    self_id_field = SUPPORTING_SELF_ID_FIELDS[schema_id]
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    missing_field = next(field for field in properties if field not in {"schema", self_id_field})
+    missing = deepcopy(document)
+    missing.pop(missing_field)
+    missing = _reseal(missing)
+    assert tuple(oracle.iter_errors(missing))
+    assert _issues(missing, resolver=resolver, expected_schema=schema_id)
+
+    forged = deepcopy(document)
+    forged[self_id_field] = "0" * 64
+    assert not verify_content_id(forged)
+
+
+_SOURCE_BUILDER_FIELDS = (
+    "fixture_manifest_sha256",
+    "raw_payload_sha256",
+    "terms_sha256",
+    "parser_code_sha256",
+    "source_id",
+    "source_kind",
+    "source_revision",
+    "market_id",
+    "relative_path",
+    "media_type",
+    "byte_length",
+    "admission_sequence",
+    "availability_slot",
+    "observed_at",
+    "ingested_at",
+    "rights_role",
+    "rights_effective_date",
+    "rights_review_date",
+    "parser_version",
+)
+
+
+def _source_builder_inputs(document: dict[str, Any]) -> dict[str, Any]:
+    return {field: document[field] for field in _SOURCE_BUILDER_FIELDS}
 
 
 def test_all_supporting_contracts_are_closed() -> None:
@@ -859,10 +936,20 @@ def test_fixture_manifest_is_set_closed() -> None:
     config = vector.documents["trading.replay-risk-config/v1"]
     assert not _issues(fixture, resolver=vector.resolver)
     assert not _issues(config, resolver=vector.resolver)
+    _assert_independent_basic_oracles(fixture, resolver=vector.resolver)
+    _assert_independent_basic_oracles(config, resolver=vector.resolver)
     mutations: list[dict[str, Any]] = []
     duplicate_market = deepcopy(fixture)
     duplicate_market["allowed_markets"].append(deepcopy(duplicate_market["allowed_markets"][0]))
     mutations.append(_reseal(duplicate_market))
+    duplicate_market_key = deepcopy(fixture)
+    duplicate_market_key["allowed_markets"].append(
+        {
+            **deepcopy(duplicate_market_key["allowed_markets"][0]),
+            "base_mint": "zz-synthetic-base",
+        }
+    )
+    mutations.append(_reseal(duplicate_market_key))
     duplicate_base = deepcopy(fixture)
     duplicate_base["allowed_markets"].append(
         {**deepcopy(duplicate_base["allowed_markets"][0]), "market_id": "zz-synthetic-market"}
@@ -922,6 +1009,54 @@ def test_fixture_manifest_is_set_closed() -> None:
     duplicate_file = deepcopy(fixture)
     duplicate_file["files"].append(deepcopy(duplicate_file["files"][0]))
     mutations.append(_reseal(duplicate_file))
+    duplicate_path_key = deepcopy(fixture)
+    duplicate_path_key["files"].append(
+        {
+            **deepcopy(duplicate_path_key["files"][0]),
+            "raw_payload_sha256": _digest("different-same-path-payload"),
+            "admission_sequence": "4",
+        }
+    )
+    mutations.append(_reseal(duplicate_path_key))
+    unknown_file_market = deepcopy(fixture)
+    unknown_file_market["files"][0]["market_id"] = "unlisted-market"
+    mutations.append(_reseal(unknown_file_market))
+    empty_registry = deepcopy(fixture)
+    empty_registry["allowed_markets"][0]["market_id"] = ""
+    mutations.append(_reseal(empty_registry))
+    oversized_utf8_registry = deepcopy(fixture)
+    oversized_utf8_registry["quote_mint"] = "é" * 65
+    mutations.append(_reseal(oversized_utf8_registry))
+    for unsafe in (
+        "/absolute.json",
+        "C:/drive.json",
+        "quotes\\backslash.json",
+        "quotes/../escape.json",
+        "quotes/./dot.json",
+        "quotes//double.json",
+        "quotes/trailing/",
+        "quotes/colon:name.json",
+        "quotes/nul\x00name.json",
+        "quotes/e\u0301.json",
+    ):
+        bad_path = deepcopy(fixture)
+        bad_path["files"][0]["relative_path"] = unsafe
+        mutations.append(_reseal(bad_path))
+    for field in ("initial_quote_atoms", "replay_tick_ns"):
+        zero_positive = deepcopy(fixture)
+        zero_positive[field] = "0"
+        mutations.append(_reseal(zero_positive))
+    for field, value in (
+        ("quote_decimals", -1),
+        ("quote_decimals", 19),
+        ("initial_quote_atoms", str(MAX_U64 + 1)),
+        ("initial_quote_atoms", "01"),
+        ("initial_quote_atoms", 1),
+        ("session_end_availability_slot", str(MAX_U64 + 1)),
+    ):
+        bad_scalar = deepcopy(fixture)
+        bad_scalar[field] = value
+        mutations.append(_reseal(bad_scalar))
     for field, value in (
         ("network", "synthetic-network"),
         ("venue_profile", "synthetic-venue"),
@@ -934,6 +1069,32 @@ def test_fixture_manifest_is_set_closed() -> None:
         mutations.append(_reseal(mutation))
     for mutation in mutations:
         _assert_invalid(mutation, resolver=vector.resolver)
+
+    two_market_fixture = deepcopy(fixture)
+    two_market_fixture["allowed_markets"].append(
+        {
+            "market_id": "zz-synthetic-base/synthetic-quote:jupiter",
+            "base_mint": "zz-synthetic-base",
+            "quote_mint": QUOTE_MINT,
+            "base_decimals": 0,
+            "quote_decimals": 6,
+        }
+    )
+    assert not _issues(_reseal(two_market_fixture), resolver=vector.resolver)
+    second_quote_mismatch = deepcopy(two_market_fixture)
+    second_quote_mismatch["allowed_markets"][1]["quote_decimals"] = 5
+    _assert_invalid(_reseal(second_quote_mismatch), resolver=vector.resolver)
+    second_quote_identity_mismatch = deepcopy(two_market_fixture)
+    second_quote_identity_mismatch["allowed_markets"][1]["quote_mint"] = "other-quote"
+    _assert_invalid(_reseal(second_quote_identity_mismatch), resolver=vector.resolver)
+    for policy in ("FORCE_CLOSE_NEXT_EVENT", "LEAVE_MARKED_OPEN"):
+        assert not _issues(_reseal({**fixture, "run_end_position_policy": policy}), resolver=vector.resolver)
+    max_u64_fixture = deepcopy(fixture)
+    max_u64_fixture.update({"initial_quote_atoms": str(MAX_U64), "replay_tick_ns": str(MAX_U64)})
+    max_u64_fixture["files"][0].update(
+        {"byte_length": str(MAX_U64), "admission_sequence": str(MAX_U64), "availability_slot": str(MAX_U64)}
+    )
+    assert not _issues(_reseal(max_u64_fixture), resolver=vector.resolver)
 
     boundary_config = deepcopy(config)
     boundary_config.update(
@@ -968,6 +1129,19 @@ def test_fixture_manifest_is_set_closed() -> None:
     for baseline_id in baseline_ids:
         valid_boundary = _reseal({**boundary_config, "baseline_id": baseline_id})
         assert not _issues(valid_boundary, resolver=vector.resolver)
+    max_range_config = deepcopy(boundary_config)
+    max_range_config.update(
+        {
+            "target_entry_notional_quote_atoms": str(MAX_U64),
+            "min_notional_quote_atoms": "1",
+            "max_notional_quote_atoms": str(MAX_U64),
+            "price_tick_q18": "170141183460469231731687303715884105727",
+            "max_session_loss_quote_atoms": str(MAX_U64),
+            "stale_after_ns": str(MAX_U64),
+            "session_end_replay_clock_ns": str(MAX_U64),
+        }
+    )
+    assert not _issues(_reseal(max_range_config), resolver=vector.resolver)
 
     config_mutations: list[dict[str, Any]] = []
     for config_field, config_value in (
@@ -978,6 +1152,11 @@ def test_fixture_manifest_is_set_closed() -> None:
         ("target_entry_notional_quote_atoms", "999"),
         ("target_entry_notional_quote_atoms", "500001"),
         ("price_tick_q18", "0"),
+        ("price_tick_q18", "-1"),
+        ("price_tick_q18", "170141183460469231731687303715884105728"),
+        ("target_entry_notional_quote_atoms", str(MAX_U64 + 1)),
+        ("target_entry_notional_quote_atoms", "01"),
+        ("target_entry_notional_quote_atoms", 1),
         ("max_participation_bps", -1),
         ("max_participation_bps", 10001),
         ("max_impact_bps", -1),
@@ -1014,37 +1193,136 @@ def test_fixture_manifest_is_set_closed() -> None:
 
 
 def test_source_rejection_receipt_is_total() -> None:
+    from inspect import signature
+
+    import pytest
+
+    from build_finance.crypto_replay.contract_semantics import (
+        SOURCE_ADMISSION_QUARANTINE_REASONS,
+        SOURCE_ADMISSION_REASON_PRECEDENCE,
+        derive_source_admission_status,
+        normalize_source_admission_reason_codes,
+    )
+    from tests.crypto_replay.support.builders import build_source_admission_receipt
+
     vector = build_t02_vector()
     admitted = vector.documents["trading.source-admission-receipt/v1"]
-    rejected = _reseal(
-        {
-            **admitted,
-            "status": "REJECTED",
-            "reason_codes": ["ADMISSION_RIGHTS_MISSING"],
-            "terms_sha256": admitted["terms_sha256"],
-            "rights_role": "offline_research_replay",
-            "rights_effective_date": "2026-01-01",
-            "rights_review_date": None,
-        }
+    source_inputs = _source_builder_inputs(admitted)
+    _assert_independent_basic_oracles(admitted, resolver=vector.resolver)
+    assert tuple(signature(derive_source_admission_status).parameters) == ("reason_codes",)
+    assert tuple(signature(build_source_admission_receipt).parameters) == (
+        "reason_codes",
+        *_SOURCE_BUILDER_FIELDS,
+    )
+    assert build_source_admission_receipt(reason_codes=(), **source_inputs) == admitted
+    for mask in range(1 << len(SOURCE_ADMISSION_REASON_PRECEDENCE)):
+        codes = tuple(code for index, code in enumerate(SOURCE_ADMISSION_REASON_PRECEDENCE) if mask & (1 << index))
+        expected_status = (
+            "ADMITTED"
+            if not codes
+            else "QUARANTINED"
+            if SOURCE_ADMISSION_QUARANTINE_REASONS.intersection(codes)
+            else "REJECTED"
+        )
+        assert derive_source_admission_status(codes) == expected_status
+    for code in SOURCE_ADMISSION_REASON_PRECEDENCE:
+        singleton = build_source_admission_receipt(reason_codes=(code,), **source_inputs)
+        assert singleton["status"] == derive_source_admission_status((code,))
+        assert singleton["reason_codes"] == [code]
+        assert not _issues(singleton, resolver=vector.resolver)
+    with pytest.raises(ValueError, match="duplicate"):
+        normalize_source_admission_reason_codes(("ADMISSION_NOT_LOCAL", "ADMISSION_NOT_LOCAL"))
+    with pytest.raises(ValueError, match="unknown"):
+        normalize_source_admission_reason_codes(("ADMISSION_UNKNOWN",))
+
+    rejected = build_source_admission_receipt(
+        reason_codes=("ADMISSION_RIGHTS_MISSING",),
+        **{**source_inputs, "rights_review_date": None},
     )
     assert not _issues(rejected, resolver=vector.resolver)
-    for field, expected in (
-        ("raw_payload_sha256", admitted["raw_payload_sha256"]),
-        ("terms_sha256", admitted["terms_sha256"]),
-        ("source_id", admitted["source_id"]),
-        ("rights_role", "offline_research_replay"),
-        ("rights_effective_date", "2026-01-01"),
-    ):
-        assert rejected[field] == expected
-    quarantined = _reseal(
-        {
-            **rejected,
-            "status": "QUARANTINED",
-            "reason_codes": ["ADMISSION_RIGHTS_MISSING", "ADMISSION_POSITION_CONFLICT"],
-        }
+    missing_effective = build_source_admission_receipt(
+        reason_codes=("ADMISSION_RIGHTS_MISSING",),
+        **{**source_inputs, "rights_effective_date": None},
     )
+    assert not _issues(missing_effective, resolver=vector.resolver)
+    for receipt, missing_field in (
+        (rejected, "rights_review_date"),
+        (missing_effective, "rights_effective_date"),
+    ):
+        for field in _SOURCE_BUILDER_FIELDS:
+            if field != missing_field:
+                assert receipt[field] == admitted[field]
+
+    quarantined = build_source_admission_receipt(
+        reason_codes=("ADMISSION_POSITION_CONFLICT", "ADMISSION_RIGHTS_MISSING"),
+        **{**source_inputs, "rights_review_date": None},
+    )
+    assert quarantined["reason_codes"] == ["ADMISSION_RIGHTS_MISSING", "ADMISSION_POSITION_CONFLICT"]
     assert not _issues(quarantined, resolver=vector.resolver)
     assert quarantined["terms_sha256"] == admitted["terms_sha256"]
+
+    for field in (
+        "fixture_manifest_sha256",
+        "raw_payload_sha256",
+        "terms_sha256",
+        "source_id",
+        "source_kind",
+        "source_revision",
+        "market_id",
+        "relative_path",
+        "media_type",
+        "byte_length",
+        "availability_slot",
+        "observed_at",
+        "ingested_at",
+        "rights_role",
+        "rights_effective_date",
+        "rights_review_date",
+    ):
+        admitted_null = _reseal({**admitted, field: None})
+        _assert_invalid(admitted_null, resolver=vector.resolver)
+
+    for media_type in ("application/json", "application/jsonl", "application/octet-stream"):
+        media_receipt = build_source_admission_receipt(
+            reason_codes=(),
+            **{**source_inputs, "media_type": media_type},
+        )
+        assert not _issues(media_receipt, resolver=vector.resolver)
+
+    partial_observed = build_source_admission_receipt(
+        reason_codes=("ADMISSION_POINT_IN_TIME_MISSING",),
+        **{**source_inputs, "ingested_at": None},
+    )
+    partial_ingested = build_source_admission_receipt(
+        reason_codes=("ADMISSION_POINT_IN_TIME_MISSING",),
+        **{**source_inputs, "observed_at": None},
+    )
+    assert not _issues(partial_observed, resolver=vector.resolver)
+    assert not _issues(partial_ingested, resolver=vector.resolver)
+
+    for rights_field in (
+        "terms_sha256",
+        "rights_role",
+        "rights_effective_date",
+        "rights_review_date",
+    ):
+        correctly_coded = build_source_admission_receipt(
+            reason_codes=("ADMISSION_RIGHTS_MISSING",),
+            **{**source_inputs, rights_field: None},
+        )
+        assert not _issues(correctly_coded, resolver=vector.resolver)
+        wrong_code = build_source_admission_receipt(
+            reason_codes=("ADMISSION_NOT_LOCAL",),
+            **{**source_inputs, rights_field: None},
+        )
+        _assert_invalid(wrong_code, resolver=vector.resolver)
+    for timestamp_field in ("observed_at", "ingested_at"):
+        wrong_code = build_source_admission_receipt(
+            reason_codes=("ADMISSION_RIGHTS_MISSING",),
+            **{**source_inputs, timestamp_field: None},
+        )
+        _assert_invalid(wrong_code, resolver=vector.resolver)
+
     wrong_status = _reseal({**rejected, "status": "ADMITTED"})
     rejected_conflict = _reseal({**quarantined, "status": "REJECTED"})
     admitted_with_code = _reseal({**admitted, "reason_codes": ["ADMISSION_RIGHTS_MISSING"]})
@@ -1054,11 +1332,51 @@ def test_source_rejection_receipt_is_total() -> None:
             "reason_codes": ["ADMISSION_POSITION_CONFLICT", "ADMISSION_RIGHTS_MISSING"],
         }
     )
-    for mutation in (wrong_status, rejected_conflict, admitted_with_code, wrong_precedence):
+    source_mutations = [
+        wrong_status,
+        rejected_conflict,
+        admitted_with_code,
+        wrong_precedence,
+        _reseal({**rejected, "reason_codes": ["ADMISSION_RIGHTS_MISSING", "ADMISSION_RIGHTS_MISSING"]}),
+        _reseal({**rejected, "reason_codes": ["ADMISSION_UNKNOWN"]}),
+        _reseal({**rejected, "rights_effective_date": "2026-02-30"}),
+        _reseal(
+            {
+                **rejected,
+                "rights_effective_date": "2026-02-02",
+                "rights_review_date": "2026-02-01",
+            }
+        ),
+        _reseal({**rejected, "observed_at": "2026-02-30T00:00:00.000000000Z"}),
+        _reseal(
+            {
+                **rejected,
+                "observed_at": "2026-01-02T00:00:02.000000002Z",
+                "ingested_at": "2026-01-02T00:00:02.000000001Z",
+            }
+        ),
+        _reseal({**rejected, "admission_sequence": "0"}),
+        _reseal({**rejected, "admission_sequence": str(MAX_U64 + 1)}),
+        _reseal({**rejected, "byte_length": str(MAX_U64 + 1)}),
+        _reseal({**rejected, "relative_path": "quotes/e\u0301.json"}),
+        _reseal({**rejected, "parser_version": "unknown-parser/v1"}),
+    ]
+    for mutation in source_mutations:
         _assert_invalid(mutation, resolver=vector.resolver)
 
 
 def test_missing_and_invalid_config_receipts_serialize() -> None:
+    from inspect import signature
+
+    import pytest
+
+    from build_finance.crypto_replay.contract_semantics import normalize_config_admission_reason_codes
+    from tests.crypto_replay.support.builders import (
+        build_invalid_config_admission_receipt,
+        build_missing_config_admission_receipt,
+        build_valid_config_admission_receipt,
+    )
+
     vector = build_t02_vector()
     valid = vector.documents["trading.config-admission-receipt/v1"]
     common = {
@@ -1088,6 +1406,26 @@ def test_missing_and_invalid_config_receipts_serialize() -> None:
         )
         for payload in invalid_payloads
     )
+    assert tuple(signature(build_missing_config_admission_receipt).parameters) == tuple(common)
+    assert "validated_config_sha256" not in signature(build_invalid_config_admission_receipt).parameters
+    assert "validated_config_sha256" not in signature(build_valid_config_admission_receipt).parameters
+    built_missing = build_missing_config_admission_receipt(**common)
+    built_invalid_receipts = tuple(
+        build_invalid_config_admission_receipt(
+            payload,
+            reason_codes=("CONFIG_BYTES_INVALID",),
+            **common,
+        )
+        for payload in invalid_payloads
+    )
+    built_valid = build_valid_config_admission_receipt(
+        vector.raw_config_bytes,
+        vector.documents["trading.replay-risk-config/v1"],
+        **common,
+    )
+    assert built_missing == missing
+    assert built_invalid_receipts == invalid_receipts
+    assert built_valid == valid
     assert vector.raw_config_bytes.endswith(b"\n")
     assert parse_canonical_record(vector.raw_config_bytes) == vector.documents["trading.replay-risk-config/v1"]
     assert valid["raw_config_sha256"] == sha256_hex(vector.raw_config_bytes)
@@ -1106,28 +1444,86 @@ def test_missing_and_invalid_config_receipts_serialize() -> None:
         assert parse_canonical_record(record) == receipt
         assert verify_content_id(receipt)
         assert not _issues(receipt, resolver=resolver)
+    _assert_independent_basic_oracles(valid, resolver=resolver)
     empty_invalid, invalid = invalid_receipts
     assert empty_invalid["raw_byte_length"] == "0"
     assert empty_invalid["raw_config_sha256"] == sha256_hex(b"")
-    no_lf = _reseal(
-        {
-            **valid,
-            "raw_config_sha256": sha256_hex(vector.raw_config_bytes[:-1]),
-            "raw_byte_length": str(len(vector.raw_config_bytes) - 1),
-        }
+    assert missing["raw_config_sha256"] is None
+    assert empty_invalid["raw_config_sha256"] is not None
+
+    invalid_reason_codes = (
+        "CONFIG_BYTES_INVALID",
+        "CONFIG_SCHEMA_INVALID",
+        "CONFIG_ID_MISMATCH",
+        "CONFIG_RANGE_INVALID",
     )
+    for reason_code in invalid_reason_codes:
+        receipt = build_invalid_config_admission_receipt(
+            b"SYNTHETIC CONFIG REJECTION INPUT\n",
+            reason_codes=(reason_code,),
+            **common,
+        )
+        assert receipt["status"] == "INVALID"
+        assert receipt["reason_codes"] == [reason_code]
+        assert not _issues(receipt, resolver=resolver)
+    ordered_combination = build_invalid_config_admission_receipt(
+        b"SYNTHETIC CONFIG REJECTION INPUT\n",
+        reason_codes=("CONFIG_RANGE_INVALID", "CONFIG_BYTES_INVALID"),
+        **common,
+    )
+    assert ordered_combination["reason_codes"] == ["CONFIG_BYTES_INVALID", "CONFIG_RANGE_INVALID"]
+    assert not _issues(ordered_combination, resolver=resolver)
+    with pytest.raises(ValueError, match="duplicate"):
+        normalize_config_admission_reason_codes(("CONFIG_BYTES_INVALID", "CONFIG_BYTES_INVALID"))
+    with pytest.raises(ValueError, match="unknown"):
+        normalize_config_admission_reason_codes(("CONFIG_UNKNOWN",))
+    with pytest.raises(ValueError, match="canonical LF"):
+        build_valid_config_admission_receipt(
+            vector.raw_config_bytes[:-1],
+            vector.documents["trading.replay-risk-config/v1"],
+            **common,
+        )
+    mutated_config_bytes = bytearray(vector.raw_config_bytes)
+    mutated_config_bytes[1] = ord("X")
+    with pytest.raises(ValueError, match="canonical LF"):
+        build_valid_config_admission_receipt(
+            bytes(mutated_config_bytes),
+            vector.documents["trading.replay-risk-config/v1"],
+            **common,
+        )
+    stale_config = deepcopy(vector.documents["trading.replay-risk-config/v1"])
+    stale_config["config_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="self-addressed"):
+        build_valid_config_admission_receipt(canonical_record_bytes(stale_config), stale_config, **common)
+
     mutations = (
         _reseal({**missing, "raw_byte_length": "1"}),
         _reseal({**missing, "raw_config_sha256": _digest("missing-raw")}),
+        _reseal({**missing, "validated_config_sha256": valid["validated_config_sha256"]}),
+        _reseal({**missing, "reason_codes": ["CONFIG_BYTES_INVALID"]}),
         _reseal(
             {
                 **invalid,
                 "validated_config_sha256": vector.documents["trading.replay-risk-config/v1"]["config_sha256"],
             }
         ),
-        _reseal({**invalid, "raw_byte_length": str(len(invalid_payloads[1]) + 1)}),
-        _reseal({**invalid, "raw_config_sha256": _digest("wrong-invalid-raw")}),
-        no_lf,
+        _reseal({**invalid, "reason_codes": []}),
+        _reseal({**invalid, "reason_codes": ["CONFIG_MISSING"]}),
+        _reseal({**valid, "reason_codes": ["CONFIG_RANGE_INVALID"]}),
+        _reseal({**valid, "raw_config_sha256": None}),
+        _reseal({**valid, "validated_config_sha256": None}),
+        _reseal({**valid, "raw_byte_length": "0"}),
+        _reseal(
+            {
+                **invalid,
+                "reason_codes": ["CONFIG_RANGE_INVALID", "CONFIG_BYTES_INVALID"],
+            }
+        ),
+        _reseal({**invalid, "reason_codes": ["CONFIG_BYTES_INVALID", "CONFIG_BYTES_INVALID"]}),
+        _reseal({**invalid, "reason_codes": ["CONFIG_UNKNOWN"]}),
+        _reseal({**invalid, "admission_sequence": "0"}),
+        _reseal({**invalid, "admission_sequence": str(MAX_U64 + 1)}),
+        _reseal({**invalid, "raw_byte_length": str(MAX_U64 + 1)}),
     )
     for mutation in mutations:
         _assert_invalid(mutation, resolver=resolver)
@@ -1316,19 +1712,33 @@ def test_execution_quarantine_receipt_is_exhaustive() -> None:
 
 def test_source_admission_is_config_independent() -> None:
     from build_finance.crypto_replay.schema_definitions import SUPPORTING_SCHEMA_DOCUMENTS
+    from tests.crypto_replay.support.builders import build_source_admission_receipt
 
     vector = build_t02_vector()
     receipt = vector.documents["trading.source-admission-receipt/v1"]
     schema = SUPPORTING_SCHEMA_DOCUMENTS["trading.source-admission-receipt/v1"]
     property_names = set(schema["properties"])
-    assert not {"config_sha256", "config_admission_receipt_id", "run_closure_receipt_id"} & property_names
+    assert (
+        not {
+            "config_sha256",
+            "config_admission_receipt_id",
+            "run_closure_receipt_id",
+            "feature_snapshot_id",
+            "fill_receipt_id",
+        }
+        & property_names
+    )
     assert not _issues(receipt, resolver=vector.resolver)
+    builder_inputs = _source_builder_inputs(receipt)
+    before_config_change = build_source_admission_receipt(reason_codes=(), **builder_inputs)
     changed_config = _reseal(
         {
             **vector.documents["trading.replay-risk-config/v1"],
             "target_entry_notional_quote_atoms": "200000",
         }
     )
+    after_config_change = build_source_admission_receipt(reason_codes=(), **builder_inputs)
+    assert before_config_change == after_config_change == receipt
     resolver = SyntheticResolver(
         (*vector.documents.values(), changed_config, *vector.raw_events),
         tuple(vector.attachment_payloads.values()),

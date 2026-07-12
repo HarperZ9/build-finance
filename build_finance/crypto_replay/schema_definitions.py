@@ -808,6 +808,189 @@ def ledger_record_schema() -> JsonObject:
     )
 
 
+_SOURCE_ADMISSION_REASON_CODES = [
+    "ADMISSION_NOT_LOCAL",
+    "ADMISSION_RIGHTS_MISSING",
+    "ADMISSION_MANIFEST_MISMATCH",
+    "ADMISSION_HASH_MISMATCH",
+    "ADMISSION_POINT_IN_TIME_MISSING",
+    "ADMISSION_LEAKAGE_FIELD",
+    "ADMISSION_UNIVERSE_BIASED",
+    "ADMISSION_PROFILE_MISMATCH",
+    "ADMISSION_POSITION_CONFLICT",
+    "ADMISSION_SEQUENCE_INVALID",
+    "ADMISSION_REVISION_CAUSALITY",
+    "ADMISSION_REVISION_FORK",
+    "ADMISSION_SET_NOT_CLOSED",
+]
+
+_CONFIG_ADMISSION_REASON_CODES = [
+    "CONFIG_MISSING",
+    "CONFIG_BYTES_INVALID",
+    "CONFIG_SCHEMA_INVALID",
+    "CONFIG_ID_MISMATCH",
+    "CONFIG_RANGE_INVALID",
+]
+
+_BASELINE_IDS = [
+    "ALWAYS_HOLD_V1",
+    "MEAN_REVERSION_V1",
+    "BREAKOUT_V1",
+    "MOMENTUM_V1",
+    "TREND_V1",
+]
+
+
+def fixture_manifest_schema() -> JsonObject:
+    """Return the exhaustive closed FixtureManifest schema."""
+    allowed_market = _closed_object(
+        {
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "base_mint": _ref("bounded_utf8_registry_string"),
+            "quote_mint": _ref("bounded_utf8_registry_string"),
+            "base_decimals": {"type": "integer", "minimum": 0, "maximum": 18},
+            "quote_decimals": {"type": "integer", "minimum": 0, "maximum": 18},
+        }
+    )
+    source_file = _closed_object(
+        {
+            "relative_path": _ref("safe_relative_path"),
+            "raw_payload_sha256": _ref("sha256"),
+            "byte_length": _ref("u64s"),
+            "admission_sequence": _ref("u64s"),
+            "availability_slot": _ref("u64s"),
+            "media_type": {"enum": ["application/json", "application/jsonl", "application/octet-stream"]},
+            "source_id": _ref("bounded_utf8_registry_string"),
+            "source_kind": _ref("bounded_utf8_registry_string"),
+            "source_revision": _ref("bounded_utf8_registry_string"),
+            "market_id": _ref("bounded_utf8_registry_string"),
+        }
+    )
+    allowed_markets = _array(allowed_market, unique=True)
+    allowed_markets["minItems"] = 1
+    files = _array(source_file, unique=True)
+    files["minItems"] = 1
+    schema_id = "trading.fixture-manifest/v1"
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "network": {"const": "solana-mainnet"},
+            "venue_profile": {"const": "solana-jupiter-fixture/v1"},
+            "quote_mint": _ref("bounded_utf8_registry_string"),
+            "quote_decimals": {"type": "integer", "minimum": 0, "maximum": 18},
+            "initial_quote_atoms": _ref("u64s"),
+            "replay_tick_ns": _ref("u64s"),
+            "universe_policy": {"const": "FULL_DECLARED_SOURCE_UNIVERSE"},
+            "point_in_time_mode": {"const": "PROVEN_AVAILABILITY_SLOT"},
+            "run_end_position_policy": {"enum": ["FORCE_CLOSE_NEXT_EVENT", "LEAVE_MARKED_OPEN"]},
+            "session_start_availability_slot": _ref("u64s"),
+            "session_end_availability_slot": _ref("u64s"),
+            "rights_manifest_sha256": _ref("sha256"),
+            "selection_failures_retained": {"const": True},
+            "no_route_observations_retained": {"const": True},
+            "inactive_assets_retained": {"const": True},
+            "gaps_retained": {"const": True},
+            "allowed_markets": allowed_markets,
+            "files": files,
+        },
+    )
+
+
+def replay_risk_config_schema() -> JsonObject:
+    """Return the exhaustive closed ReplayRiskConfig schema."""
+    schema_id = "trading.replay-risk-config/v1"
+    bps = {"type": "integer", "minimum": 0, "maximum": 10_000}
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "config_sha256": _ref("ContentID"),
+            "baseline_id": {"enum": _BASELINE_IDS},
+            "target_entry_notional_quote_atoms": _ref("u64s"),
+            "min_notional_quote_atoms": _ref("u64s"),
+            "max_notional_quote_atoms": _ref("u64s"),
+            "price_tick_q18": _ref("sq18s"),
+            "max_participation_bps": bps,
+            "max_impact_bps": {"type": "integer", "minimum": 0, "maximum": 1_000_000},
+            "max_fee_bps": bps,
+            "max_concentration_bps": bps,
+            "max_session_loss_quote_atoms": _ref("u64s"),
+            "max_drawdown_bps": bps,
+            "stale_after_ns": _ref("u64s"),
+            "stop_loss_bps": {"type": "integer", "minimum": 1, "maximum": 9_999},
+            "take_profit_bps": {"type": "integer", "minimum": 1, "maximum": 1_000_000},
+            "adverse_fill_bps_max": {"type": "integer", "minimum": 0, "maximum": 9_999},
+            "max_run_closure_proof_rows": _ref("u64s"),
+            "fee_model_version": {"const": "solana-jupiter-fixture-fee-proration/v1"},
+            "liquidity_model_version": {"const": "solana-jupiter-route-capacity/v1"},
+            "session_start_replay_clock_ns": _ref("u64s"),
+            "session_end_replay_clock_ns": _ref("u64s"),
+            "kill_exit_mode": {"enum": ["FREEZE_NO_NEW_INTENTS", "CLOSE_ON_NEXT_EVENT"]},
+        },
+    )
+
+
+def source_admission_receipt_schema() -> JsonObject:
+    """Return the exhaustive closed SourceAdmissionReceipt schema."""
+    nullable_registry: JsonObject = {"anyOf": [_ref("bounded_utf8_registry_string"), {"type": "null"}]}
+    schema_id = "trading.source-admission-receipt/v1"
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "source_admission_receipt_id": _ref("ContentID"),
+            "status": {"enum": ["ADMITTED", "REJECTED", "QUARANTINED"]},
+            "reason_codes": _array({"enum": _SOURCE_ADMISSION_REASON_CODES}, unique=True),
+            "fixture_manifest_sha256": _nullable_ref("ContentID"),
+            "raw_payload_sha256": _nullable_ref("sha256"),
+            "terms_sha256": _nullable_ref("sha256"),
+            "parser_code_sha256": _ref("sha256"),
+            "source_id": nullable_registry,
+            "source_kind": nullable_registry,
+            "source_revision": nullable_registry,
+            "market_id": nullable_registry,
+            "relative_path": {"anyOf": [_ref("safe_relative_path"), {"type": "null"}]},
+            "media_type": {
+                "anyOf": [
+                    {"enum": ["application/json", "application/jsonl", "application/octet-stream"]},
+                    {"type": "null"},
+                ]
+            },
+            "byte_length": _nullable_ref("u64s"),
+            "admission_sequence": _ref("u64s"),
+            "availability_slot": _nullable_ref("u64s"),
+            "observed_at": _nullable_ref("rfc3339_ns_utc"),
+            "ingested_at": _nullable_ref("rfc3339_ns_utc"),
+            "rights_role": {"anyOf": [{"const": "offline_research_replay"}, {"type": "null"}]},
+            "rights_effective_date": _nullable_ref("rfc3339_full_date"),
+            "rights_review_date": _nullable_ref("rfc3339_full_date"),
+            "parser_version": {"const": "solana-jupiter-fixture-parser/v1"},
+        },
+    )
+
+
+def config_admission_receipt_schema() -> JsonObject:
+    """Return the exhaustive closed ConfigAdmissionReceipt schema."""
+    schema_id = "trading.config-admission-receipt/v1"
+    return _primary_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "config_admission_receipt_id": _ref("ContentID"),
+            "status": {"enum": ["MISSING", "INVALID", "VALID"]},
+            "reason_codes": _array({"enum": _CONFIG_ADMISSION_REASON_CODES}, unique=True),
+            "raw_config_sha256": _nullable_ref("sha256"),
+            "validated_config_sha256": _nullable_ref("ContentID"),
+            "raw_byte_length": _ref("u64s"),
+            "admission_sequence": _ref("u64s"),
+            "validator_code_sha256": _ref("sha256"),
+            "schema_bundle_sha256": _ref("sha256"),
+        },
+    )
+
+
 PRIMARY_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.raw-event/v1": raw_event_schema(),
     "trading.feature-snapshot/v1": feature_snapshot_schema(),
@@ -818,7 +1001,12 @@ PRIMARY_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.portfolio-state/v1": portfolio_state_schema(),
     "trading.ledger-record/v1": ledger_record_schema(),
 }
-SUPPORTING_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {}
+SUPPORTING_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
+    "trading.fixture-manifest/v1": fixture_manifest_schema(),
+    "trading.replay-risk-config/v1": replay_risk_config_schema(),
+    "trading.source-admission-receipt/v1": source_admission_receipt_schema(),
+    "trading.config-admission-receipt/v1": config_admission_receipt_schema(),
+}
 ATTACHMENT_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {}
 
 

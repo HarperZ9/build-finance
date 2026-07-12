@@ -8,9 +8,10 @@ not resolve content identifiers.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+import unicodedata
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from build_finance.crypto_replay.canonical import JsonValue
 from build_finance.crypto_replay.formats import parse_bounded_decimal_string
@@ -24,6 +25,32 @@ _RFC3339_NS_UTC = re.compile(
     r"T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
     r"\.(?P<nanosecond>[0-9]{9})Z\Z"
 )
+_RFC3339_FULL_DATE = re.compile(r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})\Z")
+
+SOURCE_ADMISSION_REASON_PRECEDENCE = (
+    "ADMISSION_NOT_LOCAL",
+    "ADMISSION_RIGHTS_MISSING",
+    "ADMISSION_MANIFEST_MISMATCH",
+    "ADMISSION_HASH_MISMATCH",
+    "ADMISSION_POINT_IN_TIME_MISSING",
+    "ADMISSION_LEAKAGE_FIELD",
+    "ADMISSION_UNIVERSE_BIASED",
+    "ADMISSION_PROFILE_MISMATCH",
+    "ADMISSION_POSITION_CONFLICT",
+    "ADMISSION_SEQUENCE_INVALID",
+    "ADMISSION_REVISION_CAUSALITY",
+    "ADMISSION_REVISION_FORK",
+    "ADMISSION_SET_NOT_CLOSED",
+)
+SOURCE_ADMISSION_QUARANTINE_REASONS = frozenset(SOURCE_ADMISSION_REASON_PRECEDENCE[8:])
+CONFIG_ADMISSION_REASON_PRECEDENCE = (
+    "CONFIG_MISSING",
+    "CONFIG_BYTES_INVALID",
+    "CONFIG_SCHEMA_INVALID",
+    "CONFIG_ID_MISMATCH",
+    "CONFIG_RANGE_INVALID",
+)
+_MAX_RUN_CLOSURE_PROOF_ROWS_V0 = 1_000_000
 
 SemanticValidator = Callable[[Mapping[str, JsonValue]], tuple[ValidationIssue, ...]]
 
@@ -69,8 +96,60 @@ def _instant_key(value: object) -> tuple[int, ...] | None:
     return (*parts, int(match.group("nanosecond")))
 
 
+def _full_date_key(value: object) -> tuple[int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = _RFC3339_FULL_DATE.fullmatch(value)
+    if match is None:
+        return None
+    parts = tuple(int(match.group(name)) for name in ("year", "month", "day"))
+    try:
+        datetime(parts[0], parts[1], parts[2])
+    except ValueError:
+        return None
+    return (parts[0], parts[1], parts[2])
+
+
 def _sorted_unique(values: object, *, key: Callable[[Any], Any]) -> bool:
     return isinstance(values, list) and len(values) == len(set(values)) and values == sorted(values, key=key)
+
+
+def _normalize_reason_codes(
+    reason_codes: Iterable[str],
+    precedence: tuple[str, ...],
+) -> tuple[str, ...]:
+    codes = tuple(reason_codes)
+    if any(not isinstance(code, str) for code in codes):
+        raise ValueError("reason code is not a string")
+    if len(codes) != len(set(codes)):
+        raise ValueError("duplicate reason code")
+    unknown = tuple(code for code in codes if code not in precedence)
+    if unknown:
+        raise ValueError(f"unknown reason code: {unknown[0]}")
+    order = {code: index for index, code in enumerate(precedence)}
+    return tuple(sorted(codes, key=order.__getitem__))
+
+
+def normalize_source_admission_reason_codes(reason_codes: Iterable[str]) -> tuple[str, ...]:
+    """Return the unique closed source reason set in normative precedence."""
+    return _normalize_reason_codes(reason_codes, SOURCE_ADMISSION_REASON_PRECEDENCE)
+
+
+def derive_source_admission_status(
+    reason_codes: Iterable[str],
+) -> Literal["ADMITTED", "REJECTED", "QUARANTINED"]:
+    """Derive source status from only the complete closed reason set."""
+    normalized = normalize_source_admission_reason_codes(reason_codes)
+    if not normalized:
+        return "ADMITTED"
+    if SOURCE_ADMISSION_QUARANTINE_REASONS.intersection(normalized):
+        return "QUARANTINED"
+    return "REJECTED"
+
+
+def normalize_config_admission_reason_codes(reason_codes: Iterable[str]) -> tuple[str, ...]:
+    """Return the unique closed config reason set in normative precedence."""
+    return _normalize_reason_codes(reason_codes, CONFIG_ADMISSION_REASON_PRECEDENCE)
 
 
 def validate_raw_event_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
@@ -1571,6 +1650,391 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
     return tuple(issues)
 
 
+def validate_fixture_manifest_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate fixture keyed sets, identities, paths, and scalar authority."""
+    issues: list[ValidationIssue] = []
+    parsed_root: dict[str, int] = {}
+    for field in (
+        "initial_quote_atoms",
+        "replay_tick_ns",
+        "session_start_availability_slot",
+        "session_end_availability_slot",
+    ):
+        parsed = _u64(document[field])
+        if parsed is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+        else:
+            parsed_root[field] = parsed
+    for field in ("initial_quote_atoms", "replay_tick_ns", "session_start_availability_slot"):
+        if parsed_root.get(field) == 0:
+            issues.append(_issue("semantic_positive", (field,), "value must be positive"))
+    start_slot = parsed_root.get("session_start_availability_slot")
+    end_slot = parsed_root.get("session_end_availability_slot")
+    if end_slot == 0:
+        issues.append(_issue("semantic_positive", ("session_end_availability_slot",), "value must be positive"))
+    if start_slot is not None and end_slot is not None and start_slot >= end_slot:
+        issues.append(
+            _issue(
+                "semantic_session_order",
+                ("session_end_availability_slot",),
+                "session start must be strictly before session end",
+            )
+        )
+
+    if not _valid_utf8_registry(document["quote_mint"], 128):
+        issues.append(_issue("semantic_registry", ("quote_mint",), "registry string exceeds 128 UTF-8 bytes"))
+
+    allowed_markets = document["allowed_markets"]
+    files = document["files"]
+    assert isinstance(allowed_markets, list) and isinstance(files, list)
+    if len(allowed_markets) > _MAX_U64:
+        issues.append(_issue("semantic_count", ("allowed_markets",), "market count exceeds MAX_U64_V0"))
+
+    market_ids: list[str] = []
+    base_mints: list[str] = []
+    for index, row_value in enumerate(allowed_markets):
+        assert isinstance(row_value, Mapping)
+        row = row_value
+        for field in ("market_id", "base_mint", "quote_mint"):
+            if not _valid_utf8_registry(row[field], 128):
+                issues.append(
+                    _issue(
+                        "semantic_registry",
+                        ("allowed_markets", index, field),
+                        "registry string exceeds 128 UTF-8 bytes",
+                    )
+                )
+        market_id = row["market_id"]
+        base_mint = row["base_mint"]
+        assert isinstance(market_id, str) and isinstance(base_mint, str)
+        market_ids.append(market_id)
+        base_mints.append(base_mint)
+        if base_mint == document["quote_mint"]:
+            issues.append(
+                _issue("semantic_mints", ("allowed_markets", index, "base_mint"), "base and quote mints must differ")
+            )
+        if row["quote_mint"] != document["quote_mint"]:
+            issues.append(
+                _issue(
+                    "semantic_quote_identity",
+                    ("allowed_markets", index, "quote_mint"),
+                    "market quote mint must match the manifest",
+                )
+            )
+        if row["quote_decimals"] != document["quote_decimals"]:
+            issues.append(
+                _issue(
+                    "semantic_quote_decimals",
+                    ("allowed_markets", index, "quote_decimals"),
+                    "market quote decimals must match the manifest",
+                )
+            )
+    if len(market_ids) != len(set(market_ids)):
+        issues.append(_issue("semantic_market_set", ("allowed_markets",), "market_id values must be unique"))
+    if len(base_mints) != len(set(base_mints)):
+        issues.append(_issue("semantic_market_set", ("allowed_markets",), "base_mint values must be unique"))
+    try:
+        sorted_market_ids = sorted(market_ids, key=lambda value: value.encode("utf-8", errors="strict"))
+    except UnicodeEncodeError:
+        sorted_market_ids = market_ids
+    if market_ids != sorted_market_ids:
+        issues.append(
+            _issue("semantic_market_order", ("allowed_markets",), "markets must be sorted by unsigned UTF-8 market_id")
+        )
+
+    file_paths: list[str] = []
+    admission_sequences: list[int] = []
+    allowed_market_ids = set(market_ids)
+    for index, row_value in enumerate(files):
+        assert isinstance(row_value, Mapping)
+        row = row_value
+        for field in ("source_id", "source_kind", "source_revision", "market_id"):
+            if not _valid_utf8_registry(row[field], 128):
+                issues.append(
+                    _issue(
+                        "semantic_registry",
+                        ("files", index, field),
+                        "registry string exceeds 128 UTF-8 bytes",
+                    )
+                )
+        path = row["relative_path"]
+        assert isinstance(path, str)
+        file_paths.append(path)
+        if unicodedata.normalize("NFC", path) != path:
+            issues.append(_issue("semantic_path", ("files", index, "relative_path"), "path must be NFC-normalized"))
+        if row["market_id"] not in allowed_market_ids:
+            issues.append(
+                _issue("semantic_file_market", ("files", index, "market_id"), "file market is not allowlisted")
+            )
+        for field in ("byte_length", "admission_sequence", "availability_slot"):
+            parsed = _u64(row[field])
+            if parsed is None:
+                issues.append(_issue("semantic_u64", ("files", index, field), "value exceeds the u64 authority range"))
+            elif field == "admission_sequence":
+                if parsed == 0:
+                    issues.append(
+                        _issue(
+                            "semantic_admission_sequence",
+                            ("files", index, field),
+                            "admission sequence must be one-based",
+                        )
+                    )
+                admission_sequences.append(parsed)
+    if len(file_paths) != len(set(file_paths)):
+        issues.append(_issue("semantic_file_set", ("files",), "relative_path values must be unique"))
+    try:
+        sorted_paths = sorted(file_paths, key=lambda value: value.encode("utf-8", errors="strict"))
+    except UnicodeEncodeError:
+        sorted_paths = file_paths
+    if file_paths != sorted_paths:
+        issues.append(_issue("semantic_file_order", ("files",), "files must be sorted by unsigned UTF-8 path"))
+    if len(admission_sequences) != len(set(admission_sequences)):
+        issues.append(_issue("semantic_admission_sequence", ("files",), "file admission sequences must be unique"))
+    return tuple(issues)
+
+
+def validate_replay_risk_config_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate all string-authority bounds and config cross-field relations."""
+    issues: list[ValidationIssue] = []
+    parsed: dict[str, int] = {}
+    u64_fields = (
+        "target_entry_notional_quote_atoms",
+        "min_notional_quote_atoms",
+        "max_notional_quote_atoms",
+        "max_session_loss_quote_atoms",
+        "stale_after_ns",
+        "max_run_closure_proof_rows",
+        "session_start_replay_clock_ns",
+        "session_end_replay_clock_ns",
+    )
+    for field in u64_fields:
+        value = _u64(document[field])
+        if value is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+        else:
+            parsed[field] = value
+    for field in (
+        "target_entry_notional_quote_atoms",
+        "min_notional_quote_atoms",
+        "max_notional_quote_atoms",
+    ):
+        if parsed.get(field) == 0:
+            issues.append(_issue("semantic_positive", (field,), "notional must be positive"))
+    minimum = parsed.get("min_notional_quote_atoms")
+    target = parsed.get("target_entry_notional_quote_atoms")
+    maximum = parsed.get("max_notional_quote_atoms")
+    if minimum is not None and target is not None and maximum is not None and not minimum <= target <= maximum:
+        issues.append(
+            _issue(
+                "semantic_notional_order",
+                ("target_entry_notional_quote_atoms",),
+                "min_notional must not exceed target, which must not exceed max_notional",
+            )
+        )
+    tick = _i128(document["price_tick_q18"])
+    if tick is None:
+        issues.append(_issue("semantic_i128", ("price_tick_q18",), "price tick exceeds signed-i128 range"))
+    elif tick <= 0:
+        issues.append(_issue("semantic_positive", ("price_tick_q18",), "price tick must be positive"))
+    proof_rows = parsed.get("max_run_closure_proof_rows")
+    if proof_rows is not None and not 1 <= proof_rows <= _MAX_RUN_CLOSURE_PROOF_ROWS_V0:
+        issues.append(
+            _issue(
+                "semantic_proof_cap",
+                ("max_run_closure_proof_rows",),
+                "proof-row limit must be within the v0 protocol cap",
+            )
+        )
+    start = parsed.get("session_start_replay_clock_ns")
+    end = parsed.get("session_end_replay_clock_ns")
+    if start is not None and end is not None and start >= end:
+        issues.append(
+            _issue(
+                "semantic_session_order",
+                ("session_end_replay_clock_ns",),
+                "session start must be strictly before session end",
+            )
+        )
+    return tuple(issues)
+
+
+def validate_source_admission_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate pure source status, preservation-compatible nullability, and time rules."""
+    issues: list[ValidationIssue] = []
+    reason_values = document["reason_codes"]
+    assert isinstance(reason_values, list)
+    reason_codes = tuple(reason_values)
+    try:
+        normalized = normalize_source_admission_reason_codes(reason_codes)
+    except ValueError as error:
+        issues.append(_issue("semantic_reason_codes", ("reason_codes",), str(error)))
+        normalized = reason_codes
+    if reason_codes != normalized:
+        issues.append(
+            _issue("semantic_reason_order", ("reason_codes",), "reason codes are not in normative precedence")
+        )
+    try:
+        derived_status = derive_source_admission_status(reason_codes)
+    except ValueError:
+        derived_status = None
+    if document["status"] != derived_status:
+        issues.append(_issue("semantic_status", ("status",), "status does not match the complete reason set"))
+
+    reason_set = set(reason_codes)
+    for field in ("terms_sha256", "rights_role", "rights_effective_date", "rights_review_date"):
+        if document[field] is None and "ADMISSION_RIGHTS_MISSING" not in reason_set:
+            issues.append(
+                _issue(
+                    "semantic_reason_completeness",
+                    (field,),
+                    "missing rights evidence requires ADMISSION_RIGHTS_MISSING",
+                )
+            )
+    for field in ("observed_at", "ingested_at"):
+        if document[field] is None and "ADMISSION_POINT_IN_TIME_MISSING" not in reason_set:
+            issues.append(
+                _issue(
+                    "semantic_reason_completeness",
+                    (field,),
+                    "missing witness time requires ADMISSION_POINT_IN_TIME_MISSING",
+                )
+            )
+
+    for field in ("source_id", "source_kind", "source_revision", "market_id"):
+        value = document[field]
+        if value is not None and not _valid_utf8_registry(value, 128):
+            issues.append(_issue("semantic_registry", (field,), "registry string exceeds 128 UTF-8 bytes"))
+    relative_path = document["relative_path"]
+    if isinstance(relative_path, str) and unicodedata.normalize("NFC", relative_path) != relative_path:
+        issues.append(_issue("semantic_path", ("relative_path",), "path must be NFC-normalized"))
+
+    parsed_admission = _u64(document["admission_sequence"])
+    if parsed_admission is None:
+        issues.append(_issue("semantic_u64", ("admission_sequence",), "value exceeds the u64 authority range"))
+    elif parsed_admission == 0:
+        issues.append(
+            _issue("semantic_admission_sequence", ("admission_sequence",), "admission sequence must be one-based")
+        )
+    for field in ("byte_length", "availability_slot"):
+        value = document[field]
+        if value is not None and _u64(value) is None:
+            issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
+
+    observed = document["observed_at"]
+    ingested = document["ingested_at"]
+    observed_key = None if observed is None else _instant_key(observed)
+    ingested_key = None if ingested is None else _instant_key(ingested)
+    if observed is not None and observed_key is None:
+        issues.append(_issue("semantic_timestamp", ("observed_at",), "timestamp is not a real UTC instant"))
+    if ingested is not None and ingested_key is None:
+        issues.append(_issue("semantic_timestamp", ("ingested_at",), "timestamp is not a real UTC instant"))
+    if observed_key is not None and ingested_key is not None and ingested_key < observed_key:
+        issues.append(_issue("semantic_time_order", ("ingested_at",), "ingested_at precedes observed_at"))
+
+    effective = document["rights_effective_date"]
+    review = document["rights_review_date"]
+    effective_key = None if effective is None else _full_date_key(effective)
+    review_key = None if review is None else _full_date_key(review)
+    if effective is not None and effective_key is None:
+        issues.append(_issue("semantic_date", ("rights_effective_date",), "date is not a real calendar date"))
+    if review is not None and review_key is None:
+        issues.append(_issue("semantic_date", ("rights_review_date",), "date is not a real calendar date"))
+    if effective_key is not None and review_key is not None and review_key < effective_key:
+        issues.append(_issue("semantic_rights_order", ("rights_review_date",), "rights review precedes effective date"))
+
+    if document["status"] == "ADMITTED":
+        admitted_required = (
+            "fixture_manifest_sha256",
+            "raw_payload_sha256",
+            "terms_sha256",
+            "source_id",
+            "source_kind",
+            "source_revision",
+            "market_id",
+            "relative_path",
+            "media_type",
+            "byte_length",
+            "availability_slot",
+            "observed_at",
+            "ingested_at",
+            "rights_role",
+            "rights_effective_date",
+            "rights_review_date",
+        )
+        for field in admitted_required:
+            if document[field] is None:
+                issues.append(
+                    _issue("semantic_admitted_totality", (field,), "admitted receipt requires this witnessed field")
+                )
+    return tuple(issues)
+
+
+def validate_config_admission_receipt_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate the pure config status/reason/nullability tuple."""
+    issues: list[ValidationIssue] = []
+    reason_values = document["reason_codes"]
+    assert isinstance(reason_values, list)
+    reason_codes = tuple(reason_values)
+    try:
+        normalized = normalize_config_admission_reason_codes(reason_codes)
+    except ValueError as error:
+        issues.append(_issue("semantic_reason_codes", ("reason_codes",), str(error)))
+        normalized = reason_codes
+    if reason_codes != normalized:
+        issues.append(
+            _issue("semantic_reason_order", ("reason_codes",), "reason codes are not in normative precedence")
+        )
+
+    raw_length = _u64(document["raw_byte_length"])
+    if raw_length is None:
+        issues.append(_issue("semantic_u64", ("raw_byte_length",), "value exceeds the u64 authority range"))
+    admission_sequence = _u64(document["admission_sequence"])
+    if admission_sequence is None:
+        issues.append(_issue("semantic_u64", ("admission_sequence",), "value exceeds the u64 authority range"))
+    elif admission_sequence == 0:
+        issues.append(
+            _issue("semantic_admission_sequence", ("admission_sequence",), "admission sequence must be one-based")
+        )
+
+    status = document["status"]
+    raw_digest = document["raw_config_sha256"]
+    validated_digest = document["validated_config_sha256"]
+    if status == "MISSING":
+        if reason_codes != ("CONFIG_MISSING",):
+            issues.append(_issue("semantic_config_tuple", ("reason_codes",), "MISSING requires exactly CONFIG_MISSING"))
+        if raw_digest is not None or validated_digest is not None or raw_length != 0:
+            issues.append(_issue("semantic_config_tuple", ("status",), "MISSING requires null digests and zero length"))
+    elif status == "INVALID":
+        if not reason_codes or "CONFIG_MISSING" in reason_codes:
+            issues.append(
+                _issue(
+                    "semantic_config_tuple",
+                    ("reason_codes",),
+                    "INVALID requires non-missing rejection reasons",
+                )
+            )
+        if raw_digest is None or validated_digest is not None:
+            issues.append(
+                _issue("semantic_config_tuple", ("status",), "INVALID requires raw digest and null validated digest")
+            )
+    else:
+        if reason_codes:
+            issues.append(_issue("semantic_config_tuple", ("reason_codes",), "VALID requires empty reasons"))
+        if raw_digest is None or validated_digest is None:
+            issues.append(
+                _issue("semantic_config_tuple", ("status",), "VALID requires raw and validated config digests")
+            )
+        if raw_length == 0:
+            issues.append(
+                _issue("semantic_config_tuple", ("raw_byte_length",), "VALID canonical record cannot be empty")
+            )
+    return tuple(issues)
+
+
 SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.raw-event/v1": validate_raw_event_semantics,
     "trading.feature-snapshot/v1": validate_feature_snapshot_semantics,
@@ -1582,6 +2046,13 @@ SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
     "trading.ledger-record/v1": validate_ledger_record_semantics,
 }
 
+SUPPORTING_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
+    "trading.fixture-manifest/v1": validate_fixture_manifest_semantics,
+    "trading.replay-risk-config/v1": validate_replay_risk_config_semantics,
+    "trading.source-admission-receipt/v1": validate_source_admission_receipt_semantics,
+    "trading.config-admission-receipt/v1": validate_config_admission_receipt_semantics,
+}
+
 
 def validate_contract_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
     """Dispatch one structurally valid document to its pure semantic validator."""
@@ -1589,4 +2060,6 @@ def validate_contract_semantics(document: Mapping[str, JsonValue]) -> tuple[Vali
     if not isinstance(schema_id, str):
         return ()
     validator = SEMANTIC_VALIDATORS.get(schema_id)
+    if validator is None:
+        validator = SUPPORTING_SEMANTIC_VALIDATORS.get(schema_id)
     return () if validator is None else validator(document)
