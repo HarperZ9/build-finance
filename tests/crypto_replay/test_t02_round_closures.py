@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import stat
 import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -751,6 +752,17 @@ def _source_tree_api() -> tuple[Callable[..., Any], type[Exception], Any]:
     return scan, error_type, module
 
 
+def _assert_source_tree_run_input_rejected(vector: Any, observed_source_tree: dict[str, Any]) -> None:
+    from tests.crypto_replay.test_t02_cross_artifact import _assert_rejected, _make_bundle
+
+    run_receipt = vector.documents["trading.run-receipt/v1"]
+    expected_digest = run_receipt["source_tree_sha256"]
+    observed_digest = sha256_hex(canonical_json_bytes(observed_source_tree))
+    assert expected_digest == sha256_hex(canonical_json_bytes(vector.attachments["trading.source-tree/v1"]))
+    assert observed_digest != expected_digest
+    _assert_rejected(vector, bundle=_make_bundle(vector, source_tree=observed_source_tree))
+
+
 def _write_source_fixture(root: Path) -> None:
     source = root / "src"
     source.mkdir(parents=True)
@@ -828,21 +840,111 @@ def test_source_tree_rejects_missing_extra_nonregular_unreadable_and_reparse_ent
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scan, source_tree_error, module = _source_tree_api()
+    vector = build_t02_vector()
 
     baseline_root = tmp_path / "baseline"
     _write_source_fixture(baseline_root)
     baseline = scan(baseline_root, root_label="repository-root")
+    assert canonical_json_bytes(baseline) == canonical_json_bytes(vector.attachments["trading.source-tree/v1"])
+    from tests.crypto_replay.test_t02_cross_artifact import _make_bundle, _verify
+
+    verified = _verify(vector, bundle=_make_bundle(vector, source_tree=baseline))
+    assert verified.authority == "CONTRACT_ONLY"
 
     (baseline_root / "src" / "risk.py").unlink()
     missing = scan(baseline_root, root_label="repository-root")
     assert canonical_json_bytes(missing) != canonical_json_bytes(baseline)
     assert [row["relative_path"] for row in missing["files"]] == ["src/kernel.py"]
+    _assert_source_tree_run_input_rejected(vector, missing)
 
     (baseline_root / "src" / "risk.py").write_bytes(b"")
     (baseline_root / "src" / "extra.py").write_bytes(b"extra")
     extra = scan(baseline_root, root_label="repository-root")
     assert canonical_json_bytes(extra) != canonical_json_bytes(baseline)
     assert "src/extra.py" in {row["relative_path"] for row in extra["files"]}
+    _assert_source_tree_run_input_rejected(vector, extra)
+
+    nonregular_root = tmp_path / "nonregular"
+    _write_source_fixture(nonregular_root)
+    nonregular = nonregular_root / "src" / "risk.py"
+    if hasattr(os, "mkfifo"):
+        nonregular.unlink()
+        os.mkfifo(nonregular)
+        with pytest.raises(source_tree_error, match="regular|type|kind|entry"):
+            scan(nonregular_root, root_label="repository-root")
+    else:
+        original_lstat = module.os.lstat
+        original_stat = module.os.stat
+        original_scandir = module.os.scandir
+        target_path = os.path.normcase(os.path.abspath(nonregular))
+
+        def is_target(path: Any) -> bool:
+            try:
+                return os.path.normcase(os.path.abspath(os.fspath(path))) == target_path
+            except TypeError:
+                return False
+
+        class NonregularMetadata:
+            def __init__(self, metadata: Any) -> None:
+                self._metadata = metadata
+                self.st_mode = stat.S_IFIFO | stat.S_IRUSR | stat.S_IWUSR
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._metadata, name)
+
+        def classify_nonregular(metadata: Any, path: Any) -> Any:
+            return NonregularMetadata(metadata) if is_target(path) else metadata
+
+        def controlled_lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+            return classify_nonregular(original_lstat(path, *args, **kwargs), path)
+
+        def controlled_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+            return classify_nonregular(original_stat(path, *args, **kwargs), path)
+
+        class ControlledDirEntry:
+            def __init__(self, entry: Any) -> None:
+                self._entry = entry
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._entry, name)
+
+            def stat(self, *args: Any, **kwargs: Any) -> Any:
+                return classify_nonregular(self._entry.stat(*args, **kwargs), self._entry.path)
+
+            def is_file(self, *args: Any, **kwargs: Any) -> bool:
+                return False if is_target(self._entry.path) else self._entry.is_file(*args, **kwargs)
+
+            def is_dir(self, *args: Any, **kwargs: Any) -> bool:
+                return False if is_target(self._entry.path) else self._entry.is_dir(*args, **kwargs)
+
+        class ControlledScandir:
+            def __init__(self, entries: Any) -> None:
+                self._entries = entries
+
+            def __enter__(self) -> ControlledScandir:
+                self._entries.__enter__()
+                return self
+
+            def __exit__(self, *args: Any) -> Any:
+                return self._entries.__exit__(*args)
+
+            def __iter__(self) -> Any:
+                return (ControlledDirEntry(entry) for entry in self._entries)
+
+            def close(self) -> None:
+                self._entries.close()
+
+        def controlled_scandir(path: Any) -> ControlledScandir:
+            return ControlledScandir(original_scandir(path))
+
+        monkeypatch.setattr(module.os, "lstat", controlled_lstat)
+        monkeypatch.setattr(module.os, "stat", controlled_stat)
+        monkeypatch.setattr(module.os, "scandir", controlled_scandir)
+        try:
+            with pytest.raises(source_tree_error, match="regular|type|kind|entry"):
+                scan(nonregular_root, root_label="repository-root")
+        finally:
+            monkeypatch.undo()
 
     unreadable_root = tmp_path / "unreadable"
     _write_source_fixture(unreadable_root)
@@ -2065,19 +2167,29 @@ def test_t02_run_closure_budget_failure_market_row_schema_is_total() -> None:
 
 
 def test_t02_run_closure_preproof_failure_market_row_schema_is_total() -> None:
-    row = _force_market_row(
-        failure_codes=["CLOSURE_CAPACITY_INSUFFICIENT"],
-        proof_domain=None,
-        proof_root_sha256=None,
-    )
+    row = {
+        **_force_market_row(
+            failure_codes=["CLOSURE_CAPACITY_INSUFFICIENT"],
+            q_cap_base_atoms="2",
+            proof_row_count="4",
+            proof_domain=None,
+            proof_root_sha256=None,
+        ),
+        "capacity_base_atoms": "1",
+    }
     closure = _force_closure(
         status="FAIL",
         reason_codes=["ADMISSION_RUN_END_UNCLOSED"],
-        proof_row_limit="2",
-        proof_row_count_total="2",
+        proof_row_limit="4",
+        proof_row_count_total="4",
         proof_budget_status="WITHIN_LIMIT",
         market_proofs=[row],
     )
+    assert int(row["capacity_base_atoms"]) < int(row["q_cap_base_atoms"])
+    assert int(row["proof_row_count"]) == (
+        int(row["q_cap_base_atoms"]) * int(row["reference_price_count"]) * int(row["adverse_fill_extreme_count"])
+    )
+    assert closure["proof_row_count_total"] == row["proof_row_count"]
     _assert_contract_valid(closure, "pre-proof failure total market row")
     fabricated = deepcopy(closure)
     fabricated["market_proofs"][0]["proof_domain"] = "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1"
@@ -2249,11 +2361,17 @@ def _protocol_cap_out_of_range_case() -> None:
     _assert_contract_invalid(closure, "protocol/config proof-cap out-of-range serialization")
 
 
-_HYPHENATED_PROTOCOL_TEST_NAME = "test_t02_force_proof_protocol_cap_fields_reject_out-of-range_serialization"
+_HYPHENATED_PROTOCOL_TEST_NAME = "test_t02_force_proof_protocol_cap_fields_reject_out_of-range_serialization"
 _protocol_cap_out_of_range_case.__name__ = _HYPHENATED_PROTOCOL_TEST_NAME
 globals()[_HYPHENATED_PROTOCOL_TEST_NAME] = _protocol_cap_out_of_range_case
 del _protocol_cap_out_of_range_case
 
+_INCORRECT_PROTOCOL_TEST_NAMES = frozenset(
+    {
+        "test_t02_force_proof_protocol_cap_fields_reject_out-of-range_serialization",
+        "test_t02_force_proof_protocol_cap_fields_reject_out_of_range_serialization",
+    }
+)
 _FORBIDDEN_T11_TEST_NAMES = frozenset(
     {
         "test_run_closure_budget_failure_has_total_market_row_layout",
@@ -2270,4 +2388,6 @@ _FORBIDDEN_T11_TEST_NAMES = frozenset(
     }
 )
 _COLLECTABLE_TEST_NAMES = {name for name, value in globals().items() if name.startswith("test_") and callable(value)}
+assert _HYPHENATED_PROTOCOL_TEST_NAME in _COLLECTABLE_TEST_NAMES
+assert not _INCORRECT_PROTOCOL_TEST_NAMES & _COLLECTABLE_TEST_NAMES
 assert not _FORBIDDEN_T11_TEST_NAMES & _COLLECTABLE_TEST_NAMES
