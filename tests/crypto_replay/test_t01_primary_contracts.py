@@ -268,6 +268,145 @@ def test_ledger_record_example_validates() -> None:
     require_valid_contract(_example("trading.ledger-record/v1"), expected_schema="trading.ledger-record/v1")
 
 
+def _schema_nodes(node: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(node, Mapping):
+        return []
+    result = [node]
+    for keyword in ("$defs", "properties"):
+        children = node.get(keyword)
+        if isinstance(children, Mapping):
+            for child in children.values():
+                result.extend(_schema_nodes(child))
+    items = node.get("items")
+    if isinstance(items, Mapping):
+        result.extend(_schema_nodes(items))
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        branches = node.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                result.extend(_schema_nodes(branch))
+    negated = node.get("not")
+    if isinstance(negated, Mapping):
+        result.extend(_schema_nodes(negated))
+    return result
+
+
+def _object_paths(value: Any, path: tuple[str | int, ...] = ()) -> list[tuple[str | int, ...]]:
+    paths: list[tuple[str | int, ...]] = []
+    if isinstance(value, dict):
+        paths.append(path)
+        for key, child in value.items():
+            paths.extend(_object_paths(child, (*path, key)))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            paths.extend(_object_paths(child, (*path, index)))
+    return paths
+
+
+def test_primary_schema_documents_are_exact_draft_valid_and_recursively_closed() -> None:
+    from jsonschema import Draft202012Validator
+
+    from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_DOCUMENTS, PRIMARY_SCHEMA_IDS
+
+    assert tuple(PRIMARY_SCHEMA_DOCUMENTS) == tuple(PRIMARY_SCHEMA_IDS)
+    assert len(PRIMARY_SCHEMA_DOCUMENTS) == 8
+    for schema_id, schema in PRIMARY_SCHEMA_DOCUMENTS.items():
+        Draft202012Validator.check_schema(schema)
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        assert schema["x-contract-schema"] == schema_id
+        contract_name, version = schema_id.removeprefix("trading.").split("/", maxsplit=1)
+        assert schema["$id"] == f"urn:build-finance:contract:{contract_name}:{version}"
+        for node in _schema_nodes(schema):
+            if node.get("type") == "object":
+                assert node.get("additionalProperties") is False
+                assert set(node.get("required", ())) == set(node.get("properties", ()))
+
+
+def test_primary_shared_scalar_definitions_are_frozen() -> None:
+    from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_DOCUMENTS
+
+    expected = {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ContentID": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "CausalDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "u64s": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+        "uints": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+        "i128s": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)$"},
+        "sq18s": {"type": "string", "pattern": "^(0|-?[1-9][0-9]*)$"},
+        "uq18s": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+        "rfc3339_ns_utc": {
+            "type": "string",
+            "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z$",
+        },
+        "rfc3339_full_date": {"type": "string", "pattern": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "bounded_utf8_registry_string": {"type": "string", "minLength": 1, "maxLength": 128},
+    }
+    definitions = [schema["$defs"] for schema in PRIMARY_SCHEMA_DOCUMENTS.values()]
+    assert all(definition == definitions[0] for definition in definitions)
+    for name, value in expected.items():
+        assert definitions[0][name] == value
+    assert "safe_relative_path" in definitions[0]
+
+
+def test_primary_local_and_independent_oracles_agree_on_basic_cases() -> None:
+    from jsonschema import Draft202012Validator
+
+    from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_DOCUMENTS
+    from build_finance.crypto_replay.schema_registry import SchemaRegistry
+
+    local = SchemaRegistry.from_documents(PRIMARY_SCHEMA_DOCUMENTS.values())
+    for schema_id, (_, self_id_field) in EXAMPLES.items():
+        schema = PRIMARY_SCHEMA_DOCUMENTS[schema_id]
+        oracle = Draft202012Validator(schema)
+        positive = _example(schema_id)
+        unknown = {**positive, "unknown_property": True}
+        missing = dict(positive)
+        missing.pop(self_id_field)
+        wrong_type = {**positive, self_id_field: 0}
+        vectors = (positive, unknown, missing, wrong_type)
+        local_results = [not local.validate(document, expected_schema=schema_id) for document in vectors]
+        oracle_results = [not tuple(oracle.iter_errors(document)) for document in vectors]
+        assert local_results == oracle_results == [True, False, False, False]
+
+
+def test_unknown_property_rejected_recursively_for_all_primary_schemas() -> None:
+    from jsonschema import Draft202012Validator
+
+    from build_finance.crypto_replay.schema_definitions import PRIMARY_SCHEMA_DOCUMENTS
+    from build_finance.crypto_replay.schema_registry import SchemaRegistry
+
+    local = SchemaRegistry.from_documents(PRIMARY_SCHEMA_DOCUMENTS.values())
+    for schema_id, (_, self_id_field) in EXAMPLES.items():
+        positive = _example(schema_id)
+        oracle = Draft202012Validator(PRIMARY_SCHEMA_DOCUMENTS[schema_id])
+        for path in _object_paths(positive):
+            mutation = deepcopy(positive)
+            target: Any = mutation
+            for part in path:
+                target = target[part]
+            target["unknown_property"] = True
+            assert local.validate(mutation, expected_schema=schema_id), (schema_id, path)
+            assert tuple(oracle.iter_errors(mutation)), (schema_id, path)
+        assert self_id_field in positive
+
+
+def test_primary_semantic_dispatch_has_exactly_eight_validators() -> None:
+    from build_finance.crypto_replay.contract_semantics import SEMANTIC_VALIDATORS
+
+    assert set(SEMANTIC_VALIDATORS) == set(EXAMPLES)
+    assert len(SEMANTIC_VALIDATORS) == 8
+    assert {schema_id: validator.__name__ for schema_id, validator in SEMANTIC_VALIDATORS.items()} == {
+        "trading.feature-snapshot/v1": "validate_feature_snapshot_semantics",
+        "trading.ledger-record/v1": "validate_ledger_record_semantics",
+        "trading.model-signal/v1": "validate_model_signal_semantics",
+        "trading.portfolio-state/v1": "validate_portfolio_state_semantics",
+        "trading.raw-event/v1": "validate_raw_event_semantics",
+        "trading.risk-decision/v1": "validate_risk_decision_semantics",
+        "trading.simulated-fill-receipt/v1": "validate_simulated_fill_receipt_semantics",
+        "trading.simulated-order-intent/v1": "validate_simulated_order_intent_semantics",
+    }
+
+
 def test_raw_event_semantic_matrix() -> None:
     from build_finance.crypto_replay.content_ids import seal_content_id
     from build_finance.crypto_replay.schema_registry import validate_contract
@@ -278,8 +417,13 @@ def test_raw_event_semantic_matrix() -> None:
         [
             (("base_mint",), document["quote_mint"]),
             (("revision", "availability_slot"), "2"),
+            (("revision", "availability_admission_sequence"), "2"),
+            (("revision", "kind"), "CORRECTION"),
             (("quality_flags",), ["NON_EXECUTABLE"]),
             (("ingested_at",), "2025-01-01T00:00:00.000000000Z"),
+            (("event_time",), "2027-01-01T00:00:00.000000000Z"),
+            (("event_time",), None),
+            (("market", "route_capacity_base_atoms"), "0"),
             (("quality_flags",), ["STALE_SOURCE", "NON_EXECUTABLE"]),
         ],
         seal_content_id=seal_content_id,
@@ -298,6 +442,9 @@ def test_feature_snapshot_semantic_matrix() -> None:
             (("features", "history_count"), 0),
             (("missing_features",), ["mid_price_q18"]),
             (("as_of_event_id",), None),
+            (("input_merkle_root_sha256",), None),
+            (("features", "mid_price_q18"), None),
+            (("features", "rsi_14_q18"), "100000000000000000001"),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -315,6 +462,8 @@ def test_model_signal_semantic_matrix() -> None:
             (("probability_long_bias_q18",), "1"),
             (("decision_close_replay_clock_ns",), "0"),
             (("expires_replay_clock_ns",), "4"),
+            (("action",), "LONG_BIAS"),
+            (("score_q18",), "1000000000000000001"),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -332,6 +481,8 @@ def test_risk_decision_semantic_matrix() -> None:
             (("model_signal_status",), "ACCEPTED"),
             (("approved_base_atoms",), "999"),
             (("reservation_id",), None),
+            (("reason_codes",), ["RISK_DRAWDOWN", "RISK_SESSION_LOSS"]),
+            (("validated_config_sha256",), None),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -349,6 +500,7 @@ def test_simulated_order_intent_semantic_matrix() -> None:
             (("quantity_base_atoms",), "0"),
             (("reserved_quote_atoms",), "0"),
             (("stop_price_q18",), "1200000000000000000"),
+            (("action",), "CLOSE_LONG"),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -366,6 +518,8 @@ def test_simulated_fill_receipt_semantic_matrix() -> None:
             (("filled_base_atoms",), "999"),
             (("fill_equal_time_group",), "1"),
             (("cash_delta_quote_atoms",), "0"),
+            (("reason_codes",), ["FILL_PARTIAL"]),
+            (("fill_event_id",), None),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -383,7 +537,10 @@ def test_portfolio_state_semantic_matrix() -> None:
         [
             (("balances", 0, "total_atoms"), "0"),
             (("balances",), duplicate_balance),
+            (("balances",), list(reversed(document["balances"]))),
             (("kill_latched",), True),
+            (("summary", "session_pnl_quote_atoms"), "0"),
+            (("summary", "equity_quote_atoms"), "0"),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -401,6 +558,10 @@ def test_ledger_record_semantic_matrix() -> None:
             (("object_schema",), "trading.raw-event/v1"),
             (("object_sha256",), "0" * 64),
             (("entries",), []),
+            (("previous_ledger_record_id",), None),
+            (("causation_ids",), list(reversed(document["causation_ids"]))),
+            (("causation_ids",), [document["object_id"]]),
+            (("entries",), list(reversed(document["entries"]))),
         ],
         seal_content_id=seal_content_id,
         validate_contract=validate_contract,
@@ -763,6 +924,29 @@ def test_codegen_scopes_expose_the_exact_frozen_inventory() -> None:
 
     with pytest.raises(ValueError):
         get_scope_plan("unknown")
+
+
+def test_primary_codegen_check_rejects_missing_extra_and_byte_different_resources(tmp_path: Path) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources, write_resources
+
+    write_resources("primary", resources_root=tmp_path)
+    check_resources("primary", resources_root=tmp_path)
+
+    schema_path = tmp_path / "schemas" / "raw-event-v1.schema.json"
+    schema_record = schema_path.read_bytes()
+    schema_path.unlink()
+    with pytest.raises(ValueError, match="generated resource is missing"):
+        check_resources("primary", resources_root=tmp_path)
+
+    write_resources("primary", resources_root=tmp_path)
+    schema_path.write_bytes(schema_record + b" ")
+    with pytest.raises(ValueError, match="generated resource differs"):
+        check_resources("primary", resources_root=tmp_path)
+
+    write_resources("primary", resources_root=tmp_path)
+    (tmp_path / "schemas" / "rogue.schema.json").write_bytes(b"{}\n")
+    with pytest.raises(ValueError, match="unknown managed schema resource"):
+        check_resources("primary", resources_root=tmp_path)
 
 
 def _staged_supporting_schema(schema_id: str) -> dict[str, Any]:

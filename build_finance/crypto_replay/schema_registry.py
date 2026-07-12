@@ -534,9 +534,14 @@ def validate_contract(
     expected_schema: str | None = None,
     resolver: EvidenceResolver | None = None,
 ) -> tuple[ValidationIssue, ...]:
-    """Validate local structure; resolver use is reserved for semantics."""
+    """Validate local structure, then pure cross-field contract semantics."""
     del resolver
-    return _default_registry().validate(document, expected_schema=expected_schema)
+    structural_issues = _default_registry().validate(document, expected_schema=expected_schema)
+    if structural_issues:
+        return structural_issues
+    from build_finance.crypto_replay.contract_semantics import validate_contract_semantics
+
+    return validate_contract_semantics(document)
 
 
 def require_valid_contract(
