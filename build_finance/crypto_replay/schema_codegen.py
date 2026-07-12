@@ -156,6 +156,23 @@ def _schema_path(schema_id: str) -> str:
     return f"schemas/{CONTRACT_SPECS_BY_SCHEMA[schema_id].schema_filename}"
 
 
+_KNOWN_ROOT_JSON_RESOURCES = frozenset(
+    {
+        "primary-schema-bundle.json",
+        "schema-bundle.json",
+        "schema-lock.json",
+    }
+)
+_KNOWN_ROOT_DIGEST_RESOURCES = frozenset(
+    {
+        "primary-schema-bundle.sha256",
+        "schema-bundle.sha256",
+    }
+)
+_KNOWN_SCHEMA_RESOURCES = frozenset(_schema_path(schema_id) for schema_id in ALL_JSON_SCHEMA_IDS)
+_KNOWN_FORMULA_RESOURCES = frozenset({_FORMULA_PATH})
+
+
 def _schema_row(schema_id: str, document: JsonObject) -> JsonObject:
     spec = CONTRACT_SPECS_BY_SCHEMA[schema_id]
     return {
@@ -318,6 +335,31 @@ def _owned_schema_paths(scope: ScopeName, documents: dict[str, JsonObject]) -> f
     return frozenset(_schema_path(schema_id) for schema_id in schema_ids)
 
 
+def _resource_paths(directory: Path, pattern: str, *, prefix: str = "") -> frozenset[str]:
+    if not directory.is_dir():
+        return frozenset()
+    return frozenset(f"{prefix}{path.name}" for path in directory.glob(pattern))
+
+
+def _check_global_managed_inventory(resources_root: Path) -> frozenset[str]:
+    actual_root_resources = _resource_paths(resources_root, "*.json") | _resource_paths(resources_root, "*.sha256")
+    known_root_resources = _KNOWN_ROOT_JSON_RESOURCES | _KNOWN_ROOT_DIGEST_RESOURCES
+    unknown_root_resources = actual_root_resources.difference(known_root_resources)
+    if unknown_root_resources:
+        raise ValueError(f"unknown managed root resource(s): {sorted(unknown_root_resources)!r}")
+
+    actual_schema_resources = _resource_paths(resources_root / "schemas", "*.json", prefix="schemas/")
+    unknown_schema_resources = actual_schema_resources.difference(_KNOWN_SCHEMA_RESOURCES)
+    if unknown_schema_resources:
+        raise ValueError(f"unknown managed schema resource(s): {sorted(unknown_schema_resources)!r}")
+
+    actual_formula_resources = _resource_paths(resources_root / "formulas", "*.txt", prefix="formulas/")
+    unknown_formula_resources = actual_formula_resources.difference(_KNOWN_FORMULA_RESOURCES)
+    if unknown_formula_resources:
+        raise ValueError(f"unknown managed formula resource(s): {sorted(unknown_formula_resources)!r}")
+    return actual_schema_resources
+
+
 def write_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) -> None:
     """Write only scope-owned bytes, never overwriting sealed primary schemas."""
     expected, preserved = build_expected_resources(scope, resources_root=resources_root)
@@ -335,6 +377,7 @@ def write_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) 
 
 def check_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) -> None:
     """Reject any missing, extra, or byte-different resource owned by scope."""
+    actual_schema_resources = _check_global_managed_inventory(resources_root)
     expected, _ = build_expected_resources(scope, resources_root=resources_root)
     for relative_path, payload in expected.items():
         path = resources_root / relative_path
@@ -345,34 +388,12 @@ def check_resources(scope: ScopeName, *, resources_root: Path = _RESOURCE_ROOT) 
 
     documents = get_defined_schema_documents()
     owned_schema_paths = _owned_schema_paths(scope, documents)
-    schema_directory = resources_root / "schemas"
-    if schema_directory.is_dir():
-        actual_owned = {
-            f"schemas/{path.name}"
-            for path in schema_directory.glob("*.json")
-            if f"schemas/{path.name}"
-            in {_schema_path(schema_id) for schema_id in get_scope_plan(scope).checked_schema_ids}
-        }
-        extra = actual_owned.difference(owned_schema_paths)
-        if extra:
-            raise ValueError(f"extra generated schema resource(s): {sorted(extra)!r}")
-
-    if scope == "full":
-        actual_schemas = (
-            {f"schemas/{path.name}" for path in schema_directory.glob("*.json")} if schema_directory.is_dir() else set()
-        )
-        extra_schemas = actual_schemas.difference(owned_schema_paths)
-        if extra_schemas:
-            raise ValueError(f"extra generated schema resource(s): {sorted(extra_schemas)!r}")
-        formula_directory = resources_root / "formulas"
-        actual_formulas = (
-            {f"formulas/{path.name}" for path in formula_directory.glob("*.txt")}
-            if formula_directory.is_dir()
-            else set()
-        )
-        extra_formulas = actual_formulas.difference({_FORMULA_PATH})
-        if extra_formulas:
-            raise ValueError(f"extra generated formula resource(s): {sorted(extra_formulas)!r}")
+    checked_schema_paths = frozenset(_schema_path(schema_id) for schema_id in get_scope_plan(scope).checked_schema_ids)
+    undefined_owned_resources = actual_schema_resources.intersection(checked_schema_paths).difference(
+        owned_schema_paths
+    )
+    if undefined_owned_resources:
+        raise ValueError(f"extra generated schema resource(s): {sorted(undefined_owned_resources)!r}")
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -611,16 +611,36 @@ def _oracle_bounded_decimal_string(
     if not isinstance(value, str) or not value:
         return False
     if value == "0":
-        parsed = 0
+        negative = False
+        digits = "0"
     else:
         negative = value.startswith("-")
         digits = value[1:] if negative else value
         if not digits or digits[0] == "0" or any(character not in "0123456789" for character in digits):
             return False
-        parsed = int(digits)
-        if negative:
-            parsed = -parsed
-    return (minimum is None or parsed >= minimum) and (maximum is None or parsed <= maximum)
+
+    def compare_to_integer(bound: int) -> int:
+        bound_negative = bound < 0
+        magnitude = -bound if bound_negative else bound
+        reversed_digits: list[str] = []
+        while magnitude:
+            magnitude, digit = divmod(magnitude, 10)
+            reversed_digits.append(chr(48 + digit))
+        bound_digits = "".join(reversed(reversed_digits)) or "0"
+
+        if negative != bound_negative:
+            return -1 if negative else 1
+        if len(digits) != len(bound_digits):
+            magnitude_order = -1 if len(digits) < len(bound_digits) else 1
+        elif digits == bound_digits:
+            magnitude_order = 0
+        else:
+            magnitude_order = -1 if digits < bound_digits else 1
+        return -magnitude_order if negative else magnitude_order
+
+    return (minimum is None or compare_to_integer(minimum) >= 0) and (
+        maximum is None or compare_to_integer(maximum) <= 0
+    )
 
 
 def _oracle_utf8_length_at_most(value: object, maximum_bytes: int) -> bool:
@@ -655,6 +675,31 @@ def test_numeric_string_ranges_have_independent_boundary_oracles() -> None:
     for value, minimum, maximum, expected in vectors:
         assert _oracle_bounded_decimal_string(value, minimum=minimum, maximum=maximum) is expected
         assert is_bounded_decimal_string(value, minimum=minimum, maximum=maximum) is expected
+
+
+def test_decimal_strings_are_limit_safe_beyond_python_digit_cap() -> None:
+    from build_finance.crypto_replay.formats import (
+        is_bounded_decimal_string,
+        parse_bounded_decimal_string,
+    )
+
+    decimal = "1" + ("0" * 5000)
+    integer = 10**5000
+
+    assert _oracle_bounded_decimal_string(decimal, minimum=0, maximum=None)
+    assert is_bounded_decimal_string(decimal, minimum=0, maximum=None)
+    assert parse_bounded_decimal_string(decimal, minimum=0) == integer
+    assert _oracle_bounded_decimal_string(decimal, minimum=0, maximum=integer)
+    assert parse_bounded_decimal_string(decimal, minimum=0, maximum=integer) == integer
+
+    for malformed in ("0" + decimal, "+" + decimal, decimal + "x"):
+        assert not _oracle_bounded_decimal_string(malformed, minimum=0, maximum=None)
+        assert not is_bounded_decimal_string(malformed, minimum=0, maximum=None)
+
+    assert not _oracle_bounded_decimal_string(decimal, minimum=0, maximum=integer - 1)
+    assert not is_bounded_decimal_string(decimal, minimum=0, maximum=integer - 1)
+    assert not _oracle_bounded_decimal_string("-" + decimal, minimum=0, maximum=None)
+    assert not is_bounded_decimal_string("-" + decimal, minimum=0, maximum=None)
 
 
 def test_utf8_byte_length_has_independent_multibyte_boundaries() -> None:
@@ -718,3 +763,134 @@ def test_codegen_scopes_expose_the_exact_frozen_inventory() -> None:
 
     with pytest.raises(ValueError):
         get_scope_plan("unknown")
+
+
+def _staged_supporting_schema(schema_id: str) -> dict[str, Any]:
+    from build_finance.crypto_replay.schema_definitions import json_schema_id
+
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": json_schema_id(schema_id),
+        "x-contract-schema": schema_id,
+        "type": "object",
+        "required": ["schema"],
+        "properties": {"schema": {"const": schema_id}},
+        "additionalProperties": False,
+    }
+
+
+def _write_staged_supporting_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    resources_root: Path,
+    *,
+    count: int = 4,
+) -> tuple[str, ...]:
+    import build_finance.crypto_replay.schema_definitions as definitions
+    from build_finance.crypto_replay.schema_codegen import write_resources
+    from build_finance.crypto_replay.schema_definitions import SUPPORTING_SCHEMA_IDS
+
+    staged_ids = SUPPORTING_SCHEMA_IDS[:count]
+    monkeypatch.setattr(definitions, "PRIMARY_SCHEMA_DOCUMENTS", {})
+    monkeypatch.setattr(
+        definitions,
+        "SUPPORTING_SCHEMA_DOCUMENTS",
+        {schema_id: _staged_supporting_schema(schema_id) for schema_id in staged_ids},
+    )
+    monkeypatch.setattr(definitions, "ATTACHMENT_SCHEMA_DOCUMENTS", {})
+    write_resources("supporting", resources_root=resources_root)
+    return staged_ids
+
+
+@pytest.mark.parametrize("count", (4, 9, 13))
+def test_supporting_codegen_accepts_each_staged_definition_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources
+
+    _write_staged_supporting_resources(monkeypatch, tmp_path, count=count)
+    check_resources("supporting", resources_root=tmp_path)
+
+
+@pytest.mark.parametrize("relative_path", ("rogue.json", "rogue.sha256"))
+def test_codegen_rejects_unknown_managed_root_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources
+
+    _write_staged_supporting_resources(monkeypatch, tmp_path)
+    (tmp_path / relative_path).write_bytes(b"rogue\n")
+
+    with pytest.raises(ValueError, match="unknown managed root resource"):
+        check_resources("supporting", resources_root=tmp_path)
+
+
+def test_codegen_rejects_unknown_managed_schema_resource(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources
+
+    _write_staged_supporting_resources(monkeypatch, tmp_path)
+    (tmp_path / "schemas" / "rogue.schema.json").write_bytes(b"rogue\n")
+
+    with pytest.raises(ValueError, match="unknown managed schema resource"):
+        check_resources("supporting", resources_root=tmp_path)
+
+
+def test_codegen_rejects_unknown_managed_formula_resource(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources
+
+    _write_staged_supporting_resources(monkeypatch, tmp_path)
+    formula = tmp_path / "formulas" / "rogue.txt"
+    formula.parent.mkdir()
+    formula.write_bytes(b"rogue\n")
+
+    with pytest.raises(ValueError, match="unknown managed formula resource"):
+        check_resources("supporting", resources_root=tmp_path)
+
+
+def test_codegen_allows_known_nonowned_resources_but_rejects_undefined_owned_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from build_finance.crypto_replay.schema_codegen import check_resources
+    from build_finance.crypto_replay.schema_definitions import (
+        ATTACHMENT_SCHEMA_IDS as REGISTERED_ATTACHMENT_SCHEMA_IDS,
+    )
+    from build_finance.crypto_replay.schema_definitions import (
+        CONTRACT_SPECS_BY_SCHEMA,
+        PRIMARY_SCHEMA_IDS,
+        SUPPORTING_SCHEMA_IDS,
+    )
+
+    staged_ids = _write_staged_supporting_resources(monkeypatch, tmp_path)
+    for root_name in (
+        "primary-schema-bundle.json",
+        "primary-schema-bundle.sha256",
+        "schema-bundle.json",
+        "schema-bundle.sha256",
+        "schema-lock.json",
+    ):
+        (tmp_path / root_name).write_bytes(b"known non-owned resource\n")
+
+    for schema_id in (PRIMARY_SCHEMA_IDS[0], REGISTERED_ATTACHMENT_SCHEMA_IDS[0]):
+        filename = CONTRACT_SPECS_BY_SCHEMA[schema_id].schema_filename
+        (tmp_path / "schemas" / filename).write_bytes(b"known non-owned resource\n")
+
+    formula = tmp_path / "formulas" / "adverse-fill-draw-v1.txt"
+    formula.parent.mkdir()
+    formula.write_bytes(b"known non-owned resource\n")
+    check_resources("supporting", resources_root=tmp_path)
+
+    absent_owned_id = SUPPORTING_SCHEMA_IDS[len(staged_ids)]
+    absent_owned_filename = CONTRACT_SPECS_BY_SCHEMA[absent_owned_id].schema_filename
+    (tmp_path / "schemas" / absent_owned_filename).write_bytes(b"recognized but undefined\n")
+    with pytest.raises(ValueError, match="extra generated schema resource"):
+        check_resources("supporting", resources_root=tmp_path)

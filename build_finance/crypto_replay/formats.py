@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 
 _CANONICAL_DECIMAL = re.compile(r"(?:0|-?[1-9][0-9]*)\Z")
+_DECIMAL_CHUNK_DIGITS = 9
+_DECIMAL_CHUNK_BASE = 10**_DECIMAL_CHUNK_DIGITS
 
 
 def _validate_integer_bounds(minimum: int | None, maximum: int | None) -> None:
@@ -14,6 +16,16 @@ def _validate_integer_bounds(minimum: int | None, maximum: int | None) -> None:
         raise TypeError("maximum must be an integer or None")
     if minimum is not None and maximum is not None and minimum > maximum:
         raise ValueError("minimum must not exceed maximum")
+
+
+def _parse_decimal_digits(digits: str) -> int:
+    """Parse validated unsigned digits without whole-string conversion."""
+    first_chunk_length = len(digits) % _DECIMAL_CHUNK_DIGITS or _DECIMAL_CHUNK_DIGITS
+    parsed = int(digits[:first_chunk_length], 10)
+    for offset in range(first_chunk_length, len(digits), _DECIMAL_CHUNK_DIGITS):
+        chunk = int(digits[offset : offset + _DECIMAL_CHUNK_DIGITS], 10)
+        parsed = (parsed * _DECIMAL_CHUNK_BASE) + chunk
+    return parsed
 
 
 def parse_bounded_decimal_string(
@@ -26,7 +38,11 @@ def parse_bounded_decimal_string(
     _validate_integer_bounds(minimum, maximum)
     if not isinstance(value, str) or _CANONICAL_DECIMAL.fullmatch(value) is None:
         raise ValueError("value is not a canonical decimal integer string")
-    parsed = int(value, 10)
+    negative = value.startswith("-")
+    digits = value[1:] if negative else value
+    parsed = _parse_decimal_digits(digits)
+    if negative:
+        parsed = -parsed
     if minimum is not None and parsed < minimum:
         raise ValueError("decimal integer is below the minimum")
     if maximum is not None and parsed > maximum:
