@@ -692,6 +692,11 @@ def test_registry_rejects_unsupported_keywords_and_remote_refs() -> None:
         "properties": {},
         "additionalProperties": False,
     }
+    metadata_only = {
+        key: value
+        for key, value in base.items()
+        if key not in {"type", "required", "properties", "additionalProperties"}
+    }
     rejected = (
         {**base, "format": "custom"},
         {**base, "x-unregistered-metadata": True},
@@ -705,11 +710,16 @@ def test_registry_rejects_unsupported_keywords_and_remote_refs() -> None:
         {**base, "$ref": "urn:build-finance:contract:not-preloaded:v1"},
         {**base, "$ref": "#/$defs/not-present"},
         {**base, "properties": {"nested": {"format": "custom"}}},
+        {**metadata_only, "properties": {}},
+        {**metadata_only, "required": []},
+        {**metadata_only, "additionalProperties": False},
     )
 
     for schema in rejected:
         with pytest.raises(ValueError):
             SchemaRegistry.from_documents([schema])
+
+    SchemaRegistry.from_documents([{**base, "type": ["object", "null"]}])
 
 
 def test_registry_preserves_explicit_contract_specs() -> None:
@@ -728,6 +738,15 @@ def test_registry_preserves_explicit_contract_specs() -> None:
     )
     registry = SchemaRegistry.from_documents(schemas, specs=(spec for spec in specs))
     assert registry.specs == specs
+
+    extra = ContractSpec(
+        schema_id="trading.test-extra/v1",
+        self_id_field=None,
+        family="ATTACHMENT",
+        schema_filename="test-extra.schema.json",
+    )
+    with pytest.raises(ValueError, match="ContractSpec"):
+        SchemaRegistry.from_documents(schemas, specs=(spec for spec in (*specs, extra)))
 
 
 def test_local_and_jsonschema_oracles_agree_on_structural_vectors() -> None:

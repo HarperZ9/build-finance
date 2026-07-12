@@ -212,6 +212,12 @@ def _validate_schema_node(
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
         raise _schema_error((*path, "additionalProperties"), "only boolean additionalProperties is supported")
+    object_applicators = {"properties", "required", "additionalProperties"}.intersection(schema)
+    if object_applicators and "object" not in declared_types:
+        raise _schema_error(
+            path,
+            f"object applicator keyword(s) require an explicit object type: {sorted(object_applicators)!r}",
+        )
     if "object" in declared_types:
         if properties is None or required is None or additional is not False:
             raise _schema_error(path, "object schemas require properties, required, and additionalProperties false")
@@ -361,9 +367,15 @@ class SchemaRegistry:
             spec_map = {spec.schema_id: spec for spec in spec_values}
             if len(spec_map) != len(spec_values):
                 raise ValueError("duplicate ContractSpec schema IDs")
-            missing_specs = set(by_contract).difference(spec_map)
-            if missing_specs:
-                raise ValueError(f"schema documents lack ContractSpec entries: {sorted(missing_specs)!r}")
+            document_ids = set(by_contract)
+            spec_ids = set(spec_map)
+            if document_ids != spec_ids:
+                missing_specs = document_ids.difference(spec_ids)
+                extra_specs = spec_ids.difference(document_ids)
+                raise ValueError(
+                    "schema document/ContractSpec ID sets differ: "
+                    f"missing={sorted(missing_specs)!r}, extra={sorted(extra_specs)!r}"
+                )
             spec_map = {schema_id: spec_map[schema_id] for schema_id in by_contract}
         return cls(by_contract, by_urn, spec_map)
 

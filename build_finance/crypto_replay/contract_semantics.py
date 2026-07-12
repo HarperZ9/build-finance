@@ -319,6 +319,14 @@ def validate_feature_snapshot_semantics(document: Mapping[str, JsonValue]) -> tu
     ingested_at = document["ingested_at"]
     if (observed_at is None) != (ingested_at is None):
         issues.append(_issue("semantic_time", ("observed_at",), "observed_at and ingested_at must be null together"))
+    if as_of_event_id is not None and (observed_at is None or ingested_at is None):
+        issues.append(
+            _issue(
+                "semantic_time",
+                ("observed_at",),
+                "populated event evidence requires observed_at and ingested_at",
+            )
+        )
     if as_of_event_id is None:
         if any(document[field] is not None for field in ("event_time", "observed_at", "ingested_at")):
             issues.append(
@@ -487,6 +495,97 @@ _RISK_REASON_PRECEDENCE = (
     "RISK_TAKE_TRIGGERED",
 )
 _RISK_REASON_RANK = {code: rank for rank, code in enumerate(_RISK_REASON_PRECEDENCE)}
+_RISK_CONFIG_REASON_FORMS = {
+    ("RISK_CONFIG_MISSING",),
+    ("RISK_CONFIG_INVALID",),
+}
+_RISK_FATAL_REASONS = frozenset(
+    {
+        "RISK_SEQUENCE_INVALID",
+        "RISK_STATE_UNRECONCILED",
+        "RISK_DECIMALS_MISMATCH",
+        "RISK_ARITHMETIC_RANGE",
+        "RISK_NONPOSITIVE_EQUITY",
+        "RISK_RESERVATION_CONFLICT",
+    }
+)
+_RISK_LATCH_PREFIXES = (
+    ("RISK_SESSION_LOSS",),
+    ("RISK_DRAWDOWN",),
+    ("RISK_SESSION_LOSS", "RISK_DRAWDOWN"),
+)
+_RISK_EXIT_SUFFIXES = (
+    (),
+    ("RISK_STOP_TRIGGERED",),
+    ("RISK_TAKE_TRIGGERED",),
+    ("RISK_STOP_TRIGGERED", "RISK_TAKE_TRIGGERED"),
+)
+_RISK_EXIT_BOUNDARIES = (("RISK_RUN_END_EXIT",), ("RISK_KILL_EXIT",))
+_RISK_EXIT_REASON_FORMS = (
+    frozenset(_RISK_EXIT_SUFFIXES)
+    | frozenset((*boundary, *suffix) for boundary in _RISK_EXIT_BOUNDARIES for suffix in _RISK_EXIT_SUFFIXES)
+    | frozenset(
+        (*latch, *boundary, *suffix)
+        for latch in _RISK_LATCH_PREFIXES
+        for boundary in _RISK_EXIT_BOUNDARIES
+        for suffix in _RISK_EXIT_SUFFIXES
+    )
+)
+_RISK_KILL_LOSS_FORMS = frozenset(
+    (*latch, *suffix) for latch in _RISK_LATCH_PREFIXES for suffix in ((), ("RISK_INTENT_PENDING",))
+)
+_RISK_REJECT_SINGLETONS = {
+    ("RISK_SESSION_CLOSED",),
+    ("RISK_INTENT_PENDING",),
+}
+_RISK_FORCE_DENIAL_REASONS = frozenset({"RISK_EVENT_STALE", "RISK_INSUFFICIENT_BALANCE", "RISK_NO_ACTION"})
+_RISK_ORDINARY_DENIAL_REASONS = frozenset(
+    {
+        "RISK_EVENT_STALE",
+        "RISK_STOP_MISSING",
+        "RISK_INSUFFICIENT_BALANCE",
+        "RISK_MIN_NOTIONAL",
+        "RISK_MAX_NOTIONAL",
+        "RISK_PARTICIPATION",
+        "RISK_IMPACT",
+        "RISK_CONCENTRATION",
+    }
+)
+
+
+def _risk_reason_family_is_valid(
+    *,
+    verdict: object,
+    action: object,
+    reasons: list[JsonValue],
+    validated_config: object,
+) -> bool:
+    reason_tuple = tuple(reasons)
+    if verdict == "APPROVE":
+        if action == "ENTER_LONG":
+            return reason_tuple == ()
+        if action == "EXIT_LONG":
+            return reason_tuple in _RISK_EXIT_REASON_FORMS
+        return False
+    if verdict == "REJECT":
+        if action != "HOLD":
+            return False
+        if reason_tuple in _RISK_REJECT_SINGLETONS:
+            return True
+        if "RISK_NO_ACTION" in reason_tuple:
+            return bool(reason_tuple) and all(reason in _RISK_FORCE_DENIAL_REASONS for reason in reason_tuple)
+        return bool(reason_tuple) and all(reason in _RISK_ORDINARY_DENIAL_REASONS for reason in reason_tuple)
+    if verdict != "KILL" or action != "HOLD":
+        return False
+    if reason_tuple in _RISK_CONFIG_REASON_FORMS:
+        return validated_config is None
+    if validated_config is None:
+        return False
+    if reason_tuple == ("RISK_KILL_LATCHED",) or reason_tuple in _RISK_KILL_LOSS_FORMS:
+        return True
+    if "RISK_STATE_UNRECONCILED" in reason_tuple:
+        return all(reason in {"RISK_SEQUENCE_INVALID", "RISK_STATE_UNRECONCILED"} for reason in reason_tuple)
+    return bool(reason_tuple) and all(reason in _RISK_FATAL_REASONS for reason in reason_tuple)
 
 
 def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
@@ -532,24 +631,6 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
                 "validated config and baseline ID must be null together",
             )
         )
-    if validated_config is None:
-        exact_config_reasons = reasons in (["RISK_CONFIG_MISSING"], ["RISK_CONFIG_INVALID"])
-        if not (
-            exact_config_reasons
-            and status == "ABSENT"
-            and document["baseline_action"] == "HOLD"
-            and document["fused_action"] == "HOLD"
-            and document["effective_action"] == "HOLD"
-            and document["verdict"] == "KILL"
-        ):
-            issues.append(
-                _issue(
-                    "semantic_config_tuple",
-                    ("validated_config_sha256",),
-                    "null config requires the exact missing/invalid zero-authority tuple",
-                )
-            )
-
     amount_fields = (
         "requested_base_atoms",
         "approved_base_atoms",
@@ -586,10 +667,64 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
 
     verdict = document["verdict"]
     action = document["effective_action"]
+    if not _risk_reason_family_is_valid(
+        verdict=verdict,
+        action=action,
+        reasons=reasons,
+        validated_config=validated_config,
+    ):
+        issues.append(
+            _issue(
+                "semantic_reason_family",
+                ("reason_codes",),
+                "verdict, effective action, and reasons do not match a closed risk family",
+            )
+        )
+
+    suppressed_evidence = (
+        status == "ABSENT"
+        and signal_id is None
+        and validation_id is None
+        and document["baseline_action"] == "HOLD"
+        and document["fused_action"] == "HOLD"
+    )
+    zero_amount_authority = len(amounts) == len(amount_fields) and all(amounts[field] == 0 for field in amount_fields)
+    zero_levels_and_reservation = (
+        document["stop_price_q18"] is None and document["take_price_q18"] is None and document["reservation_id"] is None
+    )
+    zero_measures = all(measures[field] is None for field in measures)
+    canonical_zero_authority = (
+        document["reference_price_q18"] is None
+        and zero_amount_authority
+        and zero_levels_and_reservation
+        and zero_measures
+    )
+    if validated_config is None:
+        exact_config_tuple = (
+            tuple(reasons) in _RISK_CONFIG_REASON_FORMS
+            and baseline_id is None
+            and suppressed_evidence
+            and action == "HOLD"
+            and verdict == "KILL"
+            and canonical_zero_authority
+        )
+        if not exact_config_tuple:
+            issues.append(
+                _issue(
+                    "semantic_config_tuple",
+                    ("validated_config_sha256",),
+                    "null config requires the complete missing/invalid zero-authority tuple",
+                )
+            )
+
     if len(amounts) == len(amount_fields):
+        base_authority_valid = amounts["approved_base_atoms"] == amounts["requested_base_atoms"] > 0
+        notional_authority_valid = amounts["approved_notional_quote_atoms"] == amounts[
+            "requested_notional_quote_atoms"
+        ] and (action == "EXIT_LONG" or amounts["approved_notional_quote_atoms"] > 0)
         approved_tuple = (
-            amounts["approved_base_atoms"] == amounts["requested_base_atoms"] > 0
-            and amounts["approved_notional_quote_atoms"] == amounts["requested_notional_quote_atoms"] > 0
+            base_authority_valid
+            and notional_authority_valid
             and document["reservation_id"] is not None
             and action in {"ENTER_LONG", "EXIT_LONG"}
         )
@@ -600,12 +735,18 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
                 )
             if action == "ENTER_LONG":
                 reservation_valid = amounts["reserved_quote_atoms"] > 0 and amounts["reserved_base_atoms"] == 0
-            else:
-                reservation_valid = amounts["reserved_base_atoms"] > 0 and amounts["reserved_quote_atoms"] == 0
-            if not reservation_valid:
-                issues.append(
-                    _issue("semantic_reservation", ("reserved_quote_atoms",), "reservation does not match action")
+                reservation_path = ("reserved_quote_atoms",)
+            elif action == "EXIT_LONG":
+                reservation_valid = (
+                    amounts["reserved_base_atoms"] == amounts["approved_base_atoms"] > 0
+                    and amounts["reserved_quote_atoms"] == 0
                 )
+                reservation_path = ("reserved_base_atoms",)
+            else:
+                reservation_valid = False
+                reservation_path = ("reserved_quote_atoms",)
+            if not reservation_valid:
+                issues.append(_issue("semantic_reservation", reservation_path, "reservation does not match action"))
         elif not (
             amounts["approved_base_atoms"] == 0
             and amounts["approved_notional_quote_atoms"] == 0
@@ -624,18 +765,80 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
             issues.append(_issue("semantic_prices", ("reference_price_q18",), "approved prices must be positive"))
         elif action == "ENTER_LONG" and not stop < reference < take:
             issues.append(_issue("semantic_prices", ("stop_price_q18",), "entry requires stop < reference < take"))
-    if document["reference_price_q18"] is None:
-        nullable_measure_fields = tuple(measures)
-        zero_authority = (
-            all(measures[field] is None for field in nullable_measure_fields)
-            and all(amounts.get(field) == 0 for field in amount_fields)
-            and document["stop_price_q18"] is None
-            and document["take_price_q18"] is None
-            and document["reservation_id"] is None
+
+    nonpositive_equity = "RISK_NONPOSITIVE_EQUITY" in reasons
+    fatal_without_nonpositive = (
+        verdict == "KILL"
+        and bool(reasons)
+        and all(reason in _RISK_FATAL_REASONS for reason in reasons)
+        and not nonpositive_equity
+    )
+    if nonpositive_equity:
+        levels_are_flat_or_positive_pair = (stop is None and take is None) or (
+            stop is not None and stop > 0 and take is not None and take > 0
         )
-        if not zero_authority:
+        nonpositive_tuple = (
+            validated_config is not None
+            and baseline_id is not None
+            and suppressed_evidence
+            and verdict == "KILL"
+            and action == "HOLD"
+            and zero_amount_authority
+            and document["reservation_id"] is None
+            and (reference is None or reference > 0)
+            and measures["participation_bps"] == 0
+            and measures["concentration_bps"] is None
+            and measures["drawdown_bps"] is not None
+            and _u64(measures["projected_market_value_quote_atoms"]) is not None
+            and _u64(measures["projected_equity_quote_atoms"]) == 0
+            and _i128(measures["session_pnl_quote_atoms"]) is not None
+            and levels_are_flat_or_positive_pair
+        )
+        if not nonpositive_tuple:
             issues.append(
-                _issue("semantic_zero_authority", ("reference_price_q18",), "null reference requires zero authority")
+                _issue(
+                    "semantic_zero_authority",
+                    ("reference_price_q18",),
+                    "nonpositive equity requires its exact reason-owned authority tuple",
+                )
+            )
+    elif fatal_without_nonpositive:
+        exact_fatal_zero_tuple = (
+            validated_config is not None
+            and baseline_id is not None
+            and suppressed_evidence
+            and action == "HOLD"
+            and canonical_zero_authority
+        )
+        if not exact_fatal_zero_tuple:
+            issues.append(
+                _issue(
+                    "semantic_zero_authority",
+                    ("reference_price_q18",),
+                    "fatal zero reasons require the canonical valid-config zero tuple",
+                )
+            )
+    elif document["reference_price_q18"] is None and validated_config is not None:
+        zero_history_levels = (stop is None and take is None) or (
+            stop is not None and stop > 0 and take is not None and take > 0
+        )
+        zero_history_tuple = (
+            validated_config is not None
+            and baseline_id is not None
+            and suppressed_evidence
+            and action == "HOLD"
+            and zero_amount_authority
+            and document["reservation_id"] is None
+            and zero_measures
+            and zero_history_levels
+        )
+        if not zero_history_tuple:
+            issues.append(
+                _issue(
+                    "semantic_zero_authority",
+                    ("reference_price_q18",),
+                    "this null-reference reason family requires the suppressed zero-history tuple",
+                )
             )
     return tuple(issues)
 
@@ -755,6 +958,16 @@ def validate_simulated_fill_receipt_semantics(
             issues.append(_issue("semantic_u64", (field,), "value exceeds the u64 authority range"))
         else:
             parsed[field] = value
+    released_quote = parsed.get("released_quote_atoms")
+    released_base = parsed.get("released_base_atoms")
+    if released_quote is not None and released_base is not None and released_quote > 0 and released_base > 0:
+        issues.append(
+            _issue(
+                "semantic_fill_release",
+                ("released_quote_atoms",),
+                "a terminal fill may release at most one reservation asset",
+            )
+        )
     if parsed.get("receipt_sequence") == 0:
         issues.append(_issue("semantic_sequence", ("receipt_sequence",), "receipt sequence starts at one"))
 
@@ -1020,6 +1233,8 @@ def validate_portfolio_state_semantics(document: Mapping[str, JsonValue]) -> tup
             issues.append(
                 _issue("semantic_balance", ("balances", index, "total_atoms"), "total must equal available + reserved")
             )
+        if mint != document["quote_mint"] and total == 0:
+            issues.append(_issue("semantic_balance", ("balances",), "zero non-quote balances must be omitted"))
         parsed_balances[mint] = (available, reserved, total, row["decimals"])
 
     quote_mint = document["quote_mint"]
@@ -1139,6 +1354,8 @@ _LEDGER_OBJECT_SCHEMA_BY_TYPE = {
     "RUN_RECEIPT": "trading.run-receipt/v1",
     "RUN_END": "trading.portfolio-state/v1",
 }
+_LEDGER_POSTING_REQUIRED_TYPES = {"SIMULATED_INTENT", "SIMULATED_FILL"}
+_LEDGER_POSTING_PERMITTED_TYPES = {*_LEDGER_POSTING_REQUIRED_TYPES, "PORTFOLIO_STATE"}
 
 
 def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
@@ -1158,14 +1375,23 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
         issues.append(_issue("semantic_object_digest", ("object_sha256",), "object digest must equal object ID"))
 
     ledger_sequence = _u64(document["ledger_sequence"])
+    previous_ledger_record_id = document["previous_ledger_record_id"]
     if ledger_sequence is None:
         issues.append(_issue("semantic_u64", ("ledger_sequence",), "ledger sequence exceeds u64 range"))
-    elif (ledger_sequence == 0) != (document["previous_ledger_record_id"] is None):
+    elif (ledger_sequence == 0) != (previous_ledger_record_id is None):
         issues.append(
             _issue(
                 "semantic_ledger_head",
                 ("previous_ledger_record_id",),
                 "previous ledger ID is null exactly at sequence zero",
+            )
+        )
+    if previous_ledger_record_id == document["ledger_record_id"]:
+        issues.append(
+            _issue(
+                "semantic_ledger_head",
+                ("previous_ledger_record_id",),
+                "previous ledger ID must differ from the current record ID",
             )
         )
     for field in ("decision_sequence", "ingest_sequence", "equal_time_group", "replay_clock_ns"):
@@ -1177,7 +1403,11 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
     assert isinstance(causes, list)
     if not _sorted_unique(causes, key=lambda value: value.encode("utf-8")):
         issues.append(_issue("semantic_order", ("causation_ids",), "causes must be digest-byte sorted and unique"))
-    if document["ledger_record_id"] in causes or document["object_id"] in causes:
+    if (
+        document["ledger_record_id"] in causes
+        or document["object_id"] in causes
+        or (previous_ledger_record_id is not None and previous_ledger_record_id in causes)
+    ):
         issues.append(_issue("semantic_self_cause", ("causation_ids",), "record/object self-cause is forbidden"))
 
     entries = document["entries"]
@@ -1188,8 +1418,10 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
         issues.append(
             _issue("semantic_order", ("entries",), "entries must be sorted and unique by (asset_mint, account)")
         )
-    if record_type in {"SIMULATED_INTENT", "SIMULATED_FILL"} and not entries:
+    if record_type in _LEDGER_POSTING_REQUIRED_TYPES and not entries:
         issues.append(_issue("semantic_entries", ("entries",), "reservation/fill ledger record requires postings"))
+    elif record_type not in _LEDGER_POSTING_PERMITTED_TYPES and entries:
+        issues.append(_issue("semantic_entries", ("entries",), "evidence-only ledger record forbids postings"))
     sums: dict[str, int] = {}
     decimals_by_asset: dict[str, int] = {}
     for index, row in enumerate(entries):
@@ -1243,6 +1475,14 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
         )
     for collection_name, rows in (("asset_residuals", asset_residuals), ("account_residuals", account_residuals)):
         for index, row in enumerate(rows):
+            if not _valid_utf8_registry(row["asset_mint"], 128):
+                issues.append(
+                    _issue(
+                        "semantic_registry",
+                        ("reconciliation", collection_name, index, "asset_mint"),
+                        "asset mint exceeds 128 UTF-8 bytes",
+                    )
+                )
             if _i128(row["residual_atoms"]) != 0:
                 issues.append(
                     _issue(
@@ -1263,12 +1503,21 @@ def validate_ledger_record_semantics(document: Mapping[str, JsonValue]) -> tuple
             issues.append(
                 _issue("semantic_residual", ("reconciliation", field), "persisted ledger residual must be zero")
             )
-    if _u64(reconciliation["unmatched_reservation_count"]) is None:
+    unmatched_reservation_count = _u64(reconciliation["unmatched_reservation_count"])
+    if unmatched_reservation_count is None:
         issues.append(
             _issue(
                 "semantic_u64",
                 ("reconciliation", "unmatched_reservation_count"),
                 "unmatched reservation count exceeds u64 range",
+            )
+        )
+    elif unmatched_reservation_count != 0:
+        issues.append(
+            _issue(
+                "semantic_residual",
+                ("reconciliation", "unmatched_reservation_count"),
+                "persisted unmatched reservation count must be zero",
             )
         )
     return tuple(issues)
