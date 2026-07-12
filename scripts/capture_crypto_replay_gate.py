@@ -11,6 +11,16 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+_PYTEST_SUMMARY_TIMING_RE = re.compile(
+    r"(?m)^(?P<prefix>(?:=+\s+)?(?:no tests ran|"
+    r"(?:\d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|warnings?|errors?|"
+    r"subtests (?:passed|failed|skipped)))"
+    r"(?:, \d+ (?:failed|passed|skipped|deselected|xfailed|xpassed|warnings?|errors?|"
+    r"subtests (?:passed|failed|skipped)))*) in )"
+    r"\d+\.\d{2}s(?: \([^\r\n)]+\))?"
+    r"(?P<suffix>(?:\s+=+)?)(?=\n*\Z)"
+)
+
 
 def _usage() -> str:
     return "usage: capture_crypto_replay_gate.py NODE PHASE OUTPUT_JSON [--] PYTEST_ARG [...]"
@@ -55,7 +65,11 @@ def _normalize_output(output: bytes, repo_root: Path) -> str:
     }
     for root in sorted(roots, key=len, reverse=True):
         normalized = re.sub(re.escape(root), "<repo>", normalized, flags=re.IGNORECASE)
-    return normalized
+    return _PYTEST_SUMMARY_TIMING_RE.sub(
+        r"\g<prefix><pytest-duration>\g<suffix>",
+        normalized,
+        count=1,
+    )
 
 
 def _test_ids(normalized_output: str) -> tuple[list[str], list[str]]:
