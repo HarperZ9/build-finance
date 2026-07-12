@@ -531,6 +531,7 @@ _RISK_EXIT_REASON_FORMS = (
         for suffix in _RISK_EXIT_SUFFIXES
     )
 )
+_RISK_SUPPRESSED_EXIT_REASON_FORMS = _RISK_EXIT_REASON_FORMS - {()}
 _RISK_KILL_LOSS_FORMS = frozenset(
     (*latch, *suffix) for latch in _RISK_LATCH_PREFIXES for suffix in ((), ("RISK_INTENT_PENDING",))
 )
@@ -688,6 +689,19 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
         and document["baseline_action"] == "HOLD"
         and document["fused_action"] == "HOLD"
     )
+    if (
+        verdict == "APPROVE"
+        and action == "EXIT_LONG"
+        and tuple(reasons) in _RISK_SUPPRESSED_EXIT_REASON_FORMS
+        and not suppressed_evidence
+    ):
+        issues.append(
+            _issue(
+                "semantic_suppressed_evidence",
+                ("reason_codes",),
+                "nonempty approved exit reasons require the exact suppressed-evidence tuple",
+            )
+        )
     zero_amount_authority = len(amounts) == len(amount_fields) and all(amounts[field] == 0 for field in amount_fields)
     zero_levels_and_reservation = (
         document["stop_price_q18"] is None and document["take_price_q18"] is None and document["reservation_id"] is None
@@ -773,6 +787,7 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
         and all(reason in _RISK_FATAL_REASONS for reason in reasons)
         and not nonpositive_equity
     )
+    latching_loss = verdict == "KILL" and action == "HOLD" and tuple(reasons) in _RISK_KILL_LOSS_FORMS
     if nonpositive_equity:
         levels_are_flat_or_positive_pair = (stop is None and take is None) or (
             stop is not None and stop > 0 and take is not None and take > 0
@@ -816,6 +831,39 @@ def validate_risk_decision_semantics(document: Mapping[str, JsonValue]) -> tuple
                     "semantic_zero_authority",
                     ("reference_price_q18",),
                     "fatal zero reasons require the canonical valid-config zero tuple",
+                )
+            )
+    elif latching_loss:
+        levels_are_flat_or_positive_pair = (stop is None and take is None) or (
+            stop is not None and stop > 0 and take is not None and take > 0
+        )
+        impact = measures["impact_bps"]
+        stale_age = measures["stale_age_ns"]
+        projected_market_value = _u64(measures["projected_market_value_quote_atoms"])
+        projected_equity = _u64(measures["projected_equity_quote_atoms"])
+        exact_latching_loss_tuple = (
+            validated_config is not None
+            and baseline_id is not None
+            and suppressed_evidence
+            and zero_amount_authority
+            and document["reservation_id"] is None
+            and (reference is None or reference > 0)
+            and measures["participation_bps"] == 0
+            and (impact is None) == (stale_age is None)
+            and measures["concentration_bps"] is not None
+            and measures["drawdown_bps"] is not None
+            and projected_market_value is not None
+            and projected_equity is not None
+            and projected_equity > 0
+            and _i128(measures["session_pnl_quote_atoms"]) is not None
+            and levels_are_flat_or_positive_pair
+        )
+        if not exact_latching_loss_tuple:
+            issues.append(
+                _issue(
+                    "semantic_loss_authority",
+                    ("reason_codes",),
+                    "latching loss reasons require suppressed zero authority and retained state measures",
                 )
             )
     elif document["reference_price_q18"] is None and validated_config is not None:

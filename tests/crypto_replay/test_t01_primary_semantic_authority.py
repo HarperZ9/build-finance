@@ -162,34 +162,8 @@ def _risk_exit(
     document = _example("trading.risk-decision/v1")
     document.update(
         {
-            "baseline_action": (
-                "HOLD"
-                if any(
-                    reason
-                    in {
-                        "RISK_SESSION_LOSS",
-                        "RISK_DRAWDOWN",
-                        "RISK_RUN_END_EXIT",
-                        "RISK_KILL_EXIT",
-                    }
-                    for reason in reasons
-                )
-                else "EXIT_LONG"
-            ),
-            "fused_action": (
-                "HOLD"
-                if any(
-                    reason
-                    in {
-                        "RISK_SESSION_LOSS",
-                        "RISK_DRAWDOWN",
-                        "RISK_RUN_END_EXIT",
-                        "RISK_KILL_EXIT",
-                    }
-                    for reason in reasons
-                )
-                else "EXIT_LONG"
-            ),
+            "baseline_action": "HOLD" if reasons else "EXIT_LONG",
+            "fused_action": "HOLD" if reasons else "EXIT_LONG",
             "effective_action": "EXIT_LONG",
             "reason_codes": list(reasons),
             "requested_notional_quote_atoms": notional,
@@ -198,6 +172,30 @@ def _risk_exit(
             "reserved_base_atoms": reserved_base_atoms,
         }
     )
+    return _reseal(document)
+
+
+def _risk_latching_loss(
+    reasons: Sequence[str] = ("RISK_SESSION_LOSS",),
+    *,
+    observation: bool = False,
+    positioned: bool = False,
+) -> dict[str, Any]:
+    document = _risk_fatal_zero_tuple(str(reasons[0]))
+    document["reason_codes"] = list(reasons)
+    document["measures"] = {
+        "participation_bps": 0,
+        "impact_bps": 25 if observation else None,
+        "concentration_bps": 1000,
+        "drawdown_bps": 500,
+        "projected_market_value_quote_atoms": "100000",
+        "projected_equity_quote_atoms": "1000000",
+        "session_pnl_quote_atoms": "-100000",
+        "stale_age_ns": "0" if observation else None,
+    }
+    if positioned:
+        document["stop_price_q18"] = "950000000000000000"
+        document["take_price_q18"] = "1100000000000000000"
     return _reseal(document)
 
 
@@ -490,6 +488,143 @@ def test_risk_verdict_action_reason_families_are_closed(case: str) -> None:
 )
 def test_risk_approved_exit_accepts_only_exact_informational_forms(reasons: tuple[str, ...]) -> None:
     _assert_valid(_risk_exit(reasons))
+
+
+_SUPPRESSED_EXIT_REASON_PROBES = (
+    ("RISK_RUN_END_EXIT",),
+    ("RISK_KILL_EXIT",),
+    ("RISK_STOP_TRIGGERED",),
+    ("RISK_TAKE_TRIGGERED",),
+    (
+        "RISK_SESSION_LOSS",
+        "RISK_DRAWDOWN",
+        "RISK_RUN_END_EXIT",
+        "RISK_STOP_TRIGGERED",
+        "RISK_TAKE_TRIGGERED",
+    ),
+)
+
+
+@pytest.mark.parametrize("reasons", _SUPPRESSED_EXIT_REASON_PROBES)
+@pytest.mark.parametrize("case", ("accepted_model", "baseline_action", "fused_action"))
+def test_nonempty_approved_exit_requires_exact_suppressed_evidence(
+    reasons: tuple[str, ...],
+    case: str,
+) -> None:
+    invalid = _risk_exit(reasons)
+    if case == "accepted_model":
+        invalid.update(
+            {
+                "model_signal_status": "ACCEPTED",
+                "model_signal_id": "a" * 64,
+                "model_validation_receipt_id": "b" * 64,
+            }
+        )
+    else:
+        invalid[case] = "EXIT_LONG"
+    _assert_rejected(
+        _reseal(invalid),
+        code="semantic_suppressed_evidence",
+        path=("reason_codes",),
+    )
+
+
+def test_empty_reason_approved_exit_may_consume_ordinary_model_and_fusion_evidence() -> None:
+    document = _risk_exit()
+    document.update(
+        {
+            "model_signal_status": "ACCEPTED",
+            "model_signal_id": "a" * 64,
+            "model_validation_receipt_id": "b" * 64,
+            "baseline_action": "EXIT_LONG",
+            "fused_action": "EXIT_LONG",
+        }
+    )
+    _assert_valid(_reseal(document))
+
+
+@pytest.mark.parametrize(
+    ("reasons", "observation", "positioned"),
+    (
+        (("RISK_SESSION_LOSS",), False, False),
+        (("RISK_DRAWDOWN",), True, False),
+        (("RISK_SESSION_LOSS", "RISK_DRAWDOWN"), False, True),
+        (("RISK_SESSION_LOSS", "RISK_INTENT_PENDING"), True, True),
+        (("RISK_DRAWDOWN", "RISK_INTENT_PENDING"), False, False),
+        (("RISK_SESSION_LOSS", "RISK_DRAWDOWN", "RISK_INTENT_PENDING"), True, True),
+    ),
+)
+def test_null_reference_latching_loss_retains_state_derived_measures(
+    reasons: tuple[str, ...],
+    observation: bool,
+    positioned: bool,
+) -> None:
+    _assert_valid(_risk_latching_loss(reasons, observation=observation, positioned=positioned))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("measures", "participation_bps"), None),
+        (("measures", "participation_bps"), 1),
+        (("measures", "impact_bps"), 25),
+        (("measures", "concentration_bps"), None),
+        (("measures", "drawdown_bps"), None),
+        (("measures", "projected_market_value_quote_atoms"), None),
+        (("measures", "projected_equity_quote_atoms"), None),
+        (("measures", "projected_equity_quote_atoms"), "0"),
+        (("measures", "session_pnl_quote_atoms"), None),
+        (("stop_price_q18",), "950000000000000000"),
+        (("take_price_q18",), "1100000000000000000"),
+    ),
+)
+def test_null_reference_latching_loss_rejects_missing_or_wrong_retained_fields(
+    path: tuple[str | int, ...],
+    value: Any,
+) -> None:
+    invalid = _risk_latching_loss()
+    _replace(invalid, path, value)
+    _assert_rejected(
+        _reseal(invalid),
+        code="semantic_loss_authority",
+        path=("reason_codes",),
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ("accepted_model", "baseline_action", "fused_action", "requested_base", "requested_notional")
+)
+def test_latching_loss_requires_suppressed_zero_authority(case: str) -> None:
+    invalid = _risk_latching_loss()
+    if case == "accepted_model":
+        invalid.update(
+            {
+                "model_signal_status": "ACCEPTED",
+                "model_signal_id": "a" * 64,
+                "model_validation_receipt_id": "b" * 64,
+            }
+        )
+    elif case == "requested_base":
+        invalid["requested_base_atoms"] = "1"
+    elif case == "requested_notional":
+        invalid["requested_notional_quote_atoms"] = "1"
+    else:
+        invalid[case] = "ENTER_LONG"
+    _assert_rejected(
+        _reseal(invalid),
+        code="semantic_loss_authority",
+        path=("reason_codes",),
+    )
+
+
+def test_ordinary_zero_history_cannot_retain_state_measures() -> None:
+    invalid = _risk_zero_history_rejection()
+    invalid["measures"]["participation_bps"] = 0
+    _assert_rejected(
+        _reseal(invalid),
+        code="semantic_zero_authority",
+        path=("reference_price_q18",),
+    )
 
 
 def test_state_unreconciled_may_retain_independently_provable_sequence_failure() -> None:
