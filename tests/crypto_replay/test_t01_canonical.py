@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -55,6 +56,41 @@ def test_duplicate_key_rejected_before_parse() -> None:
     duplicate = base64.b64decode(_adversarial_base64("duplicate_key"), validate=True)
     with pytest.raises(CanonicalJSONError):
         parse_canonical_record(duplicate)
+
+
+def test_jcs_integer_authority_boundaries() -> None:
+    from build_finance.crypto_replay.canonical import canonical_json_bytes
+    from build_finance.crypto_replay.errors import CanonicalJSONError
+
+    assert canonical_json_bytes(-(2**53) + 1) == b"-9007199254740991"
+    assert canonical_json_bytes(2**53 - 1) == b"9007199254740991"
+    assert canonical_json_bytes(True) == b"true"
+
+    for value in (-(2**53), 2**53):
+        with pytest.raises(CanonicalJSONError):
+            canonical_json_bytes(value)
+
+
+def test_jcs_known_vectors() -> None:
+    from build_finance.crypto_replay.canonical import canonical_json_bytes
+
+    resource = json.loads((RESOURCE_ROOT / "jcs-known-vectors.json").read_text(encoding="utf-8"))
+    assert resource["schema"] == "build-finance.jcs-known-vectors/v1"
+    assert [row["name"] for row in resource["vectors"]] == [
+        "canonical_nested",
+        "control_and_string_escaping",
+        "integer_rendering",
+        "utf16_key_order",
+    ]
+
+    for row in resource["vectors"]:
+        expected = base64.b64decode(row["canonical_base64"], validate=True)
+        assert canonical_json_bytes(row["value"]) == expected
+        assert hashlib.sha256(expected).hexdigest() == row["sha256"]
+
+    assert canonical_json_bytes(["é", {"\ue000": "bmp", "\U0001f600": "astral"}]) == (
+        '["é",{"😀":"astral","\ue000":"bmp"}]'.encode()
+    )
 
 
 @pytest.mark.parametrize("record_base64", _adversarial_rows())
