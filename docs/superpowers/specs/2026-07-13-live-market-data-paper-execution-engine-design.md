@@ -4,9 +4,9 @@
 
 | Field | Value |
 | --- | --- |
-| Status | ARCHITECTURE APPROVED — WRITTEN SPEC REVIEW REQUIRED |
-| Approval record | On 2026-07-13 the user approved the isolated deterministic architecture and selected live market data with paper execution as the first trading milestone. |
-| Review gate | Implementation remains closed until the user reviews and approves this written specification. |
+| Status | WRITTEN SPECIFICATION APPROVED — IMPLEMENTATION PLANNING OPEN |
+| Approval record | On 2026-07-13 the user approved the isolated deterministic architecture, selected live market data with paper execution as the first trading milestone, and then approved this exact written specification. |
+| Review gate | Satisfied on 2026-07-13; ordered implementation planning may proceed. |
 | Repository | Build Finance |
 | Design worktree | C:/dev/worktrees/build-finance-live-paper-design |
 | Base | origin/main at 9c9f5c2f15ee037d450bacc3e6a8f8be704d507e |
@@ -971,15 +971,18 @@ This architecture is too broad for one safe big-bang implementation plan. After 
 
 Each plan begins test-first in its own worktree, uses focused review, and must preserve all earlier gates. No phase may pre-create a live actuator.
 
-## Written-spec review checklist
+## Written-spec approval checklist
 
-- [ ] The user confirms that version 1 is live data plus paper-only long-or-flat spot execution.
-- [ ] The user confirms that stops, takes, trailing stops, sizing, and every hard limit remain deterministic.
-- [ ] The user confirms that the optional local model emits directional evidence or ABSTAIN only.
-- [ ] The user confirms the separate sensor/run-guard/core/model/supervisor
+- [x] The user confirms that version 1 is live data plus paper-only long-or-flat spot execution.
+- [x] The user confirms that stops, takes, trailing stops, sizing, and every hard limit remain deterministic.
+- [x] The user confirms that the optional local model emits directional evidence or ABSTAIN only.
+- [x] The user confirms the separate sensor/run-guard/core/model/supervisor
   process boundary and the two-chain closure rule.
-- [ ] The user confirms that replay T01–T03 must be completed before this engine inherits its contracts.
-- [ ] The user confirms the staged workflow and measurable gates.
-- [ ] The user confirms that real execution, options, leverage, shorts, wallets, and signing remain outside this milestone.
+- [x] The user confirms that replay T01–T03 must be completed before this engine inherits its contracts.
+- [x] The user confirms the staged workflow and measurable gates.
+- [x] The user confirms that real execution, options, leverage, shorts, wallets, and signing remain outside this milestone.
 
-Only after this checklist is approved may the implementation-planning gate open.
+The user approved this checklist with the complete written specification on
+2026-07-13. The implementation-planning gate is open; the first plan completes
+and integrates the T01–T03 replay prerequisite without creating T04+, live
+sensor, model, risk, paper-order, broker, wallet, or real-execution capability.
