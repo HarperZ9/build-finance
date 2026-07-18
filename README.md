@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/brand/build-finance-hero.png" alt="Build Finance, a Python algorithmic trading toolkit">
+  <img src=".github/assets/zentropy-banner.png" alt="Build Finance, a Python algorithmic trading toolkit">
 </p>
 <!-- Project mark: docs/brand/build-finance-mark.svg -->
 
@@ -125,3 +125,7 @@ The source is available so you can read it, run it, and build on it; commercial 
 that competes with the project is reserved to the Licensor. See [LICENSE](LICENSE).
 
 Copyright (c) 2022-2026 Zain Dana Harper. All rights reserved.
+
+---
+
+**[Zentropy Labs](https://github.com/ZentropyLabs-ai)** · order out of entropy. An independent lab building evidence-first tools that leave a re-checkable artifact behind. Built by Zain Dana Harper in Seattle. The full workbench is at [Project Telos](https://harperz9.github.io).
