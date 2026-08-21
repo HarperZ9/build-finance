@@ -4,49 +4,29 @@ from __future__ import annotations
 
 import ast
 import re
-import sys
 from pathlib import Path
 
 PACKAGE_ROOT = Path("build_finance") / "live_paper"
 PACKAGE_PREFIX = "build_finance.live_paper"
 _URL_RE = re.compile(r"\b(?:https?|wss?)://", re.IGNORECASE)
 
-FORBIDDEN_IMPORT_PREFIXES = (
-    "aiohttp",
-    "alpaca",
-    "alpaca_trade_api",
-    "anchorpy",
-    "base58",
-    "binance",
-    "ccxt",
-    "coinbase",
-    "ctypes",
-    "ftplib",
-    "glob",
-    "http",
-    "ibapi",
-    "importlib",
-    "jupiter",
-    "kraken",
-    "native",
-    "numpy",
-    "okx",
-    "os",
-    "pandas",
-    "pathlib",
-    "requests",
-    "runpy",
-    "scipy",
-    "socket",
-    "solders",
-    "solana",
-    "ssl",
-    "subprocess",
-    "urllib",
-    "wallet",
-    "web3",
-    "websocket",
-    "websockets",
+DETERMINISTIC_STDLIB_IMPORT_PREFIXES = (
+    "__future__",
+    "collections",
+    "collections.abc",
+    "copy",
+    "dataclasses",
+    "decimal",
+    "enum",
+    "functools",
+    "hashlib",
+    "itertools",
+    "json",
+    "math",
+    "operator",
+    "re",
+    "types",
+    "typing",
 )
 FORBIDDEN_BUILD_FINANCE_IMPORTS = (
     "build_finance.autotrader",
@@ -190,15 +170,12 @@ def _call_path(node: ast.Call, aliases: dict[str, str]) -> tuple[str | None, str
 
 
 def _is_allowed_import(module: str, package_prefix: str) -> bool:
-    if module == "__future__" or module.startswith("__future__."):
-        return True
     if module == package_prefix or module.startswith(f"{package_prefix}."):
         return True
-    root = module.split(".", 1)[0]
-    return root in sys.stdlib_module_names and not _is_forbidden_prefix(module, FORBIDDEN_IMPORT_PREFIXES)
+    return _matches_module_prefix(module, DETERMINISTIC_STDLIB_IMPORT_PREFIXES)
 
 
-def _is_forbidden_prefix(module: str, prefixes: tuple[str, ...]) -> bool:
+def _matches_module_prefix(module: str, prefixes: tuple[str, ...]) -> bool:
     return any(module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes)
 
 
@@ -208,15 +185,49 @@ def _is_forbidden_build_finance_import(module: str, package_prefix: str) -> bool
     return module.startswith("build_finance.") or module in FORBIDDEN_BUILD_FINANCE_IMPORTS
 
 
-def _top_level_call_failures(tree: ast.Module, module: str, aliases: dict[str, str]) -> tuple[str, ...]:
-    failures: list[str] = []
-    for node in tree.body:
-        if isinstance(node, ast.Assign | ast.AnnAssign | ast.Expr | ast.With | ast.AsyncWith):
-            for child in ast.walk(node):
-                if isinstance(child, ast.Call):
-                    call_module, call_name = _call_path(child, aliases)
-                    failures.append(f"{module}:import-time call {call_module}.{call_name}")
-    return tuple(failures)
+class _ImportTimeCallVisitor(ast.NodeVisitor):
+    def __init__(self, module: str, aliases: dict[str, str]) -> None:
+        self._module = module
+        self._aliases = aliases
+        self.failures: list[str] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        call_module, call_name = _call_path(node, self._aliases)
+        self.failures.append(f"{self._module}:import-time call {call_module}.{call_name}")
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function_signature(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function_signature(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_arguments(node.args)
+
+    def _visit_function_signature(self, node: ast.AsyncFunctionDef | ast.FunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self._visit_arguments(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+
+    def _visit_arguments(self, arguments: ast.arguments) -> None:
+        for default in (*arguments.defaults, *(item for item in arguments.kw_defaults if item is not None)):
+            self.visit(default)
+        for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs):
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        if arguments.vararg is not None and arguments.vararg.annotation is not None:
+            self.visit(arguments.vararg.annotation)
+        if arguments.kwarg is not None and arguments.kwarg.annotation is not None:
+            self.visit(arguments.kwarg.annotation)
+
+
+def _import_time_call_failures(tree: ast.Module, module: str, aliases: dict[str, str]) -> tuple[str, ...]:
+    visitor = _ImportTimeCallVisitor(module, aliases)
+    visitor.visit(tree)
+    return tuple(visitor.failures)
 
 
 def _literal_url_failures(tree: ast.AST, module: str) -> tuple[str, ...]:
@@ -244,7 +255,7 @@ def _ast_confinement_failures(
             if isinstance(node, ast.Call) and _call_path(node, aliases) in FORBIDDEN_CALLS:
                 call_module, call_name = _call_path(node, aliases)
                 failures.append(f"{module}:forbidden call {call_module}.{call_name}")
-        failures.extend(_top_level_call_failures(tree, module, aliases))
+        failures.extend(_import_time_call_failures(tree, module, aliases))
         failures.extend(_literal_url_failures(tree, module))
     return tuple(dict.fromkeys(failures))
 
@@ -272,6 +283,66 @@ def test_ast_scan_recursively_enumerates_future_modules_without_init_exports(tmp
     assert "isolated_live_paper.nested.risk:forbidden import urllib.request" in failures
     assert "isolated_live_paper.side_effect:forbidden call builtins.__import__" in failures
     assert "isolated_live_paper.side_effect:import-time call builtins.__import__" in failures
+
+
+def test_ast_scan_denies_nondeterministic_stdlib_capability_modules(tmp_path: Path) -> None:
+    """The scanner must reject stdlib capability modules outside a deterministic allowlist."""
+
+    package_root = tmp_path / "isolated_live_paper"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text('"""Synthetic package for stdlib confinement."""\n')
+    for module_name in ("smtplib", "imaplib", "webbrowser", "asyncio", "multiprocessing"):
+        (package_root / f"{module_name}_touch.py").write_text(f"import {module_name}\n")
+
+    failures = set(_ast_confinement_failures(package_root, "isolated_live_paper"))
+
+    assert {
+        "isolated_live_paper.asyncio_touch:forbidden import asyncio",
+        "isolated_live_paper.imaplib_touch:forbidden import imaplib",
+        "isolated_live_paper.multiprocessing_touch:forbidden import multiprocessing",
+        "isolated_live_paper.smtplib_touch:forbidden import smtplib",
+        "isolated_live_paper.webbrowser_touch:forbidden import webbrowser",
+    }.issubset(failures)
+
+
+def test_ast_scan_flags_import_time_calls_in_control_class_decorator_and_defaults(tmp_path: Path) -> None:
+    """Import-time call detection must recurse through import-reachable syntax while skipping function bodies."""
+
+    package_root = tmp_path / "isolated_live_paper"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text('"""Synthetic package for import-time calls."""\n')
+    (package_root / "top_if.py").write_text(
+        "if guard():\n"
+        "    top_level_value = danger()\n"
+        "\n"
+        "def not_import_time():\n"
+        "    return body_call()\n"
+    )
+    (package_root / "class_body.py").write_text(
+        "class PaperState:\n"
+        "    class_value = class_body_call()\n"
+        "\n"
+        "    def method(self):\n"
+        "        return method_body_call()\n"
+    )
+    (package_root / "decorator_default.py").write_text(
+        "@decorator_factory()\n"
+        "def decide(quantity=default_quantity()):\n"
+        "    return function_body_call(quantity)\n"
+    )
+
+    failures = set(_ast_confinement_failures(package_root, "isolated_live_paper"))
+
+    assert {
+        "isolated_live_paper.class_body:import-time call builtins.class_body_call",
+        "isolated_live_paper.decorator_default:import-time call builtins.decorator_factory",
+        "isolated_live_paper.decorator_default:import-time call builtins.default_quantity",
+        "isolated_live_paper.top_if:import-time call builtins.danger",
+        "isolated_live_paper.top_if:import-time call builtins.guard",
+    }.issubset(failures)
+    assert "isolated_live_paper.class_body:import-time call builtins.method_body_call" not in failures
+    assert "isolated_live_paper.decorator_default:import-time call builtins.function_body_call" not in failures
+    assert "isolated_live_paper.top_if:import-time call builtins.body_call" not in failures
 
 
 def test_live_paper_runtime_ast_denies_forbidden_imports_calls_urls_and_side_effects() -> None:

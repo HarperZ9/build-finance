@@ -75,14 +75,14 @@ def _reject_float(value: Any) -> None:
 def test_kernel_replay_is_byte_stable_and_does_not_mutate_verified_input() -> None:
     """Equivalent synthetic verified inputs must produce identical canonical bytes."""
 
-    from build_finance.live_paper.kernel import run_live_paper_kernel
+    from build_finance.live_paper.kernel import run_offline_paper_kernel
 
     first_inputs = _synthetic_verified_inputs()
     first_before = copy.deepcopy(first_inputs)
     second_inputs = _synthetic_verified_inputs()
 
-    first_result = run_live_paper_kernel(first_inputs)
-    second_result = run_live_paper_kernel(second_inputs)
+    first_result = run_offline_paper_kernel(first_inputs)
+    second_result = run_offline_paper_kernel(second_inputs)
 
     assert first_inputs == first_before
     assert first_result == second_result
@@ -99,10 +99,10 @@ def test_kernel_replay_is_byte_stable_and_does_not_mutate_verified_input() -> No
 def test_kernel_replay_is_independent_of_input_mapping_order() -> None:
     """Input key order must not change deterministic evidence, IDs, or ledger closure."""
 
-    from build_finance.live_paper.kernel import run_live_paper_kernel
+    from build_finance.live_paper.kernel import run_offline_paper_kernel
 
     original_inputs = _synthetic_verified_inputs()
     canonicalized_inputs = json.loads(_canonical_json_bytes(original_inputs).decode("utf-8"))
 
     assert list(original_inputs) != list(canonicalized_inputs)
-    assert run_live_paper_kernel(original_inputs) == run_live_paper_kernel(canonicalized_inputs)
+    assert run_offline_paper_kernel(original_inputs) == run_offline_paper_kernel(canonicalized_inputs)
