@@ -80,36 +80,70 @@ FORBIDDEN_CALLS = (
 )
 
 
-def _runtime_module_paths() -> dict[str, Path]:
+def _runtime_module_paths(
+    package_root: Path = PACKAGE_ROOT,
+    package_prefix: str = PACKAGE_PREFIX,
+) -> dict[str, Path]:
     return {
-        _module_name(path): path
-        for path in sorted(PACKAGE_ROOT.glob("*.py"), key=lambda item: item.as_posix().encode("utf-8"))
+        _module_name(path, package_root, package_prefix): path
+        for path in sorted(package_root.rglob("*.py"), key=lambda item: item.as_posix().encode("utf-8"))
     }
 
 
-def _module_name(path: Path) -> str:
-    return f"{PACKAGE_PREFIX}.{path.stem}" if path.name != "__init__.py" else PACKAGE_PREFIX
+def _module_name(path: Path, package_root: Path = PACKAGE_ROOT, package_prefix: str = PACKAGE_PREFIX) -> str:
+    relative_parts = path.relative_to(package_root).with_suffix("").parts
+    if relative_parts[-1] == "__init__":
+        relative_parts = relative_parts[:-1]
+    return ".".join((package_prefix, *relative_parts)) if relative_parts else package_prefix
 
 
-def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
+def _package_context(module: str, path: Path) -> str:
+    if path.name == "__init__.py":
+        return module
+    package, _separator, _name = module.rpartition(".")
+    return package
+
+
+def _resolve_import_from_module(module: str, path: Path, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+    package_parts = _package_context(module, path).split(".")
+    if node.level > len(package_parts):
+        return None
+    base_parts = package_parts[: len(package_parts) - (node.level - 1)]
+    if node.module:
+        base_parts.extend(node.module.split("."))
+    return ".".join(base_parts)
+
+
+def _imported_modules(tree: ast.AST, module: str, path: Path) -> tuple[str, ...]:
     modules: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            imported = _resolve_import_from_module(module, path, node)
+            if imported is None:
+                continue
+            modules.append(imported)
+            modules.extend(f"{imported}.{alias.name}" for alias in node.names if alias.name != "*")
     return tuple(modules)
 
 
-def _import_aliases(tree: ast.AST) -> dict[str, str]:
+def _import_aliases(tree: ast.AST, module: str, path: Path) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif isinstance(node, ast.ImportFrom):
+            imported = _resolve_import_from_module(module, path, node)
+            if imported is None:
+                continue
             for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                if alias.name == "*":
+                    continue
+                aliases[alias.asname or alias.name] = f"{imported}.{alias.name}"
     return aliases
 
 
@@ -133,20 +167,16 @@ def _call_path(node: ast.Call, aliases: dict[str, str]) -> tuple[str | None, str
     return None, None
 
 
-def _reachable_runtime_modules() -> tuple[tuple[str, Path], ...]:
-    paths = _runtime_module_paths()
-    pending = [PACKAGE_PREFIX]
-    seen: set[str] = set()
-    while pending:
-        module = pending.pop()
-        if module in seen or module not in paths:
-            continue
-        seen.add(module)
-        tree = ast.parse(paths[module].read_bytes(), filename=str(paths[module]))
-        for imported in _imported_modules(tree):
-            if imported == PACKAGE_PREFIX or imported.startswith(f"{PACKAGE_PREFIX}."):
-                pending.append(imported)
-    return tuple((module, paths[module]) for module in sorted(seen, key=lambda value: value.encode("utf-8")))
+def _discovered_runtime_modules(
+    package_root: Path = PACKAGE_ROOT,
+    package_prefix: str = PACKAGE_PREFIX,
+) -> tuple[tuple[str, Path], ...]:
+    return tuple(
+        sorted(
+            _runtime_module_paths(package_root, package_prefix).items(),
+            key=lambda item: item[0].encode("utf-8"),
+        )
+    )
 
 
 def _is_forbidden_module(module: str) -> bool:
@@ -155,19 +185,47 @@ def _is_forbidden_module(module: str) -> bool:
     )
 
 
-def test_crypto_replay_runtime_ast_denies_direct_and_transitive_forbidden_capabilities() -> None:
+def _ast_forbidden_capability_failures(
+    package_root: Path = PACKAGE_ROOT,
+    package_prefix: str = PACKAGE_PREFIX,
+) -> tuple[str, ...]:
     failures: list[str] = []
-    for module, path in _reachable_runtime_modules():
+    for module, path in _discovered_runtime_modules(package_root, package_prefix):
         tree = ast.parse(path.read_bytes(), filename=str(path))
-        aliases = _import_aliases(tree)
-        for imported in _imported_modules(tree):
+        aliases = _import_aliases(tree, module, path)
+        for imported in _imported_modules(tree, module, path):
             if _is_forbidden_module(imported):
                 failures.append(f"{module}:{imported}")
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_path(node, aliases) in FORBIDDEN_CALLS:
                 call_module, call_name = _call_path(node, aliases)
                 failures.append(f"{module}:{call_module}.{call_name}")
-    assert failures == []
+    return tuple(failures)
+
+
+def test_ast_scan_enumerates_future_unimported_submodules_and_catches_forbidden_calls(tmp_path: Path) -> None:
+    package_root = tmp_path / "isolated_crypto_replay"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text('"""Empty package root that intentionally imports no submodules."""\n')
+    (package_root / "admission.py").write_text("ADMISSION_MODE = 'offline-only'\n")
+    (package_root / "jupiter_fixture.py").write_text("import os\nos.system('SYNTHETIC_AST_FORBIDDEN_CALL')\n")
+    (package_root / "local_fixture.py").write_text("LOCAL_FIXTURE_VERSION = '2026-08-20'\n")
+
+    discovered = tuple(module for module, _path in _discovered_runtime_modules(package_root, "isolated_crypto_replay"))
+
+    assert discovered == (
+        "isolated_crypto_replay",
+        "isolated_crypto_replay.admission",
+        "isolated_crypto_replay.jupiter_fixture",
+        "isolated_crypto_replay.local_fixture",
+    )
+    assert _ast_forbidden_capability_failures(package_root, "isolated_crypto_replay") == (
+        "isolated_crypto_replay.jupiter_fixture:os.system",
+    )
+
+
+def test_crypto_replay_runtime_ast_denies_direct_and_transitive_forbidden_capabilities() -> None:
+    assert _ast_forbidden_capability_failures() == ()
 
 
 def test_clean_process_imports_crypto_replay_without_transitive_live_or_external_dependencies() -> None:
