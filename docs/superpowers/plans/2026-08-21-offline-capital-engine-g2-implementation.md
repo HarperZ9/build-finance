@@ -441,7 +441,7 @@ Commit message: `feat(live-paper): add closed G2 evidence contracts`.
 
 Cover canonical run-receipt parsing/self-ID, admitted receipt/raw-byte SHA binding, parser identity, point-in-time fields, integer scaling, closed source profile, copied-root stability, missing evidence, mismatched evidence, non-admitted candidates, decoder manifest binding, parsed-candidate digest, one total normalization receipt per candidate, and a closed immutable `PaperKernelProfiles` carrier. The normalization profile is the exact fixture-manifest LF record bound by the run receipt and source receipts and is validated before normalization; each remaining profile is validated by its later consumer immediately before use.
 
-Add root-traversal vectors for every frozen bundle field: valid graph, tampered run receipt, wrong LF record, attachment incorrectly encoded as an LF record, missing/incorrect fixture/config/closure/schedule/counter/source-tree body, wrong source-receipt set, raw-config status mismatch, missing/incorrect public seed, each missing/incorrect code preimage, forbidden model body in disabled mode, and unreferenced resolver data having no effect.
+Add a compact, behavior-focused root suite: one complete valid graph; tampered run receipt; one representative missing/wrong ContentID record; one representative wrong SHA-addressed body or LF-encoded attachment; source-set/model-disabled closure; copied-root determinism; and profile immutability. Reuse the frozen verifier's existing exhaustive field/cross-binding coverage instead of duplicating a mutation for every artifact or code preimage.
 
 - [ ] **Step 2: Run the new tests and preserve RED evidence**
 
