@@ -51,6 +51,14 @@ class _DiscoveredFile:
     relative_path: str
     absolute_path: str
     metadata: os.stat_result
+    directory_chain: tuple[_DirectoryProof, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryProof:
+    absolute_path: str
+    label: str
+    identity: _FileIdentity
 
 
 def scan_source_tree(root: str | os.PathLike[str], *, root_label: str) -> dict[str, JsonValue]:
@@ -144,20 +152,28 @@ def _walk(
     prefix: str,
     seen_paths: set[str],
     expected_metadata: os.stat_result,
+    directory_chain: tuple[_DirectoryProof, ...] = (),
 ) -> Iterator[_DiscoveredFile]:
     _require_inside_root(root_absolute, directory_absolute)
     directory_label = prefix[:-1] if prefix else "root"
     expected_identity = _identity(expected_metadata, directory_label)
     _require_stable_directory(directory_absolute, directory_label, expected_identity)
+    directory_proof = _DirectoryProof(
+        absolute_path=directory_absolute,
+        label=directory_label,
+        identity=expected_identity,
+    )
+    current_chain = (*directory_chain, directory_proof)
+    _require_stable_directory_chain(current_chain)
     try:
         entries = os.scandir(directory_absolute)
     except OSError as error:
         raise SourceTreeError(f"directory cannot be listed without stable access: {error}") from error
     try:
-        _require_stable_directory(directory_absolute, directory_label, expected_identity)
+        _require_stable_directory_chain(current_chain)
         with entries:
             for entry in entries:
-                _require_stable_directory(directory_absolute, directory_label, expected_identity)
+                _require_stable_directory_chain(current_chain)
                 name = _safe_component(entry.name)
                 relative_path = f"{prefix}{name}"
                 relative_directory = f"{relative_path}/"
@@ -175,18 +191,31 @@ def _walk(
                         f"{relative_path} is a symlink, junction, or reparse point; no-follow required"
                     )
                 if stat.S_ISDIR(metadata.st_mode):
-                    yield from _walk(root_absolute, absolute_path, relative_directory, seen_paths, metadata)
+                    yield from _walk(
+                        root_absolute,
+                        absolute_path,
+                        relative_directory,
+                        seen_paths,
+                        metadata,
+                        current_chain,
+                    )
                 elif stat.S_ISREG(metadata.st_mode):
-                    yield _DiscoveredFile(relative_path=relative_path, absolute_path=absolute_path, metadata=metadata)
+                    yield _DiscoveredFile(
+                        relative_path=relative_path,
+                        absolute_path=absolute_path,
+                        metadata=metadata,
+                        directory_chain=current_chain,
+                    )
                 else:
                     raise SourceTreeError(f"{relative_path} is not a regular file or directory entry")
-            _require_stable_directory(directory_absolute, directory_label, expected_identity)
+            _require_stable_directory_chain(current_chain)
     finally:
         entries.close()
 
 
 def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
     before = _identity(discovered.metadata, discovered.relative_path)
+    _require_stable_directory_chain(discovered.directory_chain)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     if no_follow:
@@ -198,6 +227,7 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
             error
         )
     try:
+        _require_stable_directory_chain(discovered.directory_chain)
         opened_metadata = os.fstat(fd)
         if not stat.S_ISREG(opened_metadata.st_mode):
             raise SourceTreeError(f"{discovered.relative_path} changed to a non-regular entry before read")
@@ -214,6 +244,7 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
             chunks.append(chunk)
 
         after_open_metadata = os.fstat(fd)
+        _require_stable_directory_chain(discovered.directory_chain)
         post_metadata = _lstat(discovered.absolute_path, discovered.relative_path)
         if _is_link_or_reparse(post_metadata) or not stat.S_ISREG(post_metadata.st_mode):
             raise SourceTreeError(f"{discovered.relative_path} changed entry type during source-tree scan")
@@ -223,6 +254,7 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
             _identity(after_open_metadata, discovered.relative_path),
         )
         _require_same_identity(discovered.relative_path, before, _identity(post_metadata, discovered.relative_path))
+        _require_stable_directory_chain(discovered.directory_chain)
     finally:
         os.close(fd)
 
@@ -320,6 +352,11 @@ def _require_stable_directory(path: str, label: str, expected: _FileIdentity) ->
     if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
         raise SourceTreeError(f"{label} changed to a symlink, junction, reparse point, or non-directory entry")
     _require_same_identity(label, expected, _identity(metadata, label))
+
+
+def _require_stable_directory_chain(chain: tuple[_DirectoryProof, ...]) -> None:
+    for proof in chain:
+        _require_stable_directory(proof.absolute_path, proof.label, proof.identity)
 
 
 def _require_inside_root(root_absolute: str, candidate_absolute: str) -> None:

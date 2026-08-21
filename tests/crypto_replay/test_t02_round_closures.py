@@ -1222,6 +1222,50 @@ def test_source_tree_rejects_directory_junction_swap_before_recursive_listing(
     assert replaced
 
 
+def test_source_tree_rejects_parent_junction_swap_before_file_open_with_same_file_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan, source_tree_error, module = _source_tree_api()
+    root = tmp_path / "root"
+    src = root / "src"
+    src.mkdir(parents=True)
+    safe = src / "safe.py"
+    safe.write_bytes(b"safe")
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    outside_safe = outside / "safe.py"
+    os.link(safe, outside_safe)
+    assert safe.stat().st_ino == outside_safe.stat().st_ino
+
+    original_open = module.os.open
+    replaced = False
+    safe_path = os.path.normcase(os.path.abspath(safe))
+
+    def swap_parent_before_file_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal replaced
+        if not replaced and os.path.normcase(os.path.abspath(os.fspath(path))) == safe_path:
+            safe.unlink()
+            src.rmdir()
+            if os.name == "nt":
+                created = subprocess.run(
+                    ["cmd", "/d", "/c", "mklink", "/J", str(src), str(outside)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                assert created.returncode == 0, created.stderr
+            else:
+                os.symlink(outside, src, target_is_directory=True)
+            replaced = True
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", swap_parent_before_file_open)
+    with pytest.raises(source_tree_error, match="changed|identity|junction|reparse|stable|no-follow|outside"):
+        scan(root, root_label="repository-root")
+    assert replaced
+
+
 def test_source_tree_replacement_race_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
