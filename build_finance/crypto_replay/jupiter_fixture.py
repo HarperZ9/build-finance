@@ -14,6 +14,7 @@ from build_finance.crypto_replay.canonical import JsonValue, canonical_json_byte
 PARSER_VERSION = "solana-jupiter-fixture-parser/v1"
 _PACKAGE_PREFIX = "build_finance.crypto_replay"
 _MAX_U32 = 4_294_967_295
+_MAX_U64 = 18_446_744_073_709_551_615
 _IDENTITY_ROOTS = (
     "build_finance.crypto_replay.local_fixture",
     "build_finance.crypto_replay.jupiter_fixture",
@@ -270,4 +271,4 @@ def _required_u64_str(document: Mapping[str, JsonValue], field: str) -> str:
 def _is_canonical_u64_string(value: str) -> bool:
     if value == "0":
         return True
-    return value.isascii() and value.isdecimal() and not value.startswith("0")
+    return value.isascii() and value.isdecimal() and not value.startswith("0") and int(value) <= _MAX_U64

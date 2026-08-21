@@ -34,10 +34,18 @@ except ImportError:  # pragma: no cover - compatibility for isolated downstream 
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _READ_CHUNK_SIZE = 1024 * 1024
+_MAX_U64 = 18_446_744_073_709_551_615
+_O_BINARY = int(vars(os).get("O_BINARY", 0))
+_O_CLOEXEC = int(vars(os).get("O_CLOEXEC", 0))
+_O_DIRECTORY = int(vars(os).get("O_DIRECTORY", 0))
+_O_NOFOLLOW = int(vars(os).get("O_NOFOLLOW", 0))
 _CURRENT_MANIFEST_PATH = "manifest.json"
 _PLAN_MANIFEST_PATH = "fixture-manifest.json"
 _CURRENT_RIGHTS_PATH = "rights/rights-manifest.json"
 _PLAN_RIGHTS_PATH = "rights-manifest.json"
+_OPEN_SUPPORTS_DIR_FD = os.open in getattr(os, "supports_dir_fd", set())
+_STAT_SUPPORTS_DIR_FD = os.stat in getattr(os, "supports_dir_fd", set())
+_STAT_SUPPORTS_NOFOLLOW = os.stat in getattr(os, "supports_follow_symlinks", set())
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +133,20 @@ class _FileIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class _PrefixIdentity:
+    relative_path: str
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenedLocalFile:
+    fd: int
+    absolute_path: str
+    before_identity: _FileIdentity
+    prefix_identities: tuple[_PrefixIdentity, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _ReadResult:
     relative_path: str
     payload: bytes | None
@@ -191,7 +213,9 @@ def capture_local_fixture(root: Path) -> CapturedFixture:
 
     source_ids = _manifest_source_ids(manifest)
     terms = _capture_terms(root_path, root_identity, rights_manifest, source_ids, issues)
-    terms_by_sha256 = {term.sha256: term.payload for term in terms if term.sha256 is not None and term.payload is not None}
+    terms_by_sha256 = {
+        term.sha256: term.payload for term in terms if term.sha256 is not None and term.payload is not None
+    }
 
     files, witnesses = _capture_manifest_files(root_path, root_identity, manifest, issues)
     _capture_extra_payload_entries(root_path, root_identity, {file.relative_path for file in files}, issues)
@@ -289,7 +313,9 @@ def _parse_canonical_manifest(result: _ReadResult, issues: list[ValidationIssue]
     try:
         return parse_canonical_record(result.payload)
     except ValueError as error:
-        issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", ("manifest",), f"manifest is not a canonical LF record: {error}"))
+        issues.append(
+            _issue("ADMISSION_MANIFEST_MISMATCH", ("manifest",), f"manifest is not a canonical LF record: {error}")
+        )
         return None
 
 
@@ -300,7 +326,11 @@ def _parse_canonical_rights(result: _ReadResult, issues: list[ValidationIssue]) 
         return parse_canonical_record(result.payload)
     except ValueError as error:
         issues.append(
-            _issue("ADMISSION_RIGHTS_MISSING", ("rights_manifest",), f"rights manifest is not a canonical LF record: {error}")
+            _issue(
+                "ADMISSION_RIGHTS_MISSING",
+                ("rights_manifest",),
+                f"rights manifest is not a canonical LF record: {error}",
+            )
         )
         return None
 
@@ -337,7 +367,9 @@ def _check_rights_digest(
 ) -> None:
     expected = manifest.get("rights_manifest_sha256")
     if not isinstance(expected, str):
-        issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", ("manifest", "rights_manifest_sha256"), "missing rights digest"))
+        issues.append(
+            _issue("ADMISSION_MANIFEST_MISMATCH", ("manifest", "rights_manifest_sha256"), "missing rights digest")
+        )
         return
     if record_sha256 is None:
         return
@@ -393,9 +425,17 @@ def _capture_terms(
             missing_code="ADMISSION_RIGHTS_MISSING",
         )
         term_issues.extend(result.issues)
-        if result.sha256 is not None and request.expected_sha256 is not None and result.sha256 != request.expected_sha256:
+        if (
+            result.sha256 is not None
+            and request.expected_sha256 is not None
+            and result.sha256 != request.expected_sha256
+        ):
             term_issues.append(
-                _issue("ADMISSION_RIGHTS_MISSING", ("terms", index, "terms_sha256"), "terms digest does not match rights row")
+                _issue(
+                    "ADMISSION_RIGHTS_MISSING",
+                    ("terms", index, "terms_sha256"),
+                    "terms digest does not match rights row",
+                )
             )
         issues.extend(term_issues)
         terms.append(
@@ -421,7 +461,11 @@ def _term_requests(
         requests: list[_TermRequest] = []
         for index, row in enumerate(current_terms):
             if not isinstance(row, Mapping):
-                issues.append(_issue("ADMISSION_RIGHTS_MISSING", ("rights_manifest", "terms", index), "terms row is not an object"))
+                issues.append(
+                    _issue(
+                        "ADMISSION_RIGHTS_MISSING", ("rights_manifest", "terms", index), "terms row is not an object"
+                    )
+                )
                 continue
             relative_path = row.get("relative_path")
             expected_sha256 = row.get("terms_sha256")
@@ -444,7 +488,11 @@ def _term_requests(
     for index, row in enumerate(source_rights):
         if not isinstance(row, Mapping):
             issues.append(
-                _issue("ADMISSION_RIGHTS_MISSING", ("rights_manifest", "source_rights", index), "source rights row is not an object")
+                _issue(
+                    "ADMISSION_RIGHTS_MISSING",
+                    ("rights_manifest", "source_rights", index),
+                    "source rights row is not an object",
+                )
             )
             continue
         source_id = row.get("source_id")
@@ -506,19 +554,46 @@ def _capture_manifest_files(
 
         relative_path = _string_field(row_value, "relative_path")
         admission_sequence = _string_field(row_value, "admission_sequence")
+        availability_slot = _string_field(row_value, "availability_slot")
         expected_sha256 = _string_field(row_value, "raw_payload_sha256")
         expected_byte_length = _string_field(row_value, "byte_length")
         if relative_path is None:
             relative_path = ""
-            file_issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", (*row_path, "relative_path"), "relative_path is missing"))
+            file_issues.append(
+                _issue("ADMISSION_MANIFEST_MISMATCH", (*row_path, "relative_path"), "relative_path is missing")
+            )
         elif relative_path in seen_paths:
-            file_issues.append(_issue("ADMISSION_SET_NOT_CLOSED", (*row_path, "relative_path"), "duplicate manifest relative_path"))
+            file_issues.append(
+                _issue("ADMISSION_SET_NOT_CLOSED", (*row_path, "relative_path"), "duplicate manifest relative_path")
+            )
         else:
             seen_paths.add(relative_path)
         if admission_sequence is None:
             admission_sequence = ""
             file_issues.append(
-                _issue("ADMISSION_MANIFEST_MISMATCH", (*row_path, "admission_sequence"), "admission_sequence is missing")
+                _issue(
+                    "ADMISSION_MANIFEST_MISMATCH", (*row_path, "admission_sequence"), "admission_sequence is missing"
+                )
+            )
+        elif not _is_valid_admission_sequence(admission_sequence):
+            file_issues.append(
+                _issue(
+                    "ADMISSION_SEQUENCE_INVALID",
+                    (*row_path, "admission_sequence"),
+                    "admission_sequence must be a nonzero canonical u64 string",
+                )
+            )
+        if availability_slot is None:
+            file_issues.append(
+                _issue("ADMISSION_REVISION_CAUSALITY", (*row_path, "availability_slot"), "availability_slot is missing")
+            )
+        elif not _is_canonical_u64_string(availability_slot):
+            file_issues.append(
+                _issue(
+                    "ADMISSION_REVISION_CAUSALITY",
+                    (*row_path, "availability_slot"),
+                    "availability_slot must be a canonical u64 string",
+                )
             )
 
         payload_result = _read_local_file(
@@ -529,7 +604,11 @@ def _capture_manifest_files(
             missing_code="ADMISSION_SET_NOT_CLOSED",
         )
         file_issues.extend(payload_result.issues)
-        if payload_result.sha256 is not None and expected_sha256 is not None and payload_result.sha256 != expected_sha256:
+        if (
+            payload_result.sha256 is not None
+            and expected_sha256 is not None
+            and payload_result.sha256 != expected_sha256
+        ):
             file_issues.append(
                 _issue(
                     "ADMISSION_HASH_MISMATCH",
@@ -543,7 +622,11 @@ def _capture_manifest_files(
             and str(payload_result.byte_length) != expected_byte_length
         ):
             file_issues.append(
-                _issue("ADMISSION_HASH_MISMATCH", ("files", index, "byte_length"), "captured payload length differs from manifest row")
+                _issue(
+                    "ADMISSION_HASH_MISMATCH",
+                    ("files", index, "byte_length"),
+                    "captured payload length differs from manifest row",
+                )
             )
 
         witness = _capture_witness(
@@ -569,7 +652,7 @@ def _capture_manifest_files(
                 ingested_at=witness.ingested_at,
                 expected_sha256=expected_sha256,
                 expected_byte_length=expected_byte_length,
-                availability_slot=_string_field(row_value, "availability_slot"),
+                availability_slot=availability_slot,
                 media_type=_string_field(row_value, "media_type"),
                 source_id=_string_field(row_value, "source_id"),
                 source_kind=_string_field(row_value, "source_kind"),
@@ -594,12 +677,29 @@ def _capture_witness(
     expected_byte_length: str | None,
 ) -> CapturedWitness:
     witness_issues: list[ValidationIssue] = []
+    if not _is_valid_admission_sequence(admission_sequence):
+        witness_issues.append(
+            _issue(
+                "ADMISSION_SEQUENCE_INVALID",
+                ("witnesses", index, "admission_sequence"),
+                "witness cannot be named without a nonzero canonical admission_sequence",
+            )
+        )
+        return CapturedWitness(
+            admission_sequence, relative_path, None, None, None, None, None, None, tuple(witness_issues)
+        )
     candidates = _witness_candidates(admission_sequence)
     if not candidates:
         witness_issues.append(
-            _issue("ADMISSION_POINT_IN_TIME_MISSING", ("witnesses", index), "witness cannot be named without admission_sequence")
+            _issue(
+                "ADMISSION_POINT_IN_TIME_MISSING",
+                ("witnesses", index),
+                "witness cannot be named without admission_sequence",
+            )
         )
-        return CapturedWitness(admission_sequence, relative_path, None, None, None, None, None, None, tuple(witness_issues))
+        return CapturedWitness(
+            admission_sequence, relative_path, None, None, None, None, None, None, tuple(witness_issues)
+        )
 
     selected = _select_layout_path(root_path, candidates, ("witnesses", index), "ADMISSION_POINT_IN_TIME_MISSING")
     witness_issues.extend(selected.issues)
@@ -625,25 +725,51 @@ def _capture_witness(
         else:
             if record.get("admission_sequence") != admission_sequence:
                 witness_issues.append(
-                    _issue("ADMISSION_MANIFEST_MISMATCH", ("witnesses", index, "admission_sequence"), "witness sequence mismatch")
+                    _issue(
+                        "ADMISSION_MANIFEST_MISMATCH",
+                        ("witnesses", index, "admission_sequence"),
+                        "witness sequence mismatch",
+                    )
                 )
             if record.get("relative_path") != relative_path:
                 witness_issues.append(
-                    _issue("ADMISSION_MANIFEST_MISMATCH", ("witnesses", index, "relative_path"), "witness path mismatch")
+                    _issue(
+                        "ADMISSION_MANIFEST_MISMATCH", ("witnesses", index, "relative_path"), "witness path mismatch"
+                    )
                 )
             if expected_sha256 is not None and record.get("raw_payload_sha256") != expected_sha256:
                 witness_issues.append(
-                    _issue("ADMISSION_MANIFEST_MISMATCH", ("witnesses", index, "raw_payload_sha256"), "witness hash mismatch")
+                    _issue(
+                        "ADMISSION_MANIFEST_MISMATCH",
+                        ("witnesses", index, "raw_payload_sha256"),
+                        "witness hash mismatch",
+                    )
                 )
-            if expected_byte_length is not None and "byte_length" in record and record.get("byte_length") != expected_byte_length:
+            if (
+                expected_byte_length is not None
+                and "byte_length" in record
+                and record.get("byte_length") != expected_byte_length
+            ):
                 witness_issues.append(
-                    _issue("ADMISSION_MANIFEST_MISMATCH", ("witnesses", index, "byte_length"), "witness byte length mismatch")
+                    _issue(
+                        "ADMISSION_MANIFEST_MISMATCH",
+                        ("witnesses", index, "byte_length"),
+                        "witness byte length mismatch",
+                    )
                 )
-            observed_at = _validated_timestamp(record.get("observed_at"), ("witnesses", index, "observed_at"), witness_issues)
-            ingested_at = _validated_timestamp(record.get("ingested_at"), ("witnesses", index, "ingested_at"), witness_issues)
+            observed_at = _validated_timestamp(
+                record.get("observed_at"), ("witnesses", index, "observed_at"), witness_issues
+            )
+            ingested_at = _validated_timestamp(
+                record.get("ingested_at"), ("witnesses", index, "ingested_at"), witness_issues
+            )
             if observed_at is not None and ingested_at is not None and ingested_at < observed_at:
                 witness_issues.append(
-                    _issue("ADMISSION_POINT_IN_TIME_MISSING", ("witnesses", index, "ingested_at"), "ingested_at precedes observed_at")
+                    _issue(
+                        "ADMISSION_POINT_IN_TIME_MISSING",
+                        ("witnesses", index, "ingested_at"),
+                        "ingested_at precedes observed_at",
+                    )
                 )
                 ingested_at = None
 
@@ -661,7 +787,7 @@ def _capture_witness(
 
 
 def _witness_candidates(admission_sequence: str) -> tuple[str, ...]:
-    if not _is_canonical_u64_string(admission_sequence) or admission_sequence == "0":
+    if not _is_valid_admission_sequence(admission_sequence):
         return ()
     current = f"witnesses/witness-{int(admission_sequence):04d}.json"
     plan = f"witnesses/{admission_sequence}.json"
@@ -677,29 +803,8 @@ def _read_local_file(
     missing_code: str,
 ) -> _ReadResult:
     read_issues: list[ValidationIssue] = []
-    absolute_path = _join_checked(root_path, relative_path, issue_path, read_issues, missing_code)
-    if absolute_path is None:
-        return _ReadResult(relative_path, None, None, None, tuple(read_issues))
-
-    _check_root_stable(root_path, root_identity, read_issues, (*issue_path, "root_pre_open"))
-    try:
-        before_metadata = os.lstat(absolute_path)
-    except OSError as error:
-        read_issues.append(_issue(missing_code, issue_path, f"entry cannot be classified without following links: {error}"))
-        return _ReadResult(relative_path, None, None, None, tuple(read_issues))
-    if _is_link_or_reparse(before_metadata):
-        read_issues.append(_issue("ADMISSION_NOT_LOCAL", issue_path, "entry is a symlink, junction, or reparse point"))
-        return _ReadResult(relative_path, None, None, None, tuple(read_issues))
-    if not stat.S_ISREG(before_metadata.st_mode):
-        read_issues.append(_issue("ADMISSION_SET_NOT_CLOSED", issue_path, "entry is not a regular file"))
-        return _ReadResult(relative_path, None, None, None, tuple(read_issues))
-
-    before_identity = _identity(before_metadata)
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(absolute_path, flags)
-    except OSError as error:
-        read_issues.append(_issue(missing_code, issue_path, f"entry cannot be opened with no-follow read access: {error}"))
+    opened = _open_local_file(root_path, root_identity, relative_path, issue_path, read_issues, missing_code)
+    if opened is None:
         return _ReadResult(relative_path, None, None, None, tuple(read_issues))
 
     chunks: list[bytes] = []
@@ -707,19 +812,19 @@ def _read_local_file(
     byte_count = 0
     try:
         _check_root_stable(root_path, root_identity, read_issues, (*issue_path, "root_after_open"))
-        opened_metadata = os.fstat(fd)
+        opened_metadata = os.fstat(opened.fd)
         if not stat.S_ISREG(opened_metadata.st_mode):
             read_issues.append(_issue("ADMISSION_SET_NOT_CLOSED", issue_path, "opened entry is not a regular file"))
             return _ReadResult(relative_path, None, None, None, tuple(read_issues))
         opened_identity = _identity(opened_metadata)
-        if opened_identity != before_identity:
+        if opened_identity != opened.before_identity:
             read_issues.append(
                 _issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "entry identity changed between lstat and open")
             )
             return _ReadResult(relative_path, None, None, None, tuple(read_issues))
         while True:
             try:
-                chunk = os.read(fd, _READ_CHUNK_SIZE)
+                chunk = os.read(opened.fd, _READ_CHUNK_SIZE)
             except OSError as error:
                 read_issues.append(_issue(missing_code, issue_path, f"entry cannot be read stably: {error}"))
                 return _ReadResult(relative_path, None, None, None, tuple(read_issues))
@@ -729,27 +834,33 @@ def _read_local_file(
             byte_count += len(chunk)
             digest.update(chunk)
 
-        after_open_metadata = os.fstat(fd)
+        after_open_metadata = os.fstat(opened.fd)
         after_open_identity = _identity(after_open_metadata)
         if after_open_identity != opened_identity:
             read_issues.append(
                 _issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "opened entry identity changed while bytes were read")
             )
         if byte_count != int(after_open_metadata.st_size):
-            read_issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "opened entry size changed while bytes were read"))
+            read_issues.append(
+                _issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "opened entry size changed while bytes were read")
+            )
     finally:
-        os.close(fd)
+        os.close(opened.fd)
 
     _check_root_stable(root_path, root_identity, read_issues, (*issue_path, "root_post_read"))
+    _revalidate_prefixes(root_path, opened.prefix_identities, read_issues, issue_path)
     try:
-        post_metadata = os.lstat(absolute_path)
+        post_metadata = os.lstat(opened.absolute_path)
     except OSError as error:
         read_issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", issue_path, f"entry disappeared after read: {error}"))
     else:
         if _is_link_or_reparse(post_metadata) or not stat.S_ISREG(post_metadata.st_mode):
             read_issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "entry changed type after read"))
-        elif _identity(post_metadata) != before_identity:
+        elif _identity(post_metadata) != opened.before_identity:
             read_issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "entry identity changed after read"))
+
+    if read_issues:
+        return _ReadResult(relative_path, None, None, None, tuple(read_issues))
 
     return _ReadResult(
         relative_path=relative_path,
@@ -758,6 +869,216 @@ def _read_local_file(
         byte_length=byte_count,
         issues=tuple(read_issues),
     )
+
+
+def _open_local_file(
+    root_path: str,
+    root_identity: _FileIdentity,
+    relative_path: str,
+    issue_path: tuple[str | int, ...],
+    issues: list[ValidationIssue],
+    missing_code: str,
+) -> _OpenedLocalFile | None:
+    absolute_path = _join_checked(root_path, relative_path, issue_path, issues, missing_code)
+    if absolute_path is None:
+        return None
+    safe_path = _safe_relative_path(relative_path)
+    if safe_path is None:  # _join_checked already recorded the issue.
+        return None
+    components = tuple(safe_path.split("/"))
+
+    _check_root_stable(root_path, root_identity, issues, (*issue_path, "root_pre_open"))
+    if issues:
+        return None
+
+    if _can_use_openat():
+        return _open_local_file_openat(
+            root_path, root_identity, absolute_path, components, issue_path, issues, missing_code
+        )
+    return _open_local_file_by_path(root_path, absolute_path, components, issue_path, issues, missing_code)
+
+
+def _can_use_openat() -> bool:
+    return (
+        os.name != "nt"
+        and _OPEN_SUPPORTS_DIR_FD
+        and _STAT_SUPPORTS_DIR_FD
+        and _STAT_SUPPORTS_NOFOLLOW
+        and _O_DIRECTORY != 0
+    )
+
+
+def _open_local_file_openat(
+    root_path: str,
+    root_identity: _FileIdentity,
+    absolute_path: str,
+    components: tuple[str, ...],
+    issue_path: tuple[str | int, ...],
+    issues: list[ValidationIssue],
+    missing_code: str,
+) -> _OpenedLocalFile | None:
+    dir_flags = os.O_RDONLY | _O_CLOEXEC | _O_DIRECTORY | _O_NOFOLLOW
+    file_flags = os.O_RDONLY | _O_BINARY | _O_CLOEXEC | _O_NOFOLLOW
+    try:
+        current_fd = os.open(root_path, dir_flags)
+    except OSError as error:
+        issues.append(
+            _issue("ADMISSION_NOT_LOCAL", (*issue_path, "root_open"), f"fixture root cannot be opened locally: {error}")
+        )
+        return None
+    prefix_identities: list[_PrefixIdentity] = []
+    try:
+        root_metadata = os.fstat(current_fd)
+        if not stat.S_ISDIR(root_metadata.st_mode) or _identity(root_metadata) != root_identity:
+            issues.append(
+                _issue("ADMISSION_NOT_LOCAL", (*issue_path, "root_open"), "fixture root identity changed before open")
+            )
+            return None
+        for index, component in enumerate(components[:-1]):
+            try:
+                next_fd = os.open(component, dir_flags, dir_fd=current_fd)
+            except OSError as error:
+                prefix_relative = "/".join(components[: index + 1])
+                issues.append(
+                    _issue(
+                        "ADMISSION_NOT_LOCAL",
+                        (*issue_path, "prefix", prefix_relative),
+                        f"path prefix cannot be opened without following links: {error}",
+                    )
+                )
+                return None
+            os.close(current_fd)
+            current_fd = next_fd
+            prefix_metadata = os.fstat(current_fd)
+            if not stat.S_ISDIR(prefix_metadata.st_mode):
+                issues.append(
+                    _issue(
+                        "ADMISSION_SET_NOT_CLOSED", (*issue_path, "prefix", component), "path prefix is not a directory"
+                    )
+                )
+                return None
+            prefix_identities.append(_PrefixIdentity("/".join(components[: index + 1]), _identity(prefix_metadata)))
+        try:
+            fd = os.open(components[-1], file_flags, dir_fd=current_fd)
+        except OSError as error:
+            issues.append(
+                _issue(missing_code, issue_path, f"entry cannot be opened with no-follow read access: {error}")
+            )
+            return None
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            os.close(fd)
+            issues.append(_issue("ADMISSION_SET_NOT_CLOSED", issue_path, "entry is not a regular file"))
+            return None
+        return _OpenedLocalFile(fd, absolute_path, _identity(metadata), tuple(prefix_identities))
+    finally:
+        os.close(current_fd)
+
+
+def _open_local_file_by_path(
+    root_path: str,
+    absolute_path: str,
+    components: tuple[str, ...],
+    issue_path: tuple[str | int, ...],
+    issues: list[ValidationIssue],
+    missing_code: str,
+) -> _OpenedLocalFile | None:
+    prefix_identities = _snapshot_prefixes(root_path, components, issue_path, issues, missing_code)
+    if prefix_identities is None:
+        return None
+    try:
+        before_metadata = os.lstat(absolute_path)
+    except OSError as error:
+        issues.append(_issue(missing_code, issue_path, f"entry cannot be classified without following links: {error}"))
+        return None
+    if _is_link_or_reparse(before_metadata):
+        issues.append(_issue("ADMISSION_NOT_LOCAL", issue_path, "entry is a symlink, junction, or reparse point"))
+        return None
+    if not stat.S_ISREG(before_metadata.st_mode):
+        issues.append(_issue("ADMISSION_SET_NOT_CLOSED", issue_path, "entry is not a regular file"))
+        return None
+
+    flags = os.O_RDONLY | _O_BINARY | _O_CLOEXEC | _O_NOFOLLOW
+    try:
+        fd = os.open(absolute_path, flags)
+    except OSError as error:
+        issues.append(_issue(missing_code, issue_path, f"entry cannot be opened with no-follow read access: {error}"))
+        return None
+    return _OpenedLocalFile(fd, absolute_path, _identity(before_metadata), prefix_identities)
+
+
+def _snapshot_prefixes(
+    root_path: str,
+    components: tuple[str, ...],
+    issue_path: tuple[str | int, ...],
+    issues: list[ValidationIssue],
+    missing_code: str,
+) -> tuple[_PrefixIdentity, ...] | None:
+    prefix_identities: list[_PrefixIdentity] = []
+    prefix_path = root_path
+    for index, component in enumerate(components[:-1]):
+        prefix_path = os.path.abspath(os.path.join(prefix_path, component))
+        prefix_relative = "/".join(components[: index + 1])
+        try:
+            metadata = os.lstat(prefix_path)
+        except OSError as error:
+            issues.append(
+                _issue(
+                    missing_code, (*issue_path, "prefix", prefix_relative), f"path prefix cannot be classified: {error}"
+                )
+            )
+            return None
+        if _is_link_or_reparse(metadata):
+            issues.append(
+                _issue(
+                    "ADMISSION_NOT_LOCAL", (*issue_path, "prefix", prefix_relative), "path prefix is a reparse point"
+                )
+            )
+            return None
+        if not stat.S_ISDIR(metadata.st_mode):
+            issues.append(
+                _issue(
+                    "ADMISSION_SET_NOT_CLOSED",
+                    (*issue_path, "prefix", prefix_relative),
+                    "path prefix is not a directory",
+                )
+            )
+            return None
+        prefix_identities.append(_PrefixIdentity(prefix_relative, _identity(metadata)))
+    return tuple(prefix_identities)
+
+
+def _revalidate_prefixes(
+    root_path: str,
+    prefix_identities: tuple[_PrefixIdentity, ...],
+    issues: list[ValidationIssue],
+    issue_path: tuple[str | int, ...],
+) -> None:
+    for prefix in prefix_identities:
+        absolute_path = os.path.abspath(os.path.join(root_path, *prefix.relative_path.split("/")))
+        try:
+            metadata = os.lstat(absolute_path)
+        except OSError as error:
+            issues.append(
+                _issue(
+                    "ADMISSION_NOT_LOCAL",
+                    (*issue_path, "prefix", prefix.relative_path),
+                    f"path prefix disappeared after read: {error}",
+                )
+            )
+            continue
+        if (
+            _is_link_or_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or _identity(metadata) != prefix.identity
+        ):
+            issues.append(
+                _issue(
+                    "ADMISSION_NOT_LOCAL",
+                    (*issue_path, "prefix", prefix.relative_path),
+                    "path prefix identity changed during read",
+                )
+            )
 
 
 def _capture_extra_payload_entries(
@@ -775,7 +1096,9 @@ def _capture_extra_payload_entries(
     except FileNotFoundError:
         return
     except OSError as error:
-        issues.append(_issue("ADMISSION_SET_NOT_CLOSED", ("payloads",), f"payload directory cannot be classified: {error}"))
+        issues.append(
+            _issue("ADMISSION_SET_NOT_CLOSED", ("payloads",), f"payload directory cannot be classified: {error}")
+        )
         return
     if _is_link_or_reparse(metadata):
         issues.append(_issue("ADMISSION_NOT_LOCAL", ("payloads",), "payload directory is a reparse point"))
@@ -797,34 +1120,54 @@ def _scan_payload_directory(
     try:
         entries = os.scandir(directory_path)
     except OSError as error:
-        issues.append(_issue("ADMISSION_SET_NOT_CLOSED", ("payloads", relative_directory), f"payload directory cannot be listed: {error}"))
+        issues.append(
+            _issue(
+                "ADMISSION_SET_NOT_CLOSED",
+                ("payloads", relative_directory),
+                f"payload directory cannot be listed: {error}",
+            )
+        )
         return
     try:
         with entries:
             for entry in entries:
                 name = _safe_component(entry.name)
                 child_relative = f"{relative_directory}/{name}"
-                child_abs = _join_checked(root_path, child_relative, ("payloads", child_relative), issues, "ADMISSION_SET_NOT_CLOSED")
+                child_abs = _join_checked(
+                    root_path, child_relative, ("payloads", child_relative), issues, "ADMISSION_SET_NOT_CLOSED"
+                )
                 if child_abs is None:
                     continue
                 try:
                     metadata = os.lstat(child_abs)
                 except OSError as error:
                     issues.append(
-                        _issue("ADMISSION_SET_NOT_CLOSED", ("payloads", child_relative), f"payload entry cannot be classified: {error}")
+                        _issue(
+                            "ADMISSION_SET_NOT_CLOSED",
+                            ("payloads", child_relative),
+                            f"payload entry cannot be classified: {error}",
+                        )
                     )
                     continue
                 if _is_link_or_reparse(metadata):
-                    issues.append(_issue("ADMISSION_NOT_LOCAL", ("payloads", child_relative), "payload entry is a reparse point"))
+                    issues.append(
+                        _issue("ADMISSION_NOT_LOCAL", ("payloads", child_relative), "payload entry is a reparse point")
+                    )
                 elif stat.S_ISDIR(metadata.st_mode):
                     _scan_payload_directory(root_path, root_identity, child_abs, child_relative, expected_paths, issues)
                 elif stat.S_ISREG(metadata.st_mode):
                     if child_relative not in expected_paths:
                         issues.append(
-                            _issue("ADMISSION_SET_NOT_CLOSED", ("payloads", child_relative), "payload entry is not named by manifest")
+                            _issue(
+                                "ADMISSION_SET_NOT_CLOSED",
+                                ("payloads", child_relative),
+                                "payload entry is not named by manifest",
+                            )
                         )
                 else:
-                    issues.append(_issue("ADMISSION_SET_NOT_CLOSED", ("payloads", child_relative), "payload entry is not regular"))
+                    issues.append(
+                        _issue("ADMISSION_SET_NOT_CLOSED", ("payloads", child_relative), "payload entry is not regular")
+                    )
     except ValueError as error:
         issues.append(_issue("ADMISSION_SET_NOT_CLOSED", ("payloads", relative_directory), str(error)))
 
@@ -982,7 +1325,11 @@ def _is_canonical_u64_string(value: object) -> bool:
         return False
     if value == "0":
         return True
-    return bool(value) and value[0] != "0" and value.isdecimal() and int(value) <= 18_446_744_073_709_551_615
+    return bool(value) and value[0] != "0" and value.isdecimal() and int(value) <= _MAX_U64
+
+
+def _is_valid_admission_sequence(value: object) -> bool:
+    return _is_canonical_u64_string(value) and value != "0"
 
 
 def _is_sha256_string(value: object) -> bool:
@@ -994,4 +1341,6 @@ def _issue(code: str, path: tuple[str | int, ...], message: str) -> ValidationIs
 
 
 def _read_result_with_issues(result: _ReadResult, issues: tuple[ValidationIssue, ...]) -> _ReadResult:
-    return _ReadResult(result.relative_path, result.payload, result.sha256, result.byte_length, (*issues, *result.issues))
+    return _ReadResult(
+        result.relative_path, result.payload, result.sha256, result.byte_length, (*issues, *result.issues)
+    )

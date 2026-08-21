@@ -39,6 +39,9 @@ from tests.crypto_replay.support.synthetic_local_fixture import (
     write_SYNTHETIC_local_fixture,
 )
 
+_MAX_U64 = "18446744073709551615"
+_MAX_U64_PLUS_ONE = "18446744073709551616"
+
 
 def _capture_and_admit(root: Path):
     from build_finance.crypto_replay.admission import admit_local_fixture
@@ -89,6 +92,24 @@ def _make_windows_junction(link: Path, target: Path) -> None:
         pytest.skip(
             f"Windows junction creation returned unexpected evidence: {completed.stdout!r} {completed.stderr!r}"
         )
+
+
+def _replace_directory_with_link(link: Path, target: Path, primitive: str) -> None:
+    shutil.rmtree(link)
+    if primitive == "symlink":
+        _make_symlink(link, target, target_is_directory=True)
+    elif primitive == "junction":
+        _make_windows_junction(link, target)
+    else:  # pragma: no cover - protects future table edits.
+        raise AssertionError(f"unsupported link primitive: {primitive}")
+
+
+def _reseal_first_manifest_file(fixture, **overrides: object) -> None:
+    manifest = dict(fixture.manifest)
+    files = list(manifest["files"])  # type: ignore[arg-type]
+    files[0] = {**files[0], **overrides}
+    manifest["files"] = files
+    reseal_SYNTHETIC_manifest(fixture, manifest)
 
 
 _SYNTHETIC_TARGET_EVENT_ID = "1" * 64
@@ -779,6 +800,88 @@ def test_windows_junction_root_is_rejected_when_platform_allows_junctions(tmp_pa
     _assert_rejected_for_reparse_or_not_local(captured, batch)
 
 
+@pytest.mark.parametrize("primitive", ("symlink", "junction"))
+def test_payloads_reparse_parent_discards_outside_payload_bytes(tmp_path: Path, primitive: str) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / primitive)
+    outside_payload = fixture.payloads[0] + b"\nSYNTHETIC OUTSIDE PAYLOAD PARENT BYTES\n"
+    outside_dir = tmp_path / f"outside-payloads-{primitive}"
+    outside_dir.mkdir()
+    (outside_dir / "quote-0001.json").write_bytes(outside_payload)
+    _replace_directory_with_link(fixture.root / "payloads", outside_dir, primitive)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    outside_sha256 = sha256_hex(outside_payload)
+    receipt = _receipts(batch)[0]
+    assert batch.status == "REJECTED"
+    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch)
+    assert batch.candidates == ()
+    assert captured.files[0].payload is None
+    assert captured.files[0].sha256 is None
+    assert captured.files[0].byte_length is None
+    assert receipt["raw_payload_sha256"] is None
+    assert outside_payload not in [file.payload for file in captured.files]
+    assert outside_sha256 not in {file.sha256 for file in captured.files}
+    assert receipt["raw_payload_sha256"] != outside_sha256
+
+
+@pytest.mark.parametrize("primitive", ("symlink", "junction"))
+def test_terms_reparse_parent_discards_outside_terms_bytes(tmp_path: Path, primitive: str) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / primitive)
+    outside_terms = fixture.terms_payload + b"SYNTHETIC OUTSIDE TERMS PARENT BYTES\n"
+    outside_dir = tmp_path / f"outside-terms-{primitive}"
+    outside_dir.mkdir()
+    (outside_dir / "synthetic-terms.txt").write_bytes(outside_terms)
+    _replace_directory_with_link(fixture.root / "terms", outside_dir, primitive)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    outside_sha256 = sha256_hex(outside_terms)
+    receipt = _receipts(batch)[0]
+    assert batch.status == "REJECTED"
+    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch)
+    assert batch.candidates == ()
+    assert captured.terms[0].payload is None
+    assert captured.terms[0].sha256 is None
+    assert captured.terms[0].byte_length is None
+    assert captured.terms_by_sha256 == {}
+    assert receipt["terms_sha256"] is None
+    assert outside_sha256 not in captured.terms_by_sha256
+    assert receipt["terms_sha256"] != outside_sha256
+
+
+@pytest.mark.parametrize("primitive", ("symlink", "junction"))
+def test_witnesses_reparse_parent_discards_outside_witness_bytes(tmp_path: Path, primitive: str) -> None:
+    spec = SYNTHETICEventSpec()
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / primitive, event_specs=(spec,))
+    outside_witness = witness_for_SYNTHETIC_fixture(fixture, 0, spec)
+    outside_witness["observed_at"] = "2026-01-01T00:00:03.000000000Z"
+    outside_witness["ingested_at"] = "2026-01-01T00:00:04.000000000Z"
+    outside_payload = canonical_record_bytes(outside_witness)
+    outside_dir = tmp_path / f"outside-witnesses-{primitive}"
+    outside_dir.mkdir()
+    (outside_dir / "witness-0001.json").write_bytes(outside_payload)
+    _replace_directory_with_link(fixture.root / "witnesses", outside_dir, primitive)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    outside_sha256 = sha256_hex(outside_payload)
+    receipt = _receipts(batch)[0]
+    assert batch.status == "REJECTED"
+    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch)
+    assert batch.candidates == ()
+    assert captured.witnesses[0].payload is None
+    assert captured.witnesses[0].sha256 is None
+    assert captured.witnesses[0].observed_at is None
+    assert captured.witnesses[0].ingested_at is None
+    assert captured.files[0].observed_at is None
+    assert captured.files[0].ingested_at is None
+    assert receipt["observed_at"] is None
+    assert receipt["ingested_at"] is None
+    assert outside_payload not in [witness.payload for witness in captured.witnesses]
+    assert outside_sha256 not in {witness.sha256 for witness in captured.witnesses}
+
+
 def test_missing_extra_and_non_regular_payloads_close_set(tmp_path: Path) -> None:
     missing = write_SYNTHETIC_local_fixture(tmp_path / "missing")
     missing.payload_paths[0].unlink()
@@ -863,7 +966,8 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
     assert replaced
     assert captured.capture_issues
     assert any(
-        issue.code in {"ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"} for issue in captured.capture_issues
+        issue.code in {"ADMISSION_NOT_LOCAL", "ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"}
+        for issue in captured.capture_issues
     )
 
 
@@ -959,6 +1063,124 @@ def test_identical_candidate_collapse_uses_utf8_path_tiebreaker(tmp_path: Path) 
     assert len(batch.candidates) == 1
     assert batch.candidates[0].admission_sequence == captured.files[0].admission_sequence
     assert batch.candidates[0].relative_path == "payloads/a.json"
+
+
+def test_parser_accepts_canonical_u64_maximum_values(tmp_path: Path) -> None:
+    spec = SYNTHETICEventSpec(
+        admission_sequence=_MAX_U64,
+        availability_slot=_MAX_U64,
+        source_subsequence=_MAX_U64,
+        revision_availability_admission_sequence=_MAX_U64,
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
+    from build_finance.crypto_replay.jupiter_fixture import parse_jupiter_fixture_payload
+
+    parsed = parse_jupiter_fixture_payload(fixture.payloads[0])
+
+    assert parsed.source_position_slot == _MAX_U64
+    assert parsed.source_subsequence == _MAX_U64
+    assert parsed.revision_availability_slot == _MAX_U64
+    assert parsed.revision_availability_admission_sequence == _MAX_U64
+
+
+@pytest.mark.parametrize(
+    "spec",
+    (
+        SYNTHETICEventSpec(source_position_slot=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(source_subsequence=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(revision_availability_slot=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(revision_availability_admission_sequence=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(source_position_slot="01"),
+        SYNTHETICEventSpec(source_subsequence="01"),
+        SYNTHETICEventSpec(revision_availability_slot="01"),
+        SYNTHETICEventSpec(revision_availability_admission_sequence="01"),
+    ),
+)
+def test_parser_rejects_non_canonical_or_oversized_u64_values(tmp_path: Path, spec: SYNTHETICEventSpec) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
+    from build_finance.crypto_replay.jupiter_fixture import JupiterFixtureParseError, parse_jupiter_fixture_payload
+
+    with pytest.raises(JupiterFixtureParseError, match="canonical u64 string"):
+        parse_jupiter_fixture_payload(fixture.payloads[0])
+
+
+def test_admission_accepts_resealed_u64_maximum_fixture(tmp_path: Path) -> None:
+    spec = SYNTHETICEventSpec(
+        admission_sequence=_MAX_U64,
+        availability_slot=_MAX_U64,
+        source_subsequence=_MAX_U64,
+        revision_availability_admission_sequence=_MAX_U64,
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipt = _receipts(batch)[0]
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 1
+    assert batch.candidates[0].admission_sequence == _MAX_U64
+    assert batch.candidates[0].source_position["slot"] == _MAX_U64
+    assert batch.candidates[0].source_position["source_subsequence"] == _MAX_U64
+    assert batch.candidates[0].revision["availability_slot"] == _MAX_U64
+    assert batch.candidates[0].revision["availability_admission_sequence"] == _MAX_U64
+    assert receipt["admission_sequence"] == _MAX_U64
+    assert receipt["availability_slot"] == _MAX_U64
+
+
+@pytest.mark.parametrize("admission_sequence", (_MAX_U64_PLUS_ONE, "01"))
+def test_manifest_admission_sequence_defects_are_sequence_invalid(
+    tmp_path: Path,
+    admission_sequence: str,
+) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / admission_sequence)
+    _reseal_first_manifest_file(fixture, admission_sequence=admission_sequence)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    receipt = _receipts(batch)[0]
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_SEQUENCE_INVALID",)
+    assert batch.candidates == ()
+    assert captured.files[0].admission_sequence == admission_sequence
+    assert receipt["admission_sequence"] == admission_sequence
+
+
+@pytest.mark.parametrize("availability_slot", (_MAX_U64_PLUS_ONE, "01"))
+def test_manifest_availability_slot_defects_are_revision_causality(
+    tmp_path: Path,
+    availability_slot: str,
+) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / availability_slot)
+    _reseal_first_manifest_file(fixture, availability_slot=availability_slot)
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipt = _receipts(batch)[0]
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_REVISION_CAUSALITY",)
+    assert batch.candidates == ()
+    assert receipt["availability_slot"] == availability_slot
+
+
+@pytest.mark.parametrize(
+    "spec",
+    (
+        SYNTHETICEventSpec(source_position_slot=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(source_subsequence=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(revision_availability_slot=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(revision_availability_admission_sequence=_MAX_U64_PLUS_ONE),
+    ),
+)
+def test_oversized_payload_u64_defects_do_not_emit_candidates(tmp_path: Path, spec: SYNTHETICEventSpec) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "REJECTED"
+    assert "ADMISSION_PROFILE_MISMATCH" in _reason_codes(batch)
+    assert batch.candidates == ()
+    assert len(_receipts(batch)) == len(captured.files) == 1
 
 
 def _module_origin(module: str) -> Path:
