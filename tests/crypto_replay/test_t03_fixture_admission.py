@@ -465,6 +465,202 @@ def test_multiple_revisions_of_same_target_are_revision_fork(tmp_path: Path) -> 
     assert receipts["payloads/quote-0003.json"]["reason_codes"] == ["ADMISSION_REVISION_FORK"]
 
 
+def test_same_target_corrections_with_different_native_ids_are_revision_fork(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    first_correction = _revision_spec(
+        original,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_revision="synthetic-revision-v2",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        route_capacity_base_atoms="999999",
+    )
+    second_correction = _revision_spec(
+        original,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        source_native_event_id="synthetic-event-correction-alt-native",
+        source_revision="synthetic-revision-v3",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        liquidity_quote_atoms="3333333",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second_correction, original, first_correction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    _assert_revision_fork_batch(batch, fork_paths=("payloads/quote-0002.json", "payloads/quote-0003.json"))
+
+
+def test_same_target_corrections_with_different_position_index_are_revision_fork(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    first_correction = _revision_spec(
+        original,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_revision="synthetic-revision-v2",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        route_capacity_base_atoms="999999",
+    )
+    second_correction = _revision_spec(
+        original,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        transaction_index=1,
+        source_revision="synthetic-revision-v3",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        liquidity_quote_atoms="3333333",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second_correction, original, first_correction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    _assert_revision_fork_batch(batch, fork_paths=("payloads/quote-0002.json", "payloads/quote-0003.json"))
+
+
+def test_same_target_retractions_with_different_native_ids_are_revision_fork(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    first_retraction = _revision_spec(
+        original,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_revision="synthetic-revision-retract-v2",
+        revision_kind="RETRACTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        route_capacity_base_atoms="0",
+    )
+    second_retraction = _revision_spec(
+        original,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        source_native_event_id="synthetic-event-retraction-alt-native",
+        source_revision="synthetic-revision-retract-v3",
+        revision_kind="RETRACTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        liquidity_quote_atoms="0",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second_retraction, original, first_retraction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    _assert_revision_fork_batch(batch, fork_paths=("payloads/quote-0002.json", "payloads/quote-0003.json"))
+
+
+def test_distinct_revision_targets_are_not_revision_fork(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    first_correction = _revision_spec(
+        original,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_native_event_id="synthetic-event-correction-one",
+        source_revision="synthetic-revision-v2",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        route_capacity_base_atoms="999999",
+    )
+    second_correction = _revision_spec(
+        original,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        source_native_event_id="synthetic-event-correction-two",
+        source_revision="synthetic-revision-v3",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_SECOND_TARGET_EVENT_ID,
+        liquidity_quote_atoms="3333333",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second_correction, original, first_correction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 3
+
+
+def test_correction_and_retraction_sharing_target_are_distinct_revision_kinds(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    correction = _revision_spec(
+        original,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_native_event_id="synthetic-event-correction",
+        source_revision="synthetic-revision-correction",
+        revision_kind="CORRECTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        route_capacity_base_atoms="999999",
+    )
+    retraction = _revision_spec(
+        original,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        source_native_event_id="synthetic-event-retraction",
+        source_revision="synthetic-revision-retraction",
+        revision_kind="RETRACTION",
+        target_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        liquidity_quote_atoms="0",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(retraction, original, correction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 3
+
+
+def _revision_spec(
+    original: SYNTHETICEventSpec,
+    *,
+    admission_sequence: str,
+    relative_path: str,
+    source_revision: str,
+    revision_kind: str,
+    target_event_id: str,
+    source_native_event_id: str | None = None,
+    transaction_index: int = 0,
+    route_capacity_base_atoms: str = "1000000",
+    liquidity_quote_atoms: str = "2000000",
+) -> SYNTHETICEventSpec:
+    target_kwargs: dict[str, object]
+    if revision_kind == "CORRECTION":
+        target_kwargs = {"supersedes_event_id": target_event_id}
+    elif revision_kind == "RETRACTION":
+        target_kwargs = {"retracts_event_id": target_event_id}
+    else:
+        raise AssertionError(f"unsupported synthetic revision kind: {revision_kind}")
+    return dataclasses.replace(
+        original,
+        admission_sequence=admission_sequence,
+        availability_slot=admission_sequence,
+        relative_path=relative_path,
+        source_position_slot="1",
+        transaction_index=transaction_index,
+        source_native_event_id=source_native_event_id or original.source_native_event_id,
+        source_revision=source_revision,
+        revision_kind=revision_kind,
+        revision_availability_slot=admission_sequence,
+        revision_availability_admission_sequence=admission_sequence,
+        route_capacity_base_atoms=route_capacity_base_atoms,
+        liquidity_quote_atoms=liquidity_quote_atoms,
+        **target_kwargs,
+    )
+
+
+def _assert_revision_fork_batch(batch, *, fork_paths: tuple[str, ...]) -> None:
+    receipts = {str(receipt["relative_path"]): receipt for receipt in _receipts(batch)}
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_REVISION_FORK",)
+    assert batch.candidates == ()
+    assert receipts["payloads/quote-0001.json"]["status"] == "ADMITTED"
+    assert receipts["payloads/quote-0001.json"]["reason_codes"] == []
+    for relative_path in fork_paths:
+        assert receipts[relative_path]["status"] == "QUARANTINED"
+        assert receipts[relative_path]["reason_codes"] == ["ADMISSION_REVISION_FORK"]
+
+
 def test_terms_digest_mismatch_preserves_actual_terms_digest(tmp_path: Path) -> None:
     fixture = write_SYNTHETIC_local_fixture(tmp_path)
     actual_terms = fixture.terms_payload + b"SYNTHETIC TERMS DIGEST MISMATCH\n"

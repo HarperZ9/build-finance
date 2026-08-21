@@ -373,16 +373,23 @@ def _mark_revision_forks(
     rows: tuple[_CandidateRow, ...],
     reasons_by_index: dict[int, list[str]],
 ) -> None:
-    by_target: dict[tuple[object, ...], list[_CandidateRow]] = {}
+    by_target: dict[tuple[str, str], list[_CandidateRow]] = {}
     for row in rows:
-        target = _revision_target(row.parsed)
-        if target is None:
+        fork_key = _revision_fork_key(row.parsed)
+        if fork_key is None:
             continue
-        by_target.setdefault((*_lineage_key(row.parsed), row.parsed.revision_kind, target), []).append(row)
+        by_target.setdefault(fork_key, []).append(row)
     for target_rows in by_target.values():
         version_keys = {_version_key(row.parsed) for row in target_rows}
         if len(version_keys) > 1:
             _append_reason(target_rows, reasons_by_index, "ADMISSION_REVISION_FORK")
+
+
+def _revision_fork_key(parsed: ParsedJupiterFixture) -> tuple[str, str] | None:
+    target = _revision_target(parsed)
+    if target is None:
+        return None
+    return parsed.revision_kind, target
 
 
 def _append_reason(
