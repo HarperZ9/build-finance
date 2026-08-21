@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import unicodedata
@@ -9,7 +10,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from build_finance.crypto_replay.canonical import JsonValue, sha256_hex
+from build_finance.crypto_replay.canonical import JsonValue
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _READ_CHUNK_SIZE = 1024 * 1024
@@ -61,6 +62,19 @@ class _DirectoryProof:
     identity: _FileIdentity
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectoryEntryProof:
+    relative_path: str
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class _VisitedDirectoryProof:
+    directory_chain: tuple[_DirectoryProof, ...]
+    prefix: str
+    entries: tuple[_DirectoryEntryProof, ...]
+
+
 def scan_source_tree(root: str | os.PathLike[str], *, root_label: str) -> dict[str, JsonValue]:
     """Return canonical source-tree evidence without resolving or following protected paths."""
     if not isinstance(root_label, str) or not root_label:
@@ -77,13 +91,15 @@ def scan_source_tree(root: str | os.PathLike[str], *, root_label: str) -> dict[s
         raise SourceTreeError("root is not a directory")
 
     seen_paths: set[str] = set()
+    visited_directories: list[_VisitedDirectoryProof] = []
     rows = [
         _file_row(discovered)
         for discovered in sorted(
-            _walk(root_absolute, root_absolute, "", seen_paths, root_metadata),
+            _walk(root_absolute, root_absolute, "", seen_paths, root_metadata, visited_directories),
             key=lambda item: item.relative_path.encode("utf-8"),
         )
     ]
+    _require_stable_visited_directories(root_absolute, visited_directories)
     return {
         "schema": "trading.source-tree/v1",
         "root_label": root_label,
@@ -152,6 +168,7 @@ def _walk(
     prefix: str,
     seen_paths: set[str],
     expected_metadata: os.stat_result,
+    visited_directories: list[_VisitedDirectoryProof],
     directory_chain: tuple[_DirectoryProof, ...] = (),
 ) -> Iterator[_DiscoveredFile]:
     _require_inside_root(root_absolute, directory_absolute)
@@ -171,6 +188,7 @@ def _walk(
         raise SourceTreeError(f"directory cannot be listed without stable access: {error}") from error
     try:
         _require_stable_directory_chain(current_chain)
+        entry_proofs: list[_DirectoryEntryProof] = []
         with entries:
             for entry in entries:
                 _require_stable_directory_chain(current_chain)
@@ -190,6 +208,12 @@ def _walk(
                     raise SourceTreeError(
                         f"{relative_path} is a symlink, junction, or reparse point; no-follow required"
                     )
+                entry_proofs.append(
+                    _DirectoryEntryProof(
+                        relative_path=relative_path,
+                        identity=_identity(metadata, relative_path),
+                    )
+                )
                 if stat.S_ISDIR(metadata.st_mode):
                     yield from _walk(
                         root_absolute,
@@ -197,6 +221,7 @@ def _walk(
                         relative_directory,
                         seen_paths,
                         metadata,
+                        visited_directories,
                         current_chain,
                     )
                 elif stat.S_ISREG(metadata.st_mode):
@@ -209,6 +234,13 @@ def _walk(
                 else:
                     raise SourceTreeError(f"{relative_path} is not a regular file or directory entry")
             _require_stable_directory_chain(current_chain)
+            visited_directories.append(
+                _VisitedDirectoryProof(
+                    directory_chain=current_chain,
+                    prefix=prefix,
+                    entries=_sort_directory_entries(entry_proofs),
+                )
+            )
     finally:
         entries.close()
 
@@ -233,7 +265,8 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
             raise SourceTreeError(f"{discovered.relative_path} changed to a non-regular entry before read")
         _require_same_identity(discovered.relative_path, before, _identity(opened_metadata, discovered.relative_path))
 
-        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        byte_count = 0
         while True:
             try:
                 chunk = os.read(fd, _READ_CHUNK_SIZE)
@@ -241,7 +274,8 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
                 raise SourceTreeError(f"{discovered.relative_path} cannot be read stably: {error}") from error
             if not chunk:
                 break
-            chunks.append(chunk)
+            byte_count += len(chunk)
+            digest.update(chunk)
 
         after_open_metadata = os.fstat(fd)
         _require_stable_directory_chain(discovered.directory_chain)
@@ -258,13 +292,12 @@ def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
     finally:
         os.close(fd)
 
-    payload = b"".join(chunks)
-    if len(payload) != before.size:
+    if byte_count != before.size:
         raise SourceTreeError(f"{discovered.relative_path} changed size during source-tree scan")
     return {
         "relative_path": discovered.relative_path,
-        "byte_length": str(len(payload)),
-        "file_sha256": sha256_hex(payload),
+        "byte_length": str(byte_count),
+        "file_sha256": digest.hexdigest(),
     }
 
 
@@ -357,6 +390,69 @@ def _require_stable_directory(path: str, label: str, expected: _FileIdentity) ->
 def _require_stable_directory_chain(chain: tuple[_DirectoryProof, ...]) -> None:
     for proof in chain:
         _require_stable_directory(proof.absolute_path, proof.label, proof.identity)
+
+
+def _require_stable_visited_directories(root_absolute: str, visited_directories: list[_VisitedDirectoryProof]) -> None:
+    for visited_directory in visited_directories:
+        directory = visited_directory.directory_chain[-1]
+        _require_stable_directory_chain(visited_directory.directory_chain)
+        observed_entries = _directory_entry_proofs(
+            root_absolute,
+            directory.absolute_path,
+            directory.label,
+            visited_directory.prefix,
+        )
+        _require_stable_directory_chain(visited_directory.directory_chain)
+        if observed_entries != visited_directory.entries:
+            raise SourceTreeError(f"{directory.label} changed source-tree entries during scan")
+
+
+def _directory_entry_proofs(
+    root_absolute: str,
+    directory_absolute: str,
+    directory_label: str,
+    prefix: str,
+) -> tuple[_DirectoryEntryProof, ...]:
+    try:
+        entries = os.scandir(directory_absolute)
+    except OSError as error:
+        raise SourceTreeError(f"{directory_label} cannot be listed with stable source-tree entries: {error}") from error
+    proofs: list[_DirectoryEntryProof] = []
+    seen_relative_paths: set[str] = set()
+    try:
+        with entries:
+            for entry in entries:
+                name = _safe_component(entry.name)
+                relative_path = f"{prefix}{name}"
+                relative_directory = f"{relative_path}/"
+                if _is_excluded_entry(relative_path, relative_directory):
+                    continue
+                if relative_path in seen_relative_paths:
+                    raise SourceTreeError("normalized relative path collision prevents stable source-tree identity")
+                seen_relative_paths.add(relative_path)
+
+                absolute_path = os.path.abspath(entry.path)
+                _require_inside_root(root_absolute, absolute_path)
+                metadata = _lstat(absolute_path, relative_path)
+                if _is_link_or_reparse(metadata):
+                    raise SourceTreeError(
+                        f"{relative_path} is a symlink, junction, or reparse point; no-follow required"
+                    )
+                if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                    raise SourceTreeError(f"{relative_path} is not a regular file or directory entry")
+                proofs.append(
+                    _DirectoryEntryProof(
+                        relative_path=relative_path,
+                        identity=_identity(metadata, relative_path),
+                    )
+                )
+    finally:
+        entries.close()
+    return _sort_directory_entries(proofs)
+
+
+def _sort_directory_entries(entries: list[_DirectoryEntryProof]) -> tuple[_DirectoryEntryProof, ...]:
+    return tuple(sorted(entries, key=lambda entry: entry.relative_path.encode("utf-8")))
 
 
 def _require_inside_root(root_absolute: str, candidate_absolute: str) -> None:

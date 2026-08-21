@@ -7,6 +7,7 @@ replay, infer a signal, append a ledger, or expose an actuator.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
 import stat
@@ -1264,6 +1265,118 @@ def test_source_tree_rejects_parent_junction_swap_before_file_open_with_same_fil
     with pytest.raises(source_tree_error, match="changed|identity|junction|reparse|stable|no-follow|outside"):
         scan(root, root_label="repository-root")
     assert replaced
+
+
+def test_source_tree_rejects_late_add_in_previous_sibling_directory_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan, source_tree_error, module = _source_tree_api()
+    root = tmp_path / "root"
+    previous = root / "a"
+    later = root / "z"
+    previous.mkdir(parents=True)
+    later.mkdir()
+    (previous / "file.py").write_bytes(b"previous")
+    later_file = later / "file.py"
+    later_file.write_bytes(b"later")
+
+    original_open = module.os.open
+    mutated = False
+    later_file_path = os.path.normcase(os.path.abspath(later_file))
+
+    def add_previous_sibling_entry_before_later_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal mutated
+        if not mutated and os.path.normcase(os.path.abspath(os.fspath(path))) == later_file_path:
+            (previous / "late.py").write_bytes(b"late")
+            mutated = True
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", add_previous_sibling_entry_before_later_open)
+    with pytest.raises(source_tree_error, match="changed|identity|extra|missing|stable"):
+        scan(root, root_label="repository-root")
+    assert mutated
+
+
+def test_source_tree_rejects_late_delete_in_previous_sibling_directory_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan, source_tree_error, module = _source_tree_api()
+    root = tmp_path / "root"
+    previous = root / "a"
+    later = root / "z"
+    previous.mkdir(parents=True)
+    later.mkdir()
+    previous_file = previous / "file.py"
+    previous_file.write_bytes(b"previous")
+    later_file = later / "file.py"
+    later_file.write_bytes(b"later")
+
+    original_open = module.os.open
+    mutated = False
+    later_file_path = os.path.normcase(os.path.abspath(later_file))
+
+    def delete_previous_sibling_entry_before_later_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal mutated
+        if not mutated and os.path.normcase(os.path.abspath(os.fspath(path))) == later_file_path:
+            previous_file.unlink()
+            mutated = True
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", delete_previous_sibling_entry_before_later_open)
+    with pytest.raises(source_tree_error, match="changed|identity|extra|missing|stable"):
+        scan(root, root_label="repository-root")
+    assert mutated
+
+
+def test_source_tree_hashes_file_content_incrementally_without_full_payload_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan, _, module = _source_tree_api()
+    root = tmp_path / "root"
+    source = root / "src"
+    source.mkdir(parents=True)
+    payload = b"abcdefghij"
+    (source / "large.py").write_bytes(payload)
+    expected_digest = sha256_hex(payload)
+    monkeypatch.setattr(module, "_READ_CHUNK_SIZE", 3)
+
+    observed_update_lengths: list[int] = []
+    if hasattr(module, "hashlib"):
+        real_sha256 = hashlib.sha256
+
+        class RecordingHash:
+            def __init__(self) -> None:
+                self._inner = real_sha256()
+
+            def update(self, chunk: bytes) -> None:
+                observed_update_lengths.append(len(chunk))
+                self._inner.update(chunk)
+
+            def hexdigest(self) -> str:
+                return self._inner.hexdigest()
+
+        monkeypatch.setattr(module.hashlib, "sha256", RecordingHash)
+    else:
+
+        def forbid_full_payload_digest(_payload: bytes) -> str:
+            raise AssertionError("scanner must stream file digest instead of hashing one joined payload")
+
+        monkeypatch.setattr(module, "sha256_hex", forbid_full_payload_digest)
+
+    body = scan(root, root_label="repository-root")
+
+    assert body["files"] == [
+        {
+            "relative_path": "src/large.py",
+            "byte_length": str(len(payload)),
+            "file_sha256": expected_digest,
+        }
+    ]
+    if observed_update_lengths:
+        assert observed_update_lengths == [3, 3, 3, 1]
 
 
 def test_source_tree_replacement_race_is_rejected(
