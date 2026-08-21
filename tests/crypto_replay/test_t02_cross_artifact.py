@@ -5,17 +5,20 @@ from __future__ import annotations
 import importlib
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from build_finance.crypto_replay.canonical import canonical_json_bytes, sha256_hex
+from build_finance.crypto_replay.canonical import canonical_json_bytes, parse_canonical_record, sha256_hex
 from tests.crypto_replay.test_t02_supporting_contracts import (
     T02Vector,
     _digest,
     _reseal,
     build_t02_vector,
 )
+
+RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "build_finance" / "crypto_replay" / "resources"
 
 
 def _run_inputs_symbol(name: str, capability: str) -> Any:
@@ -151,6 +154,99 @@ def test_run_receipt_requires_matching_closure_receipt() -> None:
         run_receipt=failed_run,
         bundle=replace(_make_bundle(vector), run_closure_receipt=failed),
     )
+
+
+def test_known_good_graph_resolves_every_t02_authority() -> None:
+    from build_finance.crypto_replay.content_ids import verify_content_id
+    from build_finance.crypto_replay.schema_definitions import CONTRACT_SPECS_BY_SCHEMA
+    from build_finance.crypto_replay.schema_registry import validate_contract
+    from tests.crypto_replay.support.known_good_graph import (
+        EXPECTED_PUBLIC_SEED_HEX,
+        EXPECTED_SCHEDULE,
+        build_known_good_graph,
+    )
+
+    lock = parse_canonical_record((RESOURCE_ROOT / "schema-lock.json").read_bytes())
+    schema_bundle = parse_canonical_record((RESOURCE_ROOT / "schema-bundle.json").read_bytes())
+    schema_rows = schema_bundle["schemas"]
+    formula_rows = schema_bundle["binary_formulas"]
+    assert isinstance(schema_rows, list)
+    assert isinstance(formula_rows, list)
+    primary_rows = [row for row in schema_rows if isinstance(row, dict) and row["family"] == "PRIMARY"]
+    supporting_rows = [row for row in schema_rows if isinstance(row, dict) and row["family"] == "SUPPORTING"]
+    attachment_rows = [row for row in schema_rows if isinstance(row, dict) and row["family"] == "ATTACHMENT"]
+    assert len(primary_rows) == lock["primary_contract_count"] == 8
+    assert len(supporting_rows) == lock["supporting_contract_count"] == 13
+    assert len(attachment_rows) == lock["json_attachment_schema_count"] == 27
+    assert len(formula_rows) == lock["binary_formula_count"] == 1
+    assert len(schema_rows) == lock["generated_json_schema_count"] == 48
+    assert len(schema_rows) + len(formula_rows) == lock["total_authority_contract_count"] == 49
+
+    graph = build_known_good_graph()
+    assert graph.schema_lock == lock
+    assert graph.authority_counts == {
+        "primary": 8,
+        "supporting": 13,
+        "attachment": 27,
+        "binary_formula": 1,
+        "generated_json_schema": 48,
+        "total_authority": 49,
+    }
+    assert graph.public_seed_hex == EXPECTED_PUBLIC_SEED_HEX
+    assert graph.run_input_bundle.availability_schedule["availability_groups"] == EXPECTED_SCHEDULE
+    assert graph.run_input_bundle.counter_capacity["source_admission_count"] == "2"
+    assert graph.run_input_bundle.counter_capacity["raw_event_count"] == "2"
+    assert graph.run_input_bundle.counter_capacity["availability_group_count"] == "2"
+    assert graph.run_input_bundle.counter_capacity["market_count"] == "1"
+    assert graph.run_input_bundle.counter_capacity["model_candidate_count"] == "0"
+    assert graph.run_input_bundle.counter_capacity["decision_sequence_next_upper_bound"] == "3"
+    assert graph.run_input_bundle.counter_capacity["producer_sequence_next_upper_bound"] == "0"
+    assert graph.run_input_bundle.counter_capacity["intent_sequence_next_upper_bound"] == "3"
+    assert graph.run_input_bundle.counter_capacity["fill_receipt_sequence_next_upper_bound"] == "3"
+    assert graph.run_input_bundle.counter_capacity["unmatched_reservation_count_upper_bound"] == "4"
+    assert graph.run_input_bundle.counter_capacity["state_sequence_next_upper_bound"] == "13"
+    assert graph.run_input_bundle.counter_capacity["ledger_sequence_next_upper_bound"] == "43"
+    assert graph.run_input_bundle.run_closure_receipt["model_signal_mode"] == "DISABLED"
+    assert graph.benchmark_authority == "CONTRACT_ONLY_INELIGIBLE"
+    assert graph.execution_quarantine_receipt_id not in graph.ledger_member_content_ids
+
+    for row in (*primary_rows, *supporting_rows, *attachment_rows):
+        assert isinstance(row, dict)
+        digest = row["schema_sha256"]
+        assert isinstance(digest, str)
+        payload = graph.resolver.resolve_bytes(digest)
+        assert payload is not None
+        assert sha256_hex(payload) == digest
+    for row in formula_rows:
+        assert isinstance(row, dict)
+        digest = row["formula_sha256"]
+        assert isinstance(digest, str)
+        payload = graph.resolver.resolve_bytes(digest)
+        assert payload is not None
+        assert sha256_hex(payload) == digest
+
+    assert len(graph.authority_content_ids) == 21
+    for content_id in graph.authority_content_ids:
+        resolved = graph.resolver.resolve_object(content_id)
+        assert resolved is not None
+        assert resolved.assurance == "SCHEMA_VALID"
+        assert verify_content_id(resolved.document)
+        schema_id = resolved.document["schema"]
+        assert isinstance(schema_id, str)
+        assert CONTRACT_SPECS_BY_SCHEMA[schema_id].family in {"PRIMARY", "SUPPORTING"}
+        assert not validate_contract(resolved.document, expected_schema=schema_id)
+
+    for resolved in graph.resolver.resolved_contents:
+        schema_id = resolved.document["schema"]
+        assert isinstance(schema_id, str)
+        if CONTRACT_SPECS_BY_SCHEMA[schema_id].family == "SUPPORTING":
+            assert resolved.assurance != "DIGEST_ONLY"
+
+    verified = _run_inputs_symbol(
+        "verify_contract_run_inputs",
+        "contract-only known-good graph resolver",
+    )(graph.run_receipt, graph.run_input_bundle)
+    assert verified.authority == "CONTRACT_ONLY"
 
 
 def test_public_seed_bytes_resolve_from_closed_run_inputs() -> None:

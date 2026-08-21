@@ -23,6 +23,7 @@ from build_finance.crypto_replay.content_ids import verify_content_id
 from build_finance.crypto_replay.formats import parse_bounded_decimal_string
 from build_finance.crypto_replay.schema_model import ValidationIssue
 from build_finance.crypto_replay.schema_registry import validate_contract
+from build_finance.crypto_replay.source_tree import SourceTreeError, reconstruct_source_tree
 
 _MAX_U64 = 18_446_744_073_709_551_615
 
@@ -1293,14 +1294,25 @@ def _cross_binding_issues(
         )
 
     try:
-        source_tree_digest = sha256_hex(canonical_json_bytes(bundle.source_tree))
-    except (TypeError, ValueError) as error:
+        source_tree = reconstruct_source_tree(bundle.source_tree)
+        source_tree_bytes = canonical_json_bytes(source_tree)
+        retained_source_tree_bytes = canonical_json_bytes(bundle.source_tree)
+    except (SourceTreeError, TypeError, ValueError) as error:
         issues.append(
             _validation_issue(
                 "run_input_source_tree", ("source_tree",), f"source-tree evidence is not canonical: {error}"
             )
         )
     else:
+        if retained_source_tree_bytes != source_tree_bytes:
+            issues.append(
+                _validation_issue(
+                    "run_input_source_tree",
+                    ("source_tree",),
+                    "retained source-tree bytes do not equal independent reconstruction",
+                )
+            )
+        source_tree_digest = sha256_hex(source_tree_bytes)
         if run_receipt["source_tree_sha256"] != source_tree_digest:
             issues.append(
                 _validation_issue(

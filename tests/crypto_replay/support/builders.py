@@ -80,6 +80,19 @@ class InMemoryResolver:
         """Validate and retain one implemented supporting contract record."""
         return self._retain_record(record, assurance="SCHEMA_VALID", expected_family="SUPPORTING")
 
+    def retain_self_addressed_authority_record(self, record: bytes) -> JsonObject:
+        """Validate and retain one implemented primary/supporting authority record."""
+        document = parse_canonical_record(bytes(record))
+        schema_id = document["schema"]
+        if not isinstance(schema_id, str):
+            raise ValueError("authority record requires a string schema tag")
+        family = CONTRACT_SPECS_BY_SCHEMA[schema_id].family
+        if family == "PRIMARY":
+            return self.retain_record(record)
+        if family == "SUPPORTING":
+            return self.retain_supporting_record(record)
+        raise ValueError(f"schema is not a self-addressed authority family: {schema_id!r}")
+
     @staticmethod
     def _resolved_content(retained: _RetainedRecord) -> ResolvedContent:
         return ResolvedContent(

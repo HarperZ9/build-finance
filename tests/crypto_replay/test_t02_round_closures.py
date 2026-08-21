@@ -898,7 +898,7 @@ def _block_real_file_reads(path: Path) -> Any:
 
 
 def test_source_tree_preimage_is_canonical(tmp_path: Path) -> None:
-    scan, _, _ = _source_tree_api()
+    scan, source_tree_error, module = _source_tree_api()
     _write_source_fixture(tmp_path)
     body = scan(tmp_path, root_label="repository-root")
     expected = build_t02_vector().attachments["trading.source-tree/v1"]
@@ -920,7 +920,8 @@ def test_source_tree_preimage_is_canonical(tmp_path: Path) -> None:
     reversed_rows["files"].reverse()
     invalid_bodies.append(reversed_rows)
     for mutation in invalid_bodies:
-        _assert_contract_invalid(mutation, "source-tree path/order closure")
+        with pytest.raises(source_tree_error):
+            module.reconstruct_source_tree(mutation)
 
     original_digest = sha256_hex(canonical_json_bytes(body))
     (tmp_path / "src" / "kernel.py").write_bytes(b"abd")
