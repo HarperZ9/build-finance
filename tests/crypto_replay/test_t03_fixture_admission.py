@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import hashlib
+import importlib.util
+import json
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,7 +24,6 @@ from tests.crypto_replay.support.synthetic_local_fixture import (
     SYNTHETIC_OBSERVED_AT,
     SYNTHETIC_PAYLOAD_BASE_SENTINEL,
     SYNTHETIC_PAYLOAD_SOURCE_SENTINEL,
-    SYNTHETIC_QUOTE_MINT,
     SYNTHETIC_SOURCE_ID,
     SYNTHETIC_TERMS_PREFIX,
     SYNTHETICEventSpec,
@@ -36,12 +43,60 @@ def _capture_and_admit(root: Path):
     return captured, admit_local_fixture(captured)
 
 
+def _capture_only(root: Path):
+    from build_finance.crypto_replay.local_fixture import capture_local_fixture
+
+    return capture_local_fixture(root)
+
+
 def _receipts(batch) -> tuple[dict[str, object], ...]:
     return tuple(parse_canonical_record(record) for record in batch.source_receipt_records)
 
 
 def _reason_codes(batch) -> tuple[str, ...]:
     return tuple(batch.reason_codes)
+
+
+def _skip_primitive_unavailable(primitive: str, error: OSError | subprocess.CalledProcessError) -> None:
+    pytest.skip(f"{primitive} unavailable; explicit platform/privilege skip evidence: {type(error).__name__}: {error}")
+
+
+def _make_symlink(link: Path, target: Path, *, target_is_directory: bool) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as error:
+        _skip_primitive_unavailable("symlink/reparse point creation", error)
+
+
+def _make_windows_junction(link: Path, target: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows junction/reparse primitive unavailable on this platform")
+    try:
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", os.fspath(link), os.fspath(target)],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as error:
+        _skip_primitive_unavailable("Windows junction creation", error)
+    if "Junction created" not in completed.stdout and not link.exists():
+        pytest.skip(f"Windows junction creation returned unexpected evidence: {completed.stdout!r} {completed.stderr!r}")
+
+
+def _assert_rejected_for_reparse_or_not_local(captured, batch) -> None:
+    assert captured.capture_issues
+    assert batch.status == "REJECTED"
+    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch) or "ADMISSION_MANIFEST_MISMATCH" in _reason_codes(batch)
+
+
+def _replace_file_bytes(path: Path, payload: bytes) -> None:
+    replacement = path.with_suffix(path.suffix + ".replacement")
+    replacement.write_bytes(payload)
+    try:
+        replacement.replace(path)
+    except PermissionError:
+        path.write_bytes(payload)
 
 
 def test_fixture_hash_mismatch_quarantines_set(tmp_path: Path) -> None:
@@ -205,30 +260,75 @@ def test_path_confinement_rejects_traversal_absolute_drive_and_backslash(tmp_pat
         assert "ADMISSION_MANIFEST_MISMATCH" in _reason_codes(batch)
 
 
-def test_symlink_root_and_payload_entries_are_rejected(tmp_path: Path) -> None:
+def test_symlink_payload_entry_is_rejected_when_platform_allows_symlinks(tmp_path: Path) -> None:
     fixture = write_SYNTHETIC_local_fixture(tmp_path / "entry")
+    outside_payload = tmp_path / "outside-payload.json"
+    outside_payload.write_bytes(fixture.payloads[0])
     fixture.payload_paths[0].unlink()
-    try:
-        fixture.payload_paths[0].symlink_to(tmp_path / "outside-payload.json")
-    except OSError as error:
-        pytest.skip(f"symlink creation unavailable in this environment: {error}")
-    (tmp_path / "outside-payload.json").write_bytes(fixture.payloads[0])
+    _make_symlink(fixture.payload_paths[0], outside_payload, target_is_directory=False)
 
     captured, batch = _capture_and_admit(fixture.root)
 
-    assert captured.capture_issues
-    assert batch.status == "REJECTED"
-    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch) or "ADMISSION_MANIFEST_MISMATCH" in _reason_codes(batch)
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
 
+
+def test_symlink_root_is_rejected_when_platform_allows_symlinks(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / "root-target")
     link_root = tmp_path / "root-link"
-    try:
-        link_root.symlink_to(fixture.root, target_is_directory=True)
-    except OSError as error:
-        pytest.skip(f"root symlink creation unavailable in this environment: {error}")
-    from build_finance.crypto_replay.local_fixture import capture_local_fixture
+    _make_symlink(link_root, fixture.root, target_is_directory=True)
 
-    linked_capture = capture_local_fixture(link_root)
-    assert linked_capture.capture_issues
+    captured, batch = _capture_and_admit(link_root)
+
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
+
+
+def test_windows_reparse_payload_entry_is_rejected_when_privilege_allows(tmp_path: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows reparse point primitive unavailable on this platform")
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / "reparse-entry")
+    outside_payload = tmp_path / "outside-reparse-payload.json"
+    outside_payload.write_bytes(fixture.payloads[0])
+    fixture.payload_paths[0].unlink()
+    _make_symlink(fixture.payload_paths[0], outside_payload, target_is_directory=False)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
+
+
+def test_windows_reparse_root_is_rejected_when_privilege_allows(tmp_path: Path) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows reparse point primitive unavailable on this platform")
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / "reparse-root-target")
+    reparse_root = tmp_path / "reparse-root-link"
+    _make_symlink(reparse_root, fixture.root, target_is_directory=True)
+
+    captured, batch = _capture_and_admit(reparse_root)
+
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
+
+
+def test_windows_junction_payload_entry_is_rejected_when_platform_allows_junctions(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / "junction-entry")
+    outside_dir = tmp_path / "outside-junction-payload-dir"
+    outside_dir.mkdir()
+    (outside_dir / "payload.json").write_bytes(fixture.payloads[0])
+    fixture.payload_paths[0].unlink()
+    _make_windows_junction(fixture.payload_paths[0], outside_dir)
+
+    captured, batch = _capture_and_admit(fixture.root)
+
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
+
+
+def test_windows_junction_root_is_rejected_when_platform_allows_junctions(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / "junction-root-target")
+    junction_root = tmp_path / "junction-root"
+    _make_windows_junction(junction_root, fixture.root)
+
+    captured, batch = _capture_and_admit(junction_root)
+
+    _assert_rejected_for_reparse_or_not_local(captured, batch)
 
 
 def test_missing_extra_and_non_regular_payloads_close_set(tmp_path: Path) -> None:
@@ -250,6 +350,71 @@ def test_missing_extra_and_non_regular_payloads_close_set(tmp_path: Path) -> Non
     _captured_non_regular, non_regular_batch = _capture_and_admit(non_regular.root)
     assert non_regular_batch.status == "QUARANTINED"
     assert "ADMISSION_SET_NOT_CLOSED" in _reason_codes(non_regular_batch)
+
+
+@pytest.mark.parametrize("stage", ("pre_open", "open", "post_open"))
+def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_checks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / stage)
+    from build_finance.crypto_replay import local_fixture
+
+    payload_path = fixture.payload_paths[0]
+    target = os.path.normcase(os.fspath(payload_path))
+    replacement_payload = fixture.payloads[0] + f"\nSYNTHETIC_{stage.upper()}_REPLACEMENT\n".encode("ascii")
+    replaced = False
+
+    def replace_once() -> None:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            _replace_file_bytes(payload_path, replacement_payload)
+
+    if stage == "pre_open":
+        original_lstat = local_fixture.os.lstat
+
+        def lstat_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
+            if os.path.normcase(os.fspath(path)) == target:
+                replace_once()
+            return original_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(local_fixture.os, "lstat", lstat_hook)
+    elif stage == "open":
+        original_open = local_fixture.os.open
+
+        def open_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
+            if os.path.normcase(os.fspath(path)) == target:
+                replace_once()
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(local_fixture.os, "open", open_hook)
+    else:
+        original_open = local_fixture.os.open
+        original_fstat = local_fixture.os.fstat
+        opened_payload_fds: set[int] = set()
+
+        def open_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
+            fd = original_open(path, *args, **kwargs)
+            if os.path.normcase(os.fspath(path)) == target:
+                opened_payload_fds.add(fd)
+            return fd
+
+        def fstat_hook(fd: int):
+            result = original_fstat(fd)
+            if fd in opened_payload_fds:
+                replace_once()
+            return result
+
+        monkeypatch.setattr(local_fixture.os, "open", open_hook)
+        monkeypatch.setattr(local_fixture.os, "fstat", fstat_hook)
+
+    captured = _capture_only(fixture.root)
+
+    assert replaced
+    assert captured.capture_issues
+    assert any(issue.code in {"ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"} for issue in captured.capture_issues)
 
 
 def test_stable_receipts_across_roots(tmp_path: Path) -> None:
@@ -275,20 +440,14 @@ def test_duplicate_version_idempotence_is_not_a_conflict(tmp_path: Path) -> None
     assert _reason_codes(batch) == ()
 
 
-def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> None:
-    fixture = write_SYNTHETIC_local_fixture(tmp_path)
-    from build_finance.crypto_replay.canonical import canonical_json_bytes
-    from build_finance.crypto_replay.jupiter_fixture import PARSER_VERSION, current_parser_identity
+def _module_origin(module: str) -> Path:
+    spec = importlib.util.find_spec(module)
+    assert spec is not None, f"{module} must be importable for parser identity closure"
+    assert spec.origin is not None, f"{module} must have a local origin"
+    return Path(spec.origin)
 
-    import ast
-    import hashlib
-    import importlib.util
 
-    roots = (
-        "build_finance.crypto_replay.local_fixture",
-        "build_finance.crypto_replay.jupiter_fixture",
-        "build_finance.crypto_replay.admission",
-    )
+def _crypto_replay_runtime_closure(roots: tuple[str, ...]) -> tuple[dict[str, str], ...]:
     seen: set[str] = set()
     pending = list(roots)
     rows: list[dict[str, str]] = []
@@ -297,10 +456,7 @@ def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> 
         if module in seen:
             continue
         seen.add(module)
-        spec = importlib.util.find_spec(module)
-        assert spec is not None
-        assert spec.origin is not None
-        path = Path(spec.origin)
+        path = _module_origin(module)
         payload = path.read_bytes()
         rows.append({"module": module, "sha256": hashlib.sha256(payload).hexdigest(), "byte_length": str(len(payload))})
         tree = ast.parse(payload, filename=str(path))
@@ -311,11 +467,42 @@ def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> 
                         pending.append(alias.name)
             elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("build_finance.crypto_replay"):
                 pending.append(node.module)
+    return tuple(sorted(rows, key=lambda row: row["module"].encode("utf-8")))
 
+
+def _local_resource_closure() -> tuple[dict[str, str], ...]:
+    resources_root = Path("build_finance") / "crypto_replay" / "resources"
+    rows: list[dict[str, str]] = []
+    for path in sorted(resources_root.rglob("*"), key=lambda item: item.as_posix().encode("utf-8")):
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        rows.append(
+            {
+                "relative_path": path.relative_to(resources_root).as_posix(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "byte_length": str(len(payload)),
+            }
+        )
+    assert rows, "parser identity resource closure must include local schema/formula resources"
+    return tuple(rows)
+
+
+def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    from build_finance.crypto_replay.jupiter_fixture import PARSER_VERSION, current_parser_identity
+
+    from build_finance.crypto_replay.canonical import canonical_json_bytes
+
+    roots = (
+        "build_finance.crypto_replay.local_fixture",
+        "build_finance.crypto_replay.jupiter_fixture",
+        "build_finance.crypto_replay.admission",
+    )
     expected_bundle = {
         "parser_version": PARSER_VERSION,
-        "runtime_modules": sorted(rows, key=lambda row: row["module"].encode("utf-8")),
-        "resources": [],
+        "runtime_modules": list(_crypto_replay_runtime_closure(roots)),
+        "resources": list(_local_resource_closure()),
     }
     expected_digest = hashlib.sha256(canonical_json_bytes(expected_bundle)).hexdigest()
     identity = current_parser_identity()
@@ -325,8 +512,54 @@ def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> 
     assert fixture.root.is_relative_to(tmp_path)
 
 
+def _artifact_files_to_scan() -> tuple[Path, ...]:
+    roots = (
+        Path("docs") / "crypto-replay",
+        Path("build_finance") / "crypto_replay" / "resources",
+    )
+    files: list[Path] = [Path("pyproject.toml")]
+    for root in roots:
+        if root.exists():
+            files.extend(path for path in root.rglob("*") if path.is_file())
+    return tuple(sorted(files, key=lambda path: path.as_posix().encode("utf-8")))
+
+
+def _assert_no_synthetic_or_p2_promotion_artifacts() -> None:
+    forbidden_payloads = (
+        b"SYNTHETIC_TEST_ONLY_INVALID",
+        b"SYNTHETIC_BASE_MINT_0OIl_INVALID",
+        "SYNTHETIC TEST FIXTURE — NOT MARKET DATA".encode(),
+    )
+    forbidden_path_parts = {
+        "payloads",
+        "terms",
+        "witnesses",
+        "candidates",
+        "source-candidates",
+        "source-receipts",
+        "admitted",
+    }
+    leaks: list[str] = []
+    for path in _artifact_files_to_scan():
+        normalized_parts = {part.lower() for part in path.parts}
+        if path.parts[:3] != ("docs", "crypto-replay", "evidence") and forbidden_path_parts.intersection(normalized_parts):
+            leaks.append(f"{path}:fixture-like artifact path")
+        payload = path.read_bytes()
+        for forbidden in forbidden_payloads:
+            if forbidden in payload:
+                leaks.append(f"{path}:synthetic sentinel bytes leaked")
+    assert leaks == []
+
+    promotion_path = Path("docs") / "crypto-replay" / "promotion-status.json"
+    if promotion_path.exists():
+        promotion = json.loads(promotion_path.read_text(encoding="utf-8"))
+        assert promotion.get("P2") == "FAIL_ZERO_ADMITTED_FIXTURE" or promotion.get("p2") == "FAIL_ZERO_ADMITTED_FIXTURE"
+        assert promotion.get("real_fixture_identity") is None
+
+
 def test_universe_declaration_does_not_write_or_promote_real_p2_artifacts(tmp_path: Path) -> None:
     fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    _assert_no_synthetic_or_p2_promotion_artifacts()
 
     _captured, batch = _capture_and_admit(fixture.root)
 
@@ -335,6 +568,7 @@ def test_universe_declaration_does_not_write_or_promote_real_p2_artifacts(tmp_pa
     assert not hasattr(batch, "promotion_status")
     assert not hasattr(batch, "real_fixture_identity")
     assert not (Path("docs") / "crypto-replay" / "T03-green.json").exists()
+    _assert_no_synthetic_or_p2_promotion_artifacts()
     for path in (*fixture.payload_paths, fixture.terms_path, *fixture.witness_paths):
         assert path.is_relative_to(tmp_path)
     assert SYNTHETIC_PAYLOAD_SOURCE_SENTINEL in fixture.payloads[0]

@@ -78,7 +78,7 @@ def write_SYNTHETIC_local_fixture(
     terms_payload = (
         f"{SYNTHETIC_TERMS_PREFIX}\n"
         "These bytes are synthetic contract evidence and are never observed market data.\n"
-    ).encode("utf-8")
+    ).encode()
     _write_bytes(terms_path, terms_payload)
     terms_sha256 = sha256_hex(terms_payload)
 
@@ -96,7 +96,7 @@ def write_SYNTHETIC_local_fixture(
     file_rows: list[JsonObject] = []
     allowed_markets: dict[tuple[str, str, str], JsonObject] = {}
 
-    for index, spec in enumerate(specs, start=1):
+    for spec in specs:
         payload = _payload_bytes(spec)
         payloads.append(payload)
         payload_path = root / spec.relative_path
