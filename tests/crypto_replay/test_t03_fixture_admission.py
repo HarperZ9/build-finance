@@ -16,7 +16,12 @@ from typing import Any
 
 import pytest
 
-from build_finance.crypto_replay.canonical import parse_canonical_record, sha256_hex
+from build_finance.crypto_replay.canonical import (
+    canonical_json_bytes,
+    canonical_record_bytes,
+    parse_canonical_record,
+    sha256_hex,
+)
 from tests.crypto_replay.support.synthetic_local_fixture import (
     SYNTHETIC_BASE_MINT,
     SYNTHETIC_EVENT_TIME,
@@ -99,6 +104,13 @@ def _replace_file_bytes(path: Path, payload: bytes) -> None:
         path.write_bytes(payload)
 
 
+def _rewrite_manifest_without_schema_registry(fixture, manifest: dict[str, object]) -> None:
+    body = dict(manifest)
+    body.pop("fixture_manifest_sha256", None)
+    body["fixture_manifest_sha256"] = sha256_hex(canonical_json_bytes(body))  # type: ignore[arg-type]
+    fixture.manifest_path.write_bytes(canonical_record_bytes(body))  # type: ignore[arg-type]
+
+
 def test_fixture_hash_mismatch_quarantines_set(tmp_path: Path) -> None:
     fixture = write_SYNTHETIC_local_fixture(tmp_path)
     fixture.payload_paths[0].write_bytes(fixture.payloads[0] + b"\nSYNTHETIC_DIGEST_MISMATCH\n")
@@ -145,6 +157,37 @@ def test_duplicate_base_mint_quarantines_set(tmp_path: Path) -> None:
     assert _reason_codes(batch) == ("ADMISSION_UNIVERSE_BIASED", "ADMISSION_SET_NOT_CLOSED")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("schema", "trading.fixture-manifest/v2"),
+        ("network", "solana-devnet"),
+        ("venue_profile", "solana-jupiter-live/v1"),
+        ("universe_policy", "PARTIAL_DECLARED_SOURCE_UNIVERSE"),
+        ("point_in_time_mode", "WALL_CLOCK_CAPTURE"),
+        ("selection_failures_retained", False),
+        ("no_route_observations_retained", False),
+        ("inactive_assets_retained", False),
+        ("gaps_retained", False),
+        ("allowed_markets", []),
+    ),
+)
+def test_fixture_manifest_universe_policy_and_retention_weakening_quarantines_set(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path / field)
+    manifest = dict(fixture.manifest)
+    manifest[field] = value  # type: ignore[assignment]
+    _rewrite_manifest_without_schema_registry(fixture, manifest)
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_UNIVERSE_BIASED", "ADMISSION_SET_NOT_CLOSED")
+
+
 def test_base_mint_cannot_equal_quote_mint(tmp_path: Path) -> None:
     spec = SYNTHETICEventSpec(quote_mint=SYNTHETIC_BASE_MINT, market_id=f"{SYNTHETIC_BASE_MINT}/{SYNTHETIC_BASE_MINT}:jupiter")
     fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
@@ -155,6 +198,35 @@ def test_base_mint_cannot_equal_quote_mint(tmp_path: Path) -> None:
     assert batch.status == "REJECTED"
     assert _reason_codes(batch) == ("ADMISSION_PROFILE_MISMATCH",)
     assert receipt["market_id"] == spec.market_id
+
+
+def test_malformed_but_resealed_jupiter_payload_is_rejected_not_silently_admitted(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    malformed_payload = json.dumps(
+        {**json.loads(fixture.payloads[0].decode("utf-8")), "source_position": "SYNTHETIC_NOT_AN_OBJECT"},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    fixture.payload_paths[0].write_bytes(malformed_payload)
+    malformed_sha256 = sha256_hex(malformed_payload)
+    manifest = dict(fixture.manifest)
+    files = list(manifest["files"])  # type: ignore[arg-type]
+    files[0] = {**files[0], "raw_payload_sha256": malformed_sha256, "byte_length": str(len(malformed_payload))}
+    manifest["files"] = files
+    reseal_SYNTHETIC_manifest(fixture, manifest)
+    witness = parse_canonical_record(fixture.witness_paths[0].read_bytes())
+    witness["raw_payload_sha256"] = malformed_sha256
+    witness["byte_length"] = str(len(malformed_payload))
+    rewrite_SYNTHETIC_witness(fixture, 0, witness)
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipt = _receipts(batch)[0]
+    assert batch.status == "REJECTED"
+    assert _reason_codes(batch) == ("ADMISSION_PROFILE_MISMATCH",)
+    assert batch.candidates == ()
+    assert receipt["raw_payload_sha256"] == malformed_sha256
+    assert receipt["source_id"] == SYNTHETIC_SOURCE_ID
 
 
 def test_partial_rights_evidence_is_preserved(tmp_path: Path) -> None:
@@ -417,6 +489,48 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
     assert any(issue.code in {"ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"} for issue in captured.capture_issues)
 
 
+def test_payload_identity_mismatch_does_not_return_replacement_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    from build_finance.crypto_replay import local_fixture
+
+    payload_path = fixture.payload_paths[0]
+    target = os.path.normcase(os.fspath(payload_path))
+    replacement_payload = fixture.payloads[0] + b"\nSYNTHETIC_IDENTITY_MISMATCH_REPLACEMENT\n"
+    replacement_path = tmp_path / "replacement-payload.json"
+    replacement_path.write_bytes(replacement_payload)
+    original_open = local_fixture.os.open
+    original_close = local_fixture.os.close
+    replacement_fd: int | None = None
+    closed_fds: list[int] = []
+
+    def open_hook(path: str | os.PathLike[str], flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal replacement_fd
+        if os.path.normcase(os.fspath(path)) == target:
+            replacement_fd = original_open(replacement_path, flags, *args, **kwargs)
+            return replacement_fd
+        return original_open(path, flags, *args, **kwargs)
+
+    def close_hook(fd: int) -> None:
+        closed_fds.append(fd)
+        original_close(fd)
+
+    monkeypatch.setattr(local_fixture.os, "open", open_hook)
+    monkeypatch.setattr(local_fixture.os, "close", close_hook)
+
+    captured = _capture_only(fixture.root)
+
+    assert replacement_fd is not None
+    assert replacement_fd in closed_fds
+    assert captured.files[0].payload is None
+    assert captured.files[0].sha256 is None
+    assert captured.files[0].byte_length is None
+    assert sha256_hex(replacement_payload) not in {file.sha256 for file in captured.files}
+    assert any(issue.code == "ADMISSION_MANIFEST_MISMATCH" for issue in captured.capture_issues)
+
+
 def test_stable_receipts_across_roots(tmp_path: Path) -> None:
     left = write_SYNTHETIC_local_fixture(tmp_path / "left")
     right = write_SYNTHETIC_local_fixture(tmp_path / "right")
@@ -491,8 +605,6 @@ def _local_resource_closure() -> tuple[dict[str, str], ...]:
 def test_parser_identity_matches_independent_runtime_closure(tmp_path: Path) -> None:
     fixture = write_SYNTHETIC_local_fixture(tmp_path)
     from build_finance.crypto_replay.jupiter_fixture import PARSER_VERSION, current_parser_identity
-
-    from build_finance.crypto_replay.canonical import canonical_json_bytes
 
     roots = (
         "build_finance.crypto_replay.local_fixture",
@@ -586,6 +698,18 @@ def test_rights_manifest_digest_mismatch_maps_manifest_mismatch(tmp_path: Path) 
     rights = dict(fixture.rights_manifest)
     rights["retention_posture"] = "LOCAL_RESEARCH_RETENTION_CHANGED"
     rewrite_SYNTHETIC_rights(fixture, rights)
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "REJECTED"
+    assert _reason_codes(batch) == ("ADMISSION_MANIFEST_MISMATCH",)
+
+
+def test_rights_manifest_digest_must_cover_complete_canonical_lf_record(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    manifest = dict(fixture.manifest)
+    manifest["rights_manifest_sha256"] = sha256_hex(fixture.rights_manifest_path.read_bytes()[:-1])
+    reseal_SYNTHETIC_manifest(fixture, manifest)
 
     _captured, batch = _capture_and_admit(fixture.root)
 

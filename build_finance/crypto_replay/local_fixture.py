@@ -183,13 +183,11 @@ def capture_local_fixture(root: Path) -> CapturedFixture:
     issues.extend(rights_result.issues)
     rights_manifest = _parse_canonical_rights(rights_result, issues)
     rights_manifest_sha256 = sha256_hex(rights_result.payload) if rights_result.payload is not None else None
-    rights_manifest_payload_sha256 = (
-        sha256_hex(rights_result.payload[:-1]) if rights_result.payload is not None and rights_result.payload.endswith(b"\n") else None
-    )
+    rights_manifest_payload_sha256 = rights_manifest_sha256
 
     if manifest is not None:
         _check_manifest_self_digest(manifest, issues)
-        _check_rights_digest(manifest, rights_manifest_sha256, rights_manifest_payload_sha256, issues)
+        _check_rights_digest(manifest, rights_manifest_sha256, issues)
 
     source_ids = _manifest_source_ids(manifest)
     terms = _capture_terms(root_path, root_identity, rights_manifest, source_ids, issues)
@@ -335,16 +333,15 @@ def _check_manifest_self_digest(manifest: Mapping[str, JsonValue], issues: list[
 def _check_rights_digest(
     manifest: Mapping[str, JsonValue],
     record_sha256: str | None,
-    payload_sha256: str | None,
     issues: list[ValidationIssue],
 ) -> None:
     expected = manifest.get("rights_manifest_sha256")
     if not isinstance(expected, str):
         issues.append(_issue("ADMISSION_MANIFEST_MISMATCH", ("manifest", "rights_manifest_sha256"), "missing rights digest"))
         return
-    if record_sha256 is None and payload_sha256 is None:
+    if record_sha256 is None:
         return
-    if expected not in {record_sha256, payload_sha256}:
+    if expected != record_sha256:
         issues.append(
             _issue(
                 "ADMISSION_MANIFEST_MISMATCH",
@@ -713,11 +710,13 @@ def _read_local_file(
         opened_metadata = os.fstat(fd)
         if not stat.S_ISREG(opened_metadata.st_mode):
             read_issues.append(_issue("ADMISSION_SET_NOT_CLOSED", issue_path, "opened entry is not a regular file"))
+            return _ReadResult(relative_path, None, None, None, tuple(read_issues))
         opened_identity = _identity(opened_metadata)
         if opened_identity != before_identity:
             read_issues.append(
                 _issue("ADMISSION_MANIFEST_MISMATCH", issue_path, "entry identity changed between lstat and open")
             )
+            return _ReadResult(relative_path, None, None, None, tuple(read_issues))
         while True:
             try:
                 chunk = os.read(fd, _READ_CHUNK_SIZE)
