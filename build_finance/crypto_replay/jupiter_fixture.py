@@ -13,6 +13,7 @@ from build_finance.crypto_replay.canonical import JsonValue, canonical_json_byte
 
 PARSER_VERSION = "solana-jupiter-fixture-parser/v1"
 _PACKAGE_PREFIX = "build_finance.crypto_replay"
+_MAX_U32 = 4_294_967_295
 _IDENTITY_ROOTS = (
     "build_finance.crypto_replay.local_fixture",
     "build_finance.crypto_replay.jupiter_fixture",
@@ -41,11 +42,19 @@ class ParsedJupiterFixture:
     base_decimals: int
     quote_decimals: int
     source_position_slot: str
+    source_position_transaction_index: int
+    source_position_instruction_index: int
+    source_position_event_index: int
     source_native_event_id: str
     source_subsequence: str
-    revision_id: str
-    parent_revision_id: str | None
+    revision_kind: str
+    supersedes_event_id: str | None
+    retracts_event_id: str | None
+    revision_availability_slot: str
+    revision_availability_admission_sequence: str
     event_time: str | None
+    source_position: Mapping[str, JsonValue]
+    revision: Mapping[str, JsonValue]
     has_route: bool
     has_liquidity: bool
     has_fees: bool
@@ -87,12 +96,20 @@ def parse_jupiter_fixture_payload(payload: bytes) -> ParsedJupiterFixture:
         quote_mint=_required_str(document, "quote_mint"),
         base_decimals=_required_int(document, "base_decimals"),
         quote_decimals=_required_int(document, "quote_decimals"),
-        source_position_slot=_required_str(source_position, "slot"),
+        source_position_slot=_required_u64_str(source_position, "slot"),
+        source_position_transaction_index=_required_u32(source_position, "transaction_index"),
+        source_position_instruction_index=_required_u32(source_position, "instruction_index"),
+        source_position_event_index=_required_u32(source_position, "event_index"),
         source_native_event_id=_required_str(source_position, "source_native_event_id"),
-        source_subsequence=_required_str(source_position, "source_subsequence"),
-        revision_id=_required_str(revision, "revision_id"),
-        parent_revision_id=_optional_str(revision, "parent_revision_id"),
+        source_subsequence=_required_u64_str(source_position, "source_subsequence"),
+        revision_kind=_required_str(revision, "kind"),
+        supersedes_event_id=_optional_str(revision, "supersedes_event_id"),
+        retracts_event_id=_optional_str(revision, "retracts_event_id"),
+        revision_availability_slot=_required_u64_str(revision, "availability_slot"),
+        revision_availability_admission_sequence=_required_u64_str(revision, "availability_admission_sequence"),
         event_time=_optional_str(document, "event_time"),
+        source_position=dict(source_position),
+        revision=dict(revision),
         has_route=route is not None,
         has_liquidity=liquidity is not None,
         has_fees=fees is not None,
@@ -129,7 +146,9 @@ def _runtime_module_closure(roots: tuple[str, ...]) -> tuple[dict[str, str], ...
 def _resource_closure() -> tuple[dict[str, str], ...]:
     resources_root = Path(__file__).resolve().parent / "resources"
     rows: list[dict[str, str]] = []
-    for path in sorted(resources_root.rglob("*"), key=lambda item: item.relative_to(resources_root).as_posix().encode("utf-8")):
+    for path in sorted(
+        resources_root.rglob("*"), key=lambda item: item.relative_to(resources_root).as_posix().encode("utf-8")
+    ):
         if not path.is_file():
             continue
         payload = path.read_bytes()
@@ -232,3 +251,23 @@ def _required_int(document: Mapping[str, JsonValue], field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise JupiterFixtureParseError(f"{field} must be an integer")
     return value
+
+
+def _required_u32(document: Mapping[str, JsonValue], field: str) -> int:
+    value = _required_int(document, field)
+    if value < 0 or value > _MAX_U32:
+        raise JupiterFixtureParseError(f"{field} must fit uint32")
+    return value
+
+
+def _required_u64_str(document: Mapping[str, JsonValue], field: str) -> str:
+    value = _required_str(document, field)
+    if not _is_canonical_u64_string(value):
+        raise JupiterFixtureParseError(f"{field} must be a canonical u64 string")
+    return value
+
+
+def _is_canonical_u64_string(value: str) -> bool:
+    if value == "0":
+        return True
+    return value.isascii() and value.isdecimal() and not value.startswith("0")

@@ -29,9 +29,18 @@ class SYNTHETICEventSpec:
     admission_sequence: str = "1"
     availability_slot: str = "1"
     relative_path: str = "payloads/quote-0001.json"
+    source_position_slot: str | None = None
+    transaction_index: int = 0
+    instruction_index: int = 0
+    event_index: int = 0
     source_native_event_id: str = "synthetic-event-0001"
     source_subsequence: str = "0"
     source_revision: str = "synthetic-revision-v1"
+    revision_kind: str = "ORIGINAL"
+    revision_availability_slot: str | None = None
+    revision_availability_admission_sequence: str | None = None
+    supersedes_event_id: str | None = None
+    retracts_event_id: str | None = None
     market_id: str = f"{SYNTHETIC_BASE_MINT}/{SYNTHETIC_QUOTE_MINT}:jupiter"
     base_mint: str = SYNTHETIC_BASE_MINT
     quote_mint: str = SYNTHETIC_QUOTE_MINT
@@ -76,8 +85,7 @@ def write_SYNTHETIC_local_fixture(
 
     terms_path = root / "terms" / "synthetic-terms.txt"
     terms_payload = (
-        f"{SYNTHETIC_TERMS_PREFIX}\n"
-        "These bytes are synthetic contract evidence and are never observed market data.\n"
+        f"{SYNTHETIC_TERMS_PREFIX}\nThese bytes are synthetic contract evidence and are never observed market data.\n"
     ).encode()
     _write_bytes(terms_path, terms_payload)
     terms_sha256 = sha256_hex(terms_payload)
@@ -240,6 +248,9 @@ def _witness_record(spec: SYNTHETICEventSpec, payload_sha256: str, byte_length: 
 
 
 def _payload_bytes(spec: SYNTHETICEventSpec) -> bytes:
+    source_position_slot = spec.source_position_slot or spec.availability_slot
+    revision_availability_slot = spec.revision_availability_slot or spec.availability_slot
+    revision_availability_admission_sequence = spec.revision_availability_admission_sequence or spec.admission_sequence
     payload: dict[str, Any] = {
         "source_id": SYNTHETIC_SOURCE_ID,
         "source_kind": "solana-jupiter-quote",
@@ -250,13 +261,19 @@ def _payload_bytes(spec: SYNTHETICEventSpec) -> bytes:
         "base_decimals": spec.base_decimals,
         "quote_decimals": spec.quote_decimals,
         "source_position": {
-            "slot": spec.availability_slot,
+            "slot": source_position_slot,
+            "transaction_index": spec.transaction_index,
+            "instruction_index": spec.instruction_index,
+            "event_index": spec.event_index,
             "source_native_event_id": spec.source_native_event_id,
             "source_subsequence": spec.source_subsequence,
         },
         "revision": {
-            "revision_id": spec.source_revision,
-            "parent_revision_id": None,
+            "kind": spec.revision_kind,
+            "supersedes_event_id": spec.supersedes_event_id,
+            "retracts_event_id": spec.retracts_event_id,
+            "availability_slot": revision_availability_slot,
+            "availability_admission_sequence": revision_availability_admission_sequence,
         },
         "event_time": spec.event_time,
         "route": {"route_capacity_base_atoms": spec.route_capacity_base_atoms},

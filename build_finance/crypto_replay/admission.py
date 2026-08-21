@@ -62,7 +62,25 @@ class AdmissionBatch:
     status: str
     reason_codes: tuple[str, ...]
     source_receipt_records: tuple[bytes, ...]
-    candidates: tuple[ParsedJupiterFixture, ...]
+    candidates: tuple[ParsedSourceCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSourceCandidate:
+    """Non-authoritative parsed source candidate retained only in memory."""
+
+    admission_sequence: str
+    relative_path: str
+    raw_payload_sha256: str
+    source_id: str | None
+    source_kind: str | None
+    source_revision: str | None
+    market_id: str | None
+    source_position: Mapping[str, JsonValue] | None
+    revision: Mapping[str, JsonValue] | None
+    event_time: str | None
+    observed_at: str
+    ingested_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +98,13 @@ class _UniverseEvidence:
     reason_codes: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateRow:
+    index: int
+    captured_file: CapturedFile
+    parsed: ParsedJupiterFixture
+
+
 def admit_local_fixture(captured: CapturedFixture) -> AdmissionBatch:
     """Admit or reject an explicitly captured fixture without external effects."""
     parser_identity = current_parser_identity()
@@ -88,22 +113,31 @@ def admit_local_fixture(captured: CapturedFixture) -> AdmissionBatch:
     universe = _universe_evidence(captured.manifest)
     batch_reasons: list[str] = []
     records: list[bytes] = []
-    admitted_candidates: list[ParsedJupiterFixture] = []
-    parsed_files = tuple(_parse_or_none(captured_file) for captured_file in captured.files)
-    position_conflict_indexes = _position_conflict_indexes(parsed_files)
+    candidate_rows: list[_CandidateRow] = []
+    captured_files = tuple(sorted(captured.files, key=_captured_file_sort_key))
+    parsed_files = tuple(_parse_or_none(captured_file) for captured_file in captured_files)
+    local_reasons_by_index: list[tuple[str, ...]] = []
 
-    for index, captured_file in enumerate(captured.files):
+    for index, captured_file in enumerate(captured_files):
         parsed = parsed_files[index]
         file_reasons = _file_reason_codes(captured_file)
         profile_reasons = () if file_reasons else _profile_reason_codes(captured_file, parsed, universe)
-        position_reasons = ("ADMISSION_POSITION_CONFLICT",) if index in position_conflict_indexes and not file_reasons else ()
+        revision_reasons = (
+            () if file_reasons or profile_reasons or parsed is None else _revision_reason_codes(captured_file, parsed)
+        )
+        local_reasons_by_index.append(_normalize((*file_reasons, *profile_reasons, *revision_reasons)))
+
+    conflict_reasons_by_index = _lineage_conflict_reasons(captured_files, parsed_files, tuple(local_reasons_by_index))
+
+    for index, captured_file in enumerate(captured_files):
+        parsed = parsed_files[index]
+        local_reasons = local_reasons_by_index[index]
         raw_reasons = (
             *fixture_reasons,
             *rights.reason_codes,
             *universe.reason_codes,
-            *file_reasons,
-            *profile_reasons,
-            *position_reasons,
+            *local_reasons,
+            *conflict_reasons_by_index.get(index, ()),
         )
         reason_codes = _normalize(_drop_path_set_closure_if_manifest_path_failed(captured, raw_reasons))
         record = _source_receipt_record(
@@ -117,7 +151,7 @@ def admit_local_fixture(captured: CapturedFixture) -> AdmissionBatch:
         records.append(record)
         batch_reasons.extend(reason_codes)
         if not reason_codes and parsed is not None:
-            admitted_candidates.append(parsed)
+            candidate_rows.append(_CandidateRow(index=index, captured_file=captured_file, parsed=parsed))
 
     if not records:
         batch_reasons.extend((*fixture_reasons, *rights.reason_codes, *universe.reason_codes))
@@ -126,7 +160,7 @@ def admit_local_fixture(captured: CapturedFixture) -> AdmissionBatch:
         status=derive_source_admission_status(reason_codes),
         reason_codes=reason_codes,
         source_receipt_records=tuple(records),
-        candidates=tuple(admitted_candidates) if not reason_codes else (),
+        candidates=_collapse_candidates(candidate_rows) if not reason_codes else (),
     )
 
 
@@ -149,7 +183,9 @@ def _source_receipt_record(
         "parser_code_sha256": parser_code_sha256,
         "source_id": _coalesce(parsed.source_id if parsed is not None else None, captured_file.source_id),
         "source_kind": _coalesce(parsed.source_kind if parsed is not None else None, captured_file.source_kind),
-        "source_revision": _coalesce(parsed.source_revision if parsed is not None else None, captured_file.source_revision),
+        "source_revision": _coalesce(
+            parsed.source_revision if parsed is not None else None, captured_file.source_revision
+        ),
         "market_id": _coalesce(parsed.market_id if parsed is not None else None, captured_file.market_id),
         "relative_path": captured_file.relative_path or None,
         "media_type": captured_file.media_type,
@@ -233,7 +269,13 @@ def _universe_evidence(manifest: Mapping[str, JsonValue] | None) -> _UniverseEvi
             quote_mint = _string_or_none(row.get("quote_mint"))
             base_decimals = _int_or_none(row.get("base_decimals"))
             quote_decimals = _int_or_none(row.get("quote_decimals"))
-            if market_id is None or base_mint is None or quote_mint is None or base_decimals is None or quote_decimals is None:
+            if (
+                market_id is None
+                or base_mint is None
+                or quote_mint is None
+                or base_decimals is None
+                or quote_decimals is None
+            ):
                 reasons.extend(("ADMISSION_UNIVERSE_BIASED", "ADMISSION_SET_NOT_CLOSED"))
                 continue
             if market_id in allowed_markets:
@@ -254,26 +296,171 @@ def _parse_or_none(captured_file: CapturedFile) -> ParsedJupiterFixture | None:
         return None
 
 
-def _position_conflict_indexes(parsed_files: tuple[ParsedJupiterFixture | None, ...]) -> frozenset[int]:
-    by_position: dict[tuple[str, str, str, str, str], list[tuple[int, ParsedJupiterFixture]]] = {}
-    for index, parsed in enumerate(parsed_files):
-        if parsed is None:
-            continue
-        key = (
-            parsed.source_id,
-            parsed.market_id,
-            parsed.source_position_slot,
-            parsed.source_native_event_id,
-            parsed.source_subsequence,
-        )
-        by_position.setdefault(key, []).append((index, parsed))
+def _revision_reason_codes(captured_file: CapturedFile, parsed: ParsedJupiterFixture) -> tuple[str, ...]:
+    reasons: list[str] = []
+    kind = parsed.revision_kind
+    supersedes = parsed.supersedes_event_id
+    retracts = parsed.retracts_event_id
 
-    conflicts: set[int] = set()
-    for rows in by_position.values():
-        unique_events = {parsed for _index, parsed in rows}
-        if len(unique_events) > 1:
-            conflicts.update(index for index, _parsed in rows)
-    return frozenset(conflicts)
+    if (
+        captured_file.availability_slot is not None
+        and parsed.revision_availability_slot != captured_file.availability_slot
+    ):
+        reasons.append("ADMISSION_REVISION_CAUSALITY")
+    if kind == "ORIGINAL":
+        if supersedes is not None or retracts is not None:
+            reasons.append("ADMISSION_REVISION_CAUSALITY")
+        if parsed.revision_availability_slot != parsed.source_position_slot:
+            reasons.append("ADMISSION_REVISION_CAUSALITY")
+    elif kind == "CORRECTION":
+        if not _is_content_id(supersedes) or retracts is not None:
+            reasons.append("ADMISSION_REVISION_CAUSALITY")
+    elif kind == "RETRACTION":
+        if not _is_content_id(retracts) or supersedes is not None:
+            reasons.append("ADMISSION_REVISION_CAUSALITY")
+    else:
+        reasons.append("ADMISSION_REVISION_CAUSALITY")
+    return _normalize(reasons)
+
+
+def _lineage_conflict_reasons(
+    captured_files: tuple[CapturedFile, ...],
+    parsed_files: tuple[ParsedJupiterFixture | None, ...],
+    local_reasons_by_index: tuple[tuple[str, ...], ...],
+) -> dict[int, tuple[str, ...]]:
+    rows = tuple(
+        _CandidateRow(index=index, captured_file=captured_file, parsed=parsed)
+        for index, (captured_file, parsed, local_reasons) in enumerate(
+            zip(captured_files, parsed_files, local_reasons_by_index, strict=True)
+        )
+        if parsed is not None and not local_reasons and captured_file.sha256 is not None
+    )
+    reasons_by_index: dict[int, list[str]] = {}
+    _mark_same_version_byte_conflicts(rows, reasons_by_index)
+    _mark_original_lineage_conflicts(rows, reasons_by_index)
+    _mark_revision_forks(rows, reasons_by_index)
+    return {index: _normalize(reasons) for index, reasons in reasons_by_index.items()}
+
+
+def _mark_same_version_byte_conflicts(
+    rows: tuple[_CandidateRow, ...],
+    reasons_by_index: dict[int, list[str]],
+) -> None:
+    by_version: dict[tuple[object, ...], list[_CandidateRow]] = {}
+    for row in rows:
+        by_version.setdefault(_version_key(row.parsed), []).append(row)
+    for version_rows in by_version.values():
+        raw_hashes = {row.captured_file.sha256 for row in version_rows}
+        if len(raw_hashes) > 1:
+            _append_reason(version_rows, reasons_by_index, "ADMISSION_POSITION_CONFLICT")
+
+
+def _mark_original_lineage_conflicts(
+    rows: tuple[_CandidateRow, ...],
+    reasons_by_index: dict[int, list[str]],
+) -> None:
+    by_lineage: dict[tuple[object, ...], list[_CandidateRow]] = {}
+    for row in rows:
+        if row.parsed.revision_kind == "ORIGINAL":
+            by_lineage.setdefault(_lineage_key(row.parsed), []).append(row)
+    for lineage_rows in by_lineage.values():
+        original_versions = {(_version_key(row.parsed), row.captured_file.sha256) for row in lineage_rows}
+        if len(original_versions) > 1:
+            _append_reason(lineage_rows, reasons_by_index, "ADMISSION_POSITION_CONFLICT")
+
+
+def _mark_revision_forks(
+    rows: tuple[_CandidateRow, ...],
+    reasons_by_index: dict[int, list[str]],
+) -> None:
+    by_target: dict[tuple[object, ...], list[_CandidateRow]] = {}
+    for row in rows:
+        target = _revision_target(row.parsed)
+        if target is None:
+            continue
+        by_target.setdefault((*_lineage_key(row.parsed), row.parsed.revision_kind, target), []).append(row)
+    for target_rows in by_target.values():
+        version_keys = {_version_key(row.parsed) for row in target_rows}
+        if len(version_keys) > 1:
+            _append_reason(target_rows, reasons_by_index, "ADMISSION_REVISION_FORK")
+
+
+def _append_reason(
+    rows: Iterable[_CandidateRow],
+    reasons_by_index: dict[int, list[str]],
+    reason_code: str,
+) -> None:
+    for row in rows:
+        reasons_by_index.setdefault(row.index, []).append(reason_code)
+
+
+def _collapse_candidates(rows: Iterable[_CandidateRow]) -> tuple[ParsedSourceCandidate, ...]:
+    selected: dict[tuple[object, ...], _CandidateRow] = {}
+    for row in rows:
+        key = (*_version_key(row.parsed), row.captured_file.sha256 or "")
+        previous = selected.get(key)
+        if previous is None or _captured_file_sort_key(row.captured_file) < _captured_file_sort_key(
+            previous.captured_file
+        ):
+            selected[key] = row
+    return tuple(
+        _source_candidate(row)
+        for row in sorted(selected.values(), key=lambda row: _captured_file_sort_key(row.captured_file))
+    )
+
+
+def _source_candidate(row: _CandidateRow) -> ParsedSourceCandidate:
+    captured_file = row.captured_file
+    parsed = row.parsed
+    if captured_file.sha256 is None or captured_file.observed_at is None or captured_file.ingested_at is None:
+        raise ValueError("admitted source candidate is missing total captured evidence")
+    return ParsedSourceCandidate(
+        admission_sequence=captured_file.admission_sequence,
+        relative_path=captured_file.relative_path,
+        raw_payload_sha256=captured_file.sha256,
+        source_id=parsed.source_id,
+        source_kind=parsed.source_kind,
+        source_revision=parsed.source_revision,
+        market_id=parsed.market_id,
+        source_position=parsed.source_position,
+        revision=parsed.revision,
+        event_time=parsed.event_time,
+        observed_at=captured_file.observed_at,
+        ingested_at=captured_file.ingested_at,
+    )
+
+
+def _lineage_key(parsed: ParsedJupiterFixture) -> tuple[object, ...]:
+    return (
+        parsed.source_id,
+        parsed.source_kind,
+        parsed.market_id,
+        parsed.source_position_slot,
+        parsed.source_position_transaction_index,
+        parsed.source_position_instruction_index,
+        parsed.source_position_event_index,
+        parsed.source_native_event_id,
+        parsed.source_subsequence,
+    )
+
+
+def _version_key(parsed: ParsedJupiterFixture) -> tuple[object, ...]:
+    return (
+        *_lineage_key(parsed),
+        parsed.revision_kind,
+        parsed.revision_availability_slot,
+        parsed.revision_availability_admission_sequence,
+        parsed.supersedes_event_id or "",
+        parsed.retracts_event_id or "",
+    )
+
+
+def _revision_target(parsed: ParsedJupiterFixture) -> str | None:
+    if parsed.revision_kind == "CORRECTION":
+        return parsed.supersedes_event_id
+    if parsed.revision_kind == "RETRACTION":
+        return parsed.retracts_event_id
+    return None
 
 
 def _profile_reason_codes(
@@ -328,7 +515,10 @@ def _drop_path_set_closure_if_manifest_path_failed(
     codes = tuple(reason_codes)
     if "ADMISSION_MANIFEST_MISMATCH" not in codes or "ADMISSION_SET_NOT_CLOSED" not in codes:
         return codes
-    if not any("unsafe fixture relative path" in issue.message or "fixture path escapes" in issue.message for issue in captured.capture_issues):
+    if not any(
+        "unsafe fixture relative path" in issue.message or "fixture path escapes" in issue.message
+        for issue in captured.capture_issues
+    ):
         return codes
     return tuple(code for code in codes if code != "ADMISSION_SET_NOT_CLOSED")
 
@@ -348,6 +538,20 @@ def _normalize(reason_codes: Iterable[str]) -> tuple[str, ...]:
 
 def _coalesce(primary: str | None, fallback: str | None) -> str | None:
     return primary if primary is not None else fallback
+
+
+def _captured_file_sort_key(captured_file: CapturedFile) -> tuple[int, bytes]:
+    return (_admission_sequence_value(captured_file.admission_sequence), captured_file.relative_path.encode("utf-8"))
+
+
+def _admission_sequence_value(value: str) -> int:
+    if value.isascii() and value.isdecimal():
+        return int(value)
+    return 0
+
+
+def _is_content_id(value: str | None) -> bool:
+    return value is not None and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _string_or_none(value: JsonValue | object) -> str | None:

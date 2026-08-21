@@ -86,7 +86,13 @@ def _make_windows_junction(link: Path, target: Path) -> None:
     except subprocess.CalledProcessError as error:
         _skip_primitive_unavailable("Windows junction creation", error)
     if "Junction created" not in completed.stdout and not link.exists():
-        pytest.skip(f"Windows junction creation returned unexpected evidence: {completed.stdout!r} {completed.stderr!r}")
+        pytest.skip(
+            f"Windows junction creation returned unexpected evidence: {completed.stdout!r} {completed.stderr!r}"
+        )
+
+
+_SYNTHETIC_TARGET_EVENT_ID = "1" * 64
+_SYNTHETIC_SECOND_TARGET_EVENT_ID = "2" * 64
 
 
 def _assert_rejected_for_reparse_or_not_local(captured, batch) -> None:
@@ -189,7 +195,9 @@ def test_fixture_manifest_universe_policy_and_retention_weakening_quarantines_se
 
 
 def test_base_mint_cannot_equal_quote_mint(tmp_path: Path) -> None:
-    spec = SYNTHETICEventSpec(quote_mint=SYNTHETIC_BASE_MINT, market_id=f"{SYNTHETIC_BASE_MINT}/{SYNTHETIC_BASE_MINT}:jupiter")
+    spec = SYNTHETICEventSpec(
+        quote_mint=SYNTHETIC_BASE_MINT, market_id=f"{SYNTHETIC_BASE_MINT}/{SYNTHETIC_BASE_MINT}:jupiter"
+    )
     fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
 
     _captured, batch = _capture_and_admit(fixture.root)
@@ -263,6 +271,39 @@ def test_conflicting_source_position_rejected(tmp_path: Path) -> None:
 
     assert batch.status == "QUARANTINED"
     assert _reason_codes(batch) == ("ADMISSION_POSITION_CONFLICT",)
+    assert batch.candidates == ()
+    assert {tuple(receipt["reason_codes"]) for receipt in _receipts(batch)} == {("ADMISSION_POSITION_CONFLICT",)}
+
+
+def test_same_version_different_raw_bytes_quarantines_participating_receipts(tmp_path: Path) -> None:
+    first = SYNTHETICEventSpec()
+    conflicting_duplicate = dataclasses.replace(
+        first,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        revision_availability_admission_sequence="1",
+        route_capacity_base_atoms="999999",
+    )
+    unrelated = dataclasses.replace(
+        first,
+        admission_sequence="3",
+        relative_path="payloads/quote-0003.json",
+        source_native_event_id="synthetic-event-unrelated",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(unrelated, conflicting_duplicate, first))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipts = {str(receipt["relative_path"]): receipt for receipt in _receipts(batch)}
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_POSITION_CONFLICT",)
+    assert batch.candidates == ()
+    assert receipts["payloads/quote-0001.json"]["status"] == "QUARANTINED"
+    assert receipts["payloads/quote-0001.json"]["reason_codes"] == ["ADMISSION_POSITION_CONFLICT"]
+    assert receipts["payloads/quote-0002.json"]["status"] == "QUARANTINED"
+    assert receipts["payloads/quote-0002.json"]["reason_codes"] == ["ADMISSION_POSITION_CONFLICT"]
+    assert receipts["payloads/quote-0003.json"]["status"] == "ADMITTED"
+    assert receipts["payloads/quote-0003.json"]["reason_codes"] == []
 
 
 def test_same_slot_different_market_is_not_conflict(tmp_path: Path) -> None:
@@ -283,6 +324,145 @@ def test_same_slot_different_market_is_not_conflict(tmp_path: Path) -> None:
     assert batch.status == "ADMITTED"
     assert _reason_codes(batch) == ()
     assert len(batch.candidates) == 2
+
+
+def test_same_slot_same_market_different_native_id_is_not_conflict(tmp_path: Path) -> None:
+    first = SYNTHETICEventSpec()
+    second = dataclasses.replace(
+        first,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        source_native_event_id="synthetic-event-0002",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second, first))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("transaction_index", 1),
+        ("instruction_index", 1),
+        ("event_index", 1),
+    ),
+)
+def test_distinct_source_position_indices_are_not_conflicts(tmp_path: Path, field: str, value: int) -> None:
+    first = SYNTHETICEventSpec()
+    second = dataclasses.replace(
+        first,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        **{field: value},
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second, first))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 2
+
+
+def test_correction_revision_for_same_lineage_is_not_position_conflict(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    correction = dataclasses.replace(
+        original,
+        admission_sequence="2",
+        availability_slot="2",
+        relative_path="payloads/quote-0002.json",
+        source_position_slot="1",
+        source_revision="synthetic-revision-v2",
+        revision_kind="CORRECTION",
+        supersedes_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        revision_availability_slot="2",
+        revision_availability_admission_sequence="2",
+        route_capacity_base_atoms="999999",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(correction, original))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    assert batch.status == "ADMITTED"
+    assert _reason_codes(batch) == ()
+    assert len(batch.candidates) == 2
+
+
+@pytest.mark.parametrize(
+    "spec",
+    (
+        dataclasses.replace(
+            SYNTHETICEventSpec(), revision_kind="ORIGINAL", supersedes_event_id=_SYNTHETIC_TARGET_EVENT_ID
+        ),
+        dataclasses.replace(SYNTHETICEventSpec(), revision_kind="CORRECTION"),
+        dataclasses.replace(
+            SYNTHETICEventSpec(),
+            revision_kind="RETRACTION",
+            supersedes_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+            retracts_event_id=_SYNTHETIC_SECOND_TARGET_EVENT_ID,
+        ),
+        dataclasses.replace(SYNTHETICEventSpec(), revision_kind="ORIGINAL", revision_availability_slot="2"),
+    ),
+)
+def test_revision_tuple_mismatch_is_revision_causality(tmp_path: Path, spec: SYNTHETICEventSpec) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec,))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipt = _receipts(batch)[0]
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_REVISION_CAUSALITY",)
+    assert batch.candidates == ()
+    assert receipt["status"] == "QUARANTINED"
+    assert receipt["reason_codes"] == ["ADMISSION_REVISION_CAUSALITY"]
+
+
+def test_multiple_revisions_of_same_target_are_revision_fork(tmp_path: Path) -> None:
+    original = SYNTHETICEventSpec()
+    first_correction = dataclasses.replace(
+        original,
+        admission_sequence="2",
+        availability_slot="2",
+        relative_path="payloads/quote-0002.json",
+        source_position_slot="1",
+        source_revision="synthetic-revision-v2",
+        revision_kind="CORRECTION",
+        supersedes_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        revision_availability_slot="2",
+        revision_availability_admission_sequence="2",
+        route_capacity_base_atoms="999999",
+    )
+    second_correction = dataclasses.replace(
+        original,
+        admission_sequence="3",
+        availability_slot="3",
+        relative_path="payloads/quote-0003.json",
+        source_position_slot="1",
+        source_revision="synthetic-revision-v3",
+        revision_kind="CORRECTION",
+        supersedes_event_id=_SYNTHETIC_TARGET_EVENT_ID,
+        revision_availability_slot="3",
+        revision_availability_admission_sequence="3",
+        liquidity_quote_atoms="3333333",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(second_correction, original, first_correction))
+
+    _captured, batch = _capture_and_admit(fixture.root)
+
+    receipts = {str(receipt["relative_path"]): receipt for receipt in _receipts(batch)}
+    assert batch.status == "QUARANTINED"
+    assert _reason_codes(batch) == ("ADMISSION_REVISION_FORK",)
+    assert batch.candidates == ()
+    assert receipts["payloads/quote-0001.json"]["status"] == "ADMITTED"
+    assert receipts["payloads/quote-0001.json"]["reason_codes"] == []
+    assert receipts["payloads/quote-0002.json"]["status"] == "QUARANTINED"
+    assert receipts["payloads/quote-0002.json"]["reason_codes"] == ["ADMISSION_REVISION_FORK"]
+    assert receipts["payloads/quote-0003.json"]["status"] == "QUARANTINED"
+    assert receipts["payloads/quote-0003.json"]["reason_codes"] == ["ADMISSION_REVISION_FORK"]
 
 
 def test_terms_digest_mismatch_preserves_actual_terms_digest(tmp_path: Path) -> None:
@@ -486,7 +666,9 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
 
     assert replaced
     assert captured.capture_issues
-    assert any(issue.code in {"ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"} for issue in captured.capture_issues)
+    assert any(
+        issue.code in {"ADMISSION_HASH_MISMATCH", "ADMISSION_MANIFEST_MISMATCH"} for issue in captured.capture_issues
+    )
 
 
 def test_payload_identity_mismatch_does_not_return_replacement_bytes(
@@ -545,13 +727,42 @@ def test_stable_receipts_across_roots(tmp_path: Path) -> None:
 
 def test_duplicate_version_idempotence_is_not_a_conflict(tmp_path: Path) -> None:
     spec = SYNTHETICEventSpec()
-    duplicate = dataclasses.replace(spec, admission_sequence="2", relative_path="payloads/quote-0002.json")
-    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(spec, duplicate))
+    duplicate = dataclasses.replace(
+        spec,
+        admission_sequence="2",
+        relative_path="payloads/quote-0002.json",
+        revision_availability_admission_sequence="1",
+    )
+    fixture = write_SYNTHETIC_local_fixture(tmp_path, event_specs=(duplicate, spec))
 
     _captured, batch = _capture_and_admit(fixture.root)
 
     assert batch.status == "ADMITTED"
     assert _reason_codes(batch) == ()
+    assert len(_receipts(batch)) == 2
+    assert len(batch.candidates) == 1
+    assert batch.candidates[0].admission_sequence == "1"
+    assert batch.candidates[0].relative_path == "payloads/quote-0001.json"
+    assert batch.candidates[0].raw_payload_sha256 == sha256_hex(fixture.payloads[0])
+
+
+def test_identical_candidate_collapse_uses_utf8_path_tiebreaker(tmp_path: Path) -> None:
+    fixture = write_SYNTHETIC_local_fixture(tmp_path)
+    captured = _capture_only(fixture.root)
+    from build_finance.crypto_replay.admission import admit_local_fixture
+
+    later_path = dataclasses.replace(captured.files[0], relative_path="payloads/z.json")
+    earlier_path = dataclasses.replace(captured.files[0], relative_path="payloads/a.json")
+    reordered = dataclasses.replace(captured, files=(later_path, earlier_path))
+
+    batch = admit_local_fixture(reordered)
+    receipts = _receipts(batch)
+
+    assert batch.status == "ADMITTED"
+    assert [receipt["relative_path"] for receipt in receipts] == ["payloads/a.json", "payloads/z.json"]
+    assert len(batch.candidates) == 1
+    assert batch.candidates[0].admission_sequence == captured.files[0].admission_sequence
+    assert batch.candidates[0].relative_path == "payloads/a.json"
 
 
 def _module_origin(module: str) -> Path:
@@ -579,7 +790,11 @@ def _crypto_replay_runtime_closure(roots: tuple[str, ...]) -> tuple[dict[str, st
                 for alias in node.names:
                     if alias.name.startswith("build_finance.crypto_replay."):
                         pending.append(alias.name)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("build_finance.crypto_replay"):
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.startswith("build_finance.crypto_replay")
+            ):
                 pending.append(node.module)
     return tuple(sorted(rows, key=lambda row: row["module"].encode("utf-8")))
 
@@ -654,7 +869,9 @@ def _assert_no_synthetic_or_p2_promotion_artifacts() -> None:
     leaks: list[str] = []
     for path in _artifact_files_to_scan():
         normalized_parts = {part.lower() for part in path.parts}
-        if path.parts[:3] != ("docs", "crypto-replay", "evidence") and forbidden_path_parts.intersection(normalized_parts):
+        if path.parts[:3] != ("docs", "crypto-replay", "evidence") and forbidden_path_parts.intersection(
+            normalized_parts
+        ):
             leaks.append(f"{path}:fixture-like artifact path")
         payload = path.read_bytes()
         for forbidden in forbidden_payloads:
@@ -665,7 +882,9 @@ def _assert_no_synthetic_or_p2_promotion_artifacts() -> None:
     promotion_path = Path("docs") / "crypto-replay" / "promotion-status.json"
     if promotion_path.exists():
         promotion = json.loads(promotion_path.read_text(encoding="utf-8"))
-        assert promotion.get("P2") == "FAIL_ZERO_ADMITTED_FIXTURE" or promotion.get("p2") == "FAIL_ZERO_ADMITTED_FIXTURE"
+        assert (
+            promotion.get("P2") == "FAIL_ZERO_ADMITTED_FIXTURE" or promotion.get("p2") == "FAIL_ZERO_ADMITTED_FIXTURE"
+        )
         assert promotion.get("real_fixture_identity") is None
 
 
