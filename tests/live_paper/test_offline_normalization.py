@@ -24,6 +24,7 @@ from tests.live_paper.support.g2_vectors import (
     parse_live_record,
     reseal_replay_document,
     tamper_run_receipt_record,
+    wrong_normalization_profile_record,
 )
 
 
@@ -191,9 +192,7 @@ def test_root_and_resolved_evidence_fail_closed(case: str) -> None:
         attachment = resolver.resolve_bytes(vector.availability_schedule_sha256)
         resolver = resolver.with_resolved_bytes(vector.availability_schedule_sha256, attachment + b"\n")
     else:
-        profile = parse_canonical_record(vector.fixture_manifest_record)
-        profile["network"] = "synthetic-wrong-network"
-        wrong_profile = canonical_record_bytes(reseal_replay_document(profile))
+        wrong_profile = wrong_normalization_profile_record(vector)
         normalize = _symbol("normalization", "normalize_admitted_candidate")
         with pytest.raises(ValueError):
             normalize(

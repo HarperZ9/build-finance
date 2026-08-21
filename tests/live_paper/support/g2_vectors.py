@@ -290,6 +290,14 @@ def tamper_run_receipt_record(vector: G2Vector, field: str, value: object) -> by
     return replay_canonical_record_bytes(run)
 
 
+def wrong_normalization_profile_record(vector: G2Vector) -> bytes:
+    """Return a schema-valid fixture profile that does not match the rooted fixture."""
+
+    profile = parse_replay_record(vector.fixture_manifest_record)
+    profile["initial_quote_atoms"] = str(int(str(profile["initial_quote_atoms"])) + 1)
+    return replay_canonical_record_bytes(reseal_replay_document(profile))
+
+
 def dropped_source_receipt_records(vector: G2Vector) -> tuple[bytes, ...]:
     """Return a candidate/source set with one admitted receipt missing."""
 
@@ -318,6 +326,9 @@ def assert_g2_vector_self_checks(vector: G2Vector) -> None:
     from build_finance.crypto_replay.run_inputs import verify_contract_run_inputs
 
     assert verify_contract_run_inputs(vector.run_receipt, vector.run_input_bundle).authority == "CONTRACT_ONLY"
+    wrong_profile = parse_replay_record(wrong_normalization_profile_record(vector))
+    require_valid_replay_contract(wrong_profile, expected_schema="trading.fixture-manifest/v1")
+    assert wrong_profile["fixture_manifest_sha256"] != vector.run_receipt["fixture_manifest_sha256"]
     assert len(vector.normalization_cases) == len(vector.admitted_candidates) == len(vector.source_receipt_records) == 2
     for content_id in vector.required_record_content_ids:
         record = vector.resolver.resolve_record(content_id)
