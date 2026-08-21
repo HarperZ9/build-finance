@@ -36,7 +36,7 @@ from tests.crypto_replay.test_t02_supporting_contracts import (
 )
 
 RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "build_finance" / "crypto_replay" / "resources"
-EXPECTED_SCHEMA_BUNDLE_SHA256 = "3ce41cda0e6f561ab5011baf9d5a9e330fbb44d6e2165809ac770671fd94c552"
+EXPECTED_SCHEMA_BUNDLE_SHA256 = "2ae775112ca71cf95c233468529289af3ea04c284dda3da8d4452e9156cec1b9"
 
 
 def _future_symbol(module_name: str, symbol_name: str, capability: str) -> Any:
@@ -72,6 +72,12 @@ def _assert_contract_invalid(document: dict[str, Any], capability: str) -> None:
 
     issues = validate_contract(document, expected_schema=str(document["schema"]))
     assert issues, f"T02 RED - {capability} mutation unexpectedly valid"
+
+
+def _contract_issue_codes(document: dict[str, Any]) -> set[str]:
+    from build_finance.crypto_replay.schema_registry import validate_contract
+
+    return {issue.code for issue in validate_contract(document, expected_schema=str(document["schema"]))}
 
 
 def _quarantine(
@@ -1294,6 +1300,109 @@ def test_benchmark_hardware_profile_is_closed() -> None:
         _assert_contract_invalid(mutation, "closed hardware profile")
 
 
+def test_t02_review_attachment_numeric_aliases_reject_out_of_range_decimal_strings() -> None:
+    benchmark_manifest = {
+        "schema": "trading.benchmark-manifest/v1",
+        "benchmark_manifest_version": "OFFLINE_REPLAY_CORE_V1",
+        "requested_metric_set": "OFFLINE_REPLAY_CORE_V1",
+        "case_count": "1",
+        "repetition_count": "1",
+        "cases": [
+            {
+                "case_id": "synthetic-case",
+                "fixture_manifest_sha256": _digest("fixture"),
+                "config_admission_receipt_id": _digest("config"),
+                "run_closure_receipt_id": _digest("closure"),
+                "warmup_event_count": "0",
+                "measured_event_count": "1",
+                "warmup_group_count": "0",
+                "measured_group_count": "1",
+            }
+        ],
+    }
+    hardware_profile = {
+        "schema": "trading.hardware-profile/v1",
+        "os_name": "synthetic-os",
+        "os_version": "synthetic-os-version",
+        "architecture": "synthetic-architecture",
+        "cpu_vendor": "synthetic-vendor",
+        "cpu_model": "synthetic-model",
+        "runtime_isolation": "offline-test-process",
+        "logical_cpu_count": "8",
+        "physical_memory_bytes": "17179869184",
+        "timer_resolution_ns": "100",
+        "virtualization": "UNKNOWN_DECLARED",
+        "power_profile": "UNKNOWN_DECLARED",
+        "timer_source": "PERF_COUNTER",
+    }
+    for document in (benchmark_manifest, hardware_profile):
+        _assert_contract_valid(document, "review numeric alias baseline")
+
+    manifest_overflow = deepcopy(benchmark_manifest)
+    manifest_overflow["case_count"] = str(MAX_U64 + 1)
+    profile_overflow = deepcopy(hardware_profile)
+    profile_overflow["logical_cpu_count"] = str(MAX_U64 + 1)
+    for mutation in (manifest_overflow, profile_overflow):
+        _assert_contract_invalid(mutation, "review attachment numeric alias bounds")
+
+
+def test_t02_review_attachment_count_fields_bind_to_array_lengths() -> None:
+    benchmark_manifest = {
+        "schema": "trading.benchmark-manifest/v1",
+        "benchmark_manifest_version": "OFFLINE_REPLAY_CORE_V1",
+        "requested_metric_set": "OFFLINE_REPLAY_CORE_V1",
+        "case_count": "1",
+        "repetition_count": "1",
+        "cases": [
+            {
+                "case_id": "synthetic-case",
+                "fixture_manifest_sha256": _digest("fixture"),
+                "config_admission_receipt_id": _digest("config"),
+                "run_closure_receipt_id": _digest("closure"),
+                "warmup_event_count": "0",
+                "measured_event_count": "1",
+                "warmup_group_count": "0",
+                "measured_group_count": "1",
+            }
+        ],
+    }
+    benchmark_metrics = {
+        "schema": "trading.benchmark-metrics/v1",
+        "benchmark_manifest_sha256": _digest("manifest"),
+        "hardware_profile_sha256": _digest("hardware"),
+        "measurement_count": "1",
+        "metrics": [
+            {
+                "case_id": "synthetic-case",
+                "phase": "end_to_end",
+                "unit": "EQUAL_TIME_GROUP",
+                "sample_count": "1",
+                "p50_ns": "1",
+                "p95_ns": "1",
+                "p99_ns": "1",
+                "max_ns": "1",
+            }
+        ],
+    }
+    normalized_event_set = {
+        "schema": "trading.normalized-event-set/v1",
+        "fixture_manifest_sha256": _digest("fixture"),
+        "raw_event_count": "1",
+        "event_ids": [_digest("event")],
+    }
+    for document in (benchmark_manifest, benchmark_metrics, normalized_event_set):
+        _assert_contract_valid(document, "review count/array baseline")
+
+    manifest_wrong_count = deepcopy(benchmark_manifest)
+    manifest_wrong_count["case_count"] = "999"
+    metrics_wrong_count = deepcopy(benchmark_metrics)
+    metrics_wrong_count["measurement_count"] = "999"
+    normalized_wrong_count = deepcopy(normalized_event_set)
+    normalized_wrong_count["raw_event_count"] = "999"
+    for mutation in (manifest_wrong_count, metrics_wrong_count, normalized_wrong_count):
+        _assert_contract_invalid(mutation, "review count field must match array length")
+
+
 def test_supporting_contract_count_is_thirteen() -> None:
     from build_finance.crypto_replay.schema_definitions import (
         SUPPORTING_CONTRACT_SPECS,
@@ -2338,6 +2447,16 @@ def test_t02_force_close_sell_alias_attachment_schema_is_closed() -> None:
         _assert_contract_invalid(mutation, "force-close state aliases")
 
 
+def test_t02_review_force_close_unsigned_aliases_reject_u64_overflow() -> None:
+    envelope = _state_envelope()
+    boundary = deepcopy(envelope)
+    boundary["post_quote_total_atoms_max"] = str(MAX_U64)
+    _assert_contract_valid(boundary, "force-close unsigned alias u64 boundary")
+    overflow = deepcopy(envelope)
+    overflow["post_quote_total_atoms_max"] = str(MAX_U64 + 1)
+    _assert_contract_invalid(overflow, "force-close unsigned alias u64 overflow")
+
+
 def test_t02_force_close_fill_extreme_attachment_schema_is_closed() -> None:
     candidate = _candidate_semantic()
     favorable = _proof_row(adverse_fill_bps=0)
@@ -2414,6 +2533,50 @@ def test_t02_force_proof_row_attachment_schema_and_sort_order_are_closed() -> No
     wrong_count["proof_row_count"] = str(len(rows) - 1)
     for mutation in (wrong_order, duplicate, wrong_count):
         _assert_contract_invalid(mutation, "force-proof row set closure")
+
+
+def test_t02_review_force_proof_rejects_duplicate_semantic_row_keys() -> None:
+    rows = [
+        _proof_row(reference_price_q18="1000000000000000000", residual_base_atoms="1", adverse_fill_bps=0),
+        {
+            **_proof_row(reference_price_q18="1000000000000000000", residual_base_atoms="1", adverse_fill_bps=0),
+            "gross_quote_atoms": "2",
+        },
+    ]
+    proof_set = {
+        "schema": "trading.run-closure-full-fill-proof-set/v1",
+        "market_id": MARKET_ID,
+        "earliest_trigger_equal_time_group": "3",
+        "fill_candidate_semantic_sha256": _digest("candidate-semantic"),
+        "q_cap_base_atoms": "2",
+        "reference_set_root_sha256": _digest("reference-set"),
+        "adverse_fill_extremes_bps": [0, 5000],
+        "proof_domain": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1",
+        "proof_row_count": str(len(rows)),
+        "rows": rows,
+    }
+    assert "semantic_proof_row_duplicate" in _contract_issue_codes(proof_set)
+
+
+def test_t02_review_force_proof_set_declares_and_enforces_protocol_cap() -> None:
+    from build_finance.crypto_replay.schema_registry import get_schema_document
+
+    proof_schema = get_schema_document("trading.run-closure-full-fill-proof-set/v1")
+    assert proof_schema["properties"]["rows"]["maxItems"] == MAX_PROOF_ROWS
+
+    proof_set = {
+        "schema": "trading.run-closure-full-fill-proof-set/v1",
+        "market_id": MARKET_ID,
+        "earliest_trigger_equal_time_group": "3",
+        "fill_candidate_semantic_sha256": _digest("candidate-semantic"),
+        "q_cap_base_atoms": "2",
+        "reference_set_root_sha256": _digest("reference-set"),
+        "adverse_fill_extremes_bps": [0, 5000],
+        "proof_domain": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1",
+        "proof_row_count": str(MAX_PROOF_ROWS + 1),
+        "rows": [_proof_row()],
+    }
+    assert "semantic_proof_row_cap" in _contract_issue_codes(proof_set)
 
 
 def test_t02_force_proof_budget_fields_accept_boundary_shaped_vectors() -> None:

@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from build_finance.crypto_replay.canonical import JsonValue, canonical_json_bytes, sha256_hex
 from build_finance.crypto_replay.formats import parse_bounded_decimal_string
+from build_finance.crypto_replay.schema_definitions import ATTACHMENT_SCHEMA_DOCUMENTS
 from build_finance.crypto_replay.schema_model import ValidationIssue
 
 _MAX_U64 = 18_446_744_073_709_551_615
@@ -3834,6 +3835,200 @@ SUPPORTING_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
 }
 
 
+_POSITIVE_U64_DECIMAL_PATTERN = "^[1-9][0-9]*$"
+_ATTACHMENT_COUNT_BINDINGS = {
+    "trading.benchmark-manifest/v1": (("case_count", "cases"),),
+    "trading.benchmark-metrics/v1": (("measurement_count", "metrics"),),
+    "trading.normalized-event-set/v1": (("raw_event_count", "event_ids"),),
+}
+
+
+def _json_type_matches(value: object, expected: str) -> bool:
+    if expected == "null":
+        return value is None
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "object":
+        return isinstance(value, Mapping)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "integer":
+        return not isinstance(value, bool) and isinstance(value, int)
+    if expected == "number":
+        return not isinstance(value, bool) and isinstance(value, (int, float))
+    if expected == "string":
+        return isinstance(value, str)
+    return False
+
+
+def _resolve_attachment_schema_reference(
+    reference: str,
+    root: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]] | None:
+    if reference.startswith("#/$defs/"):
+        target: object = root
+        for part in reference[2:].split("/"):
+            if not isinstance(target, Mapping) or part not in target:
+                return None
+            target = target[part]
+        if isinstance(target, Mapping):
+            return target, root
+        return None
+    for document in ATTACHMENT_SCHEMA_DOCUMENTS.values():
+        if document.get("$id") == reference:
+            return document, document
+    return None
+
+
+def _schema_declared_type_matches(schema: Mapping[str, Any], value: object, root: Mapping[str, Any]) -> bool:
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        resolved = _resolve_attachment_schema_reference(reference, root)
+        if resolved is None:
+            return True
+        target, target_root = resolved
+        return _schema_declared_type_matches(target, value, target_root)
+
+    declared_type = schema.get("type")
+    if isinstance(declared_type, str):
+        return _json_type_matches(value, declared_type)
+    if isinstance(declared_type, list) and all(isinstance(item, str) for item in declared_type):
+        return any(_json_type_matches(value, item) for item in declared_type)
+    return True
+
+
+def _attachment_alias_issue(
+    alias: str,
+    value: object,
+    path: tuple[str | int, ...],
+) -> ValidationIssue | None:
+    if alias == "u64s":
+        if _u64(value) is None:
+            return _issue("semantic_attachment_u64", path, "attachment value exceeds the u64 authority range")
+    elif alias in {"i128s", "sq18s"}:
+        if _i128(value) is None:
+            return _issue("semantic_attachment_i128", path, "attachment value exceeds the signed-i128 range")
+    elif alias == "uq18s":
+        parsed = _u64(value)
+        if parsed is None or parsed > _Q18_UNIT:
+            return _issue("semantic_attachment_uq18", path, "attachment value exceeds the uq18 range")
+    elif alias == "uints" and _uint(value) is None:
+        return _issue("semantic_attachment_uint", path, "attachment value is not an unsigned decimal string")
+    return None
+
+
+def _positive_u64_issue(value: object, path: tuple[str | int, ...]) -> ValidationIssue | None:
+    try:
+        parse_bounded_decimal_string(value, minimum=1, maximum=_MAX_U64)
+    except ValueError:
+        return _issue("semantic_attachment_positive_u64", path, "attachment value must be in [1, u64::MAX]")
+    return None
+
+
+def _validate_attachment_alias_ranges_at(
+    schema: Mapping[str, Any],
+    value: object,
+    path: tuple[str | int, ...],
+    root: Mapping[str, Any],
+    active_refs: frozenset[tuple[int, int]],
+) -> tuple[ValidationIssue, ...]:
+    issues: list[ValidationIssue] = []
+
+    for keyword in ("anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                if isinstance(branch, Mapping) and _schema_declared_type_matches(branch, value, root):
+                    issues.extend(_validate_attachment_alias_ranges_at(branch, value, path, root, active_refs))
+            return tuple(issues)
+
+    branches = schema.get("allOf")
+    if isinstance(branches, list):
+        for branch in branches:
+            if isinstance(branch, Mapping):
+                issues.extend(_validate_attachment_alias_ranges_at(branch, value, path, root, active_refs))
+
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        alias = reference.removeprefix("#/$defs/") if reference.startswith("#/$defs/") else None
+        if alias is not None:
+            issue = _attachment_alias_issue(alias, value, path)
+            return () if issue is None else (issue,)
+        resolved = _resolve_attachment_schema_reference(reference, root)
+        if resolved is None:
+            return tuple(issues)
+        target, target_root = resolved
+        marker = (id(target), id(value))
+        if marker in active_refs:
+            return tuple(issues)
+        issues.extend(_validate_attachment_alias_ranges_at(target, value, path, target_root, active_refs | {marker}))
+        return tuple(issues)
+
+    if not _schema_declared_type_matches(schema, value, root):
+        return tuple(issues)
+
+    if schema.get("type") == "string" and schema.get("pattern") == _POSITIVE_U64_DECIMAL_PATTERN:
+        issue = _positive_u64_issue(value, path)
+        if issue is not None:
+            issues.append(issue)
+
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping):
+            for name, property_schema in properties.items():
+                if isinstance(name, str) and name in value and isinstance(property_schema, Mapping):
+                    issues.extend(
+                        _validate_attachment_alias_ranges_at(
+                            property_schema,
+                            value[name],
+                            (*path, name),
+                            root,
+                            active_refs,
+                        )
+                    )
+
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            for index, item in enumerate(value):
+                issues.extend(_validate_attachment_alias_ranges_at(items, item, (*path, index), root, active_refs))
+
+    return tuple(issues)
+
+
+def validate_attachment_alias_ranges(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    schema_id = document.get("schema")
+    if not isinstance(schema_id, str):
+        return ()
+    schema = ATTACHMENT_SCHEMA_DOCUMENTS.get(schema_id)
+    if schema is None:
+        return ()
+    return _validate_attachment_alias_ranges_at(schema, document, (), schema, frozenset())
+
+
+def validate_attachment_count_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    schema_id = document.get("schema")
+    if not isinstance(schema_id, str):
+        return ()
+    issues: list[ValidationIssue] = []
+    for count_field, array_field in _ATTACHMENT_COUNT_BINDINGS.get(schema_id, ()):
+        count = _u64(document[count_field])
+        array_value = document[array_field]
+        if count is not None and isinstance(array_value, list) and count != len(array_value):
+            issues.append(
+                _issue(
+                    "semantic_attachment_count",
+                    (count_field,),
+                    f"{count_field} must equal {array_field} length",
+                )
+            )
+    return tuple(issues)
+
+
+def validate_common_attachment_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    return (*validate_attachment_alias_ranges(document), *validate_attachment_count_semantics(document))
+
+
 def validate_benchmark_request_attachment_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
     """Validate raw benchmark attachment digest/length totality."""
     issues: list[ValidationIssue] = []
@@ -3858,17 +4053,17 @@ def validate_benchmark_request_attachment_semantics(document: Mapping[str, JsonV
 
 
 def validate_force_close_state_envelope_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
-    """Validate non-negative signed-i128 force-close state aliases."""
+    """Validate unsigned u64 force-close state aliases."""
     issues: list[ValidationIssue] = []
     numeric_fields = set(document) - {"schema", "market_id"}
     for field in numeric_fields:
-        value = _i128(document[field])
-        if value is None or value < 0:
+        value = _u64(document[field])
+        if value is None:
             issues.append(
                 _issue(
                     "semantic_force_close_state_range",
                     (field,),
-                    "force-close state alias must be a non-negative signed-i128 value",
+                    "force-close state alias must be a u64 value",
                 )
             )
     return tuple(issues)
@@ -3902,24 +4097,47 @@ def validate_run_closure_full_fill_proof_row_semantics(
 def validate_run_closure_full_fill_proof_set_semantics(
     document: Mapping[str, JsonValue],
 ) -> tuple[ValidationIssue, ...]:
-    """Validate force-close proof row cardinality and deterministic sort order."""
+    """Validate force-close proof row cap, cardinality, uniqueness, and order."""
     issues: list[ValidationIssue] = []
     rows_value = document["rows"]
     assert isinstance(rows_value, list)
     rows = [row for row in rows_value if isinstance(row, Mapping)]
     proof_row_count = _u64(document["proof_row_count"])
+    if proof_row_count is not None and proof_row_count > _MAX_RUN_CLOSURE_PROOF_ROWS_V0:
+        issues.append(
+            _issue(
+                "semantic_proof_row_cap",
+                ("proof_row_count",),
+                "proof row count exceeds the protocol maximum",
+            )
+        )
+        return tuple(issues)
     if proof_row_count != len(rows):
         issues.append(_issue("semantic_proof_row_count", ("proof_row_count",), "proof row count must equal rows"))
 
-    def row_key(row: Mapping[str, JsonValue]) -> tuple[int, int, int]:
+    def row_key(row: Mapping[str, JsonValue]) -> tuple[int, int, int] | None:
         reference = _i128(row["reference_price_q18"])
         residual = _u64(row["residual_base_atoms"])
         adverse = row["adverse_fill_bps"]
         if reference is None or residual is None or not isinstance(adverse, int):
-            return (2**255, 2**255, 2**255)
+            return None
         return (reference, residual, adverse)
 
-    if [row_key(row) for row in rows] != sorted(row_key(row) for row in rows):
+    row_keys: list[tuple[int, int, int]] = []
+    seen_keys: set[tuple[int, int, int]] = set()
+    for index, row in enumerate(rows):
+        key = row_key(row)
+        if key is None:
+            continue
+        if key in seen_keys:
+            issues.append(
+                _issue("semantic_proof_row_duplicate", ("rows", index), "proof row semantic key is duplicated")
+            )
+            continue
+        seen_keys.add(key)
+        row_keys.append(key)
+
+    if row_keys != sorted(row_keys):
         issues.append(_issue("semantic_proof_row_order", ("rows",), "proof rows are not deterministically sorted"))
     return tuple(issues)
 
@@ -3937,9 +4155,14 @@ def validate_contract_semantics(document: Mapping[str, JsonValue]) -> tuple[Vali
     schema_id = document.get("schema")
     if not isinstance(schema_id, str):
         return ()
+    issues: list[ValidationIssue] = []
+    if schema_id in ATTACHMENT_SCHEMA_DOCUMENTS:
+        issues.extend(validate_common_attachment_semantics(document))
     validator = SEMANTIC_VALIDATORS.get(schema_id)
     if validator is None:
         validator = SUPPORTING_SEMANTIC_VALIDATORS.get(schema_id)
     if validator is None:
         validator = ATTACHMENT_SEMANTIC_VALIDATORS.get(schema_id)
-    return () if validator is None else validator(document)
+    if validator is not None:
+        issues.extend(validator(document))
+    return tuple(issues)

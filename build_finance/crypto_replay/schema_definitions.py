@@ -123,6 +123,7 @@ _U64_PATTERN = "^(0|[1-9][0-9]*)$"
 _I128_PATTERN = "^(0|-?[1-9][0-9]*)$"
 _RFC3339_NS_UTC_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z$"
 _RFC3339_FULL_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+_MAX_RUN_CLOSURE_PROOF_ROWS_V0 = 1_000_000
 _SAFE_RELATIVE_PATH_PATTERN = (
     r"^(?![A-Za-z]:)(?!/)(?!\.{1,2}(?:/|$))(?!.*(?:/\.{1,2})(?:/|$))(?!.*//)[^/\\:\x00]+(?:/[^/\\:\x00]+)*$"
 )
@@ -2138,7 +2139,10 @@ def run_closure_full_fill_proof_set_schema() -> JsonObject:
     schema_id = "trading.run-closure-full-fill-proof-set/v1"
     extremes = _array({"type": "integer", "minimum": 0, "maximum": 9_999}, unique=True)
     extremes["minItems"] = 2
-    rows = _array({"$ref": json_schema_id("trading.run-closure-full-fill-proof-row/v1")}, unique=True)
+    rows = _array(
+        {"$ref": json_schema_id("trading.run-closure-full-fill-proof-row/v1")},
+        maximum=_MAX_RUN_CLOSURE_PROOF_ROWS_V0,
+    )
     rows["minItems"] = 1
     return _attachment_schema(
         schema_id,
