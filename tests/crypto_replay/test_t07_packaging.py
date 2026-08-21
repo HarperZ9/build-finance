@@ -1,0 +1,104 @@
+"""Task 7 packaging and promotion-state contracts for crypto replay."""
+
+from __future__ import annotations
+
+import json
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_promotion_status_records_honest_blocked_replay_state() -> None:
+    """Catches accidental promotion/profitability claims in the machine-readable gate."""
+
+    status = json.loads((ROOT / "docs" / "crypto-replay" / "promotion-status.json").read_text(encoding="utf-8"))
+
+    assert status == {
+        "p0": "BLOCKED",
+        "p1": "PASS",
+        "p2": "FAIL_ZERO_ADMITTED_FIXTURE",
+        "p5": "FAIL_WHOLE_REPOSITORY",
+        "replay_subpackage_confinement": "PASS",
+        "real_fixture_manifest_sha256": None,
+        "next_authorized_node": None,
+    }
+
+
+def test_project_metadata_keeps_replay_runtime_dependencies_offline() -> None:
+    """Catches package metadata drift that adds replay-relevant provider/broker deps."""
+
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+
+    assert project["dependencies"] == ["numpy>=1.24", "pandas>=2.0", "scipy>=1.10"]
+    optional_dependencies = project["optional-dependencies"]
+    assert optional_dependencies["test"] == ["pytest>=8.0", "pytest-cov>=5", "jsonschema>=4.23,<5"]
+    assert optional_dependencies["dev"] == [
+        "pytest>=8.0",
+        "pytest-cov>=5",
+        "jsonschema>=4.23,<5",
+        "ruff>=0.6",
+        "mypy>=1.10",
+        "build>=1.2",
+    ]
+
+    all_requirements = "\n".join((*project["dependencies"], *sum(optional_dependencies.values(), []))).lower()
+    for forbidden in ("alpaca", "anchorpy", "binance", "ccxt", "coinbase", "jupiter", "kraken", "solana", "web3"):
+        assert forbidden not in all_requirements
+
+
+def test_crypto_replay_package_data_declares_authority_resources() -> None:
+    """Catches wheels that drop generated schemas, bundle digests, or formula resources."""
+
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["tool"]["setuptools"]["package-data"]["build_finance.crypto_replay"] == [
+        "resources/*.json",
+        "resources/*.sha256",
+        "resources/schemas/*.json",
+        "resources/formulas/*.txt",
+    ]
+
+
+def test_artifact_verifier_rejects_archives_without_replay_contracts(tmp_path: Path) -> None:
+    """Catches a verifier that merely reports bad archives instead of failing closed."""
+
+    from scripts.verify_crypto_replay_artifacts import VerificationError, verify_artifacts
+
+    wheel = tmp_path / "build_finance-1.0.1-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "build_finance-1.0.1.dist-info/METADATA",
+            "\n".join(
+                (
+                    "Metadata-Version: 2.1",
+                    "Name: build-finance",
+                    "Version: 1.0.1",
+                    "Requires-Dist: numpy>=1.24",
+                    "Requires-Dist: pandas>=2.0",
+                    "Requires-Dist: scipy>=1.10",
+                    'Requires-Dist: jsonschema<5,>=4.23; extra == "test"',
+                    'Requires-Dist: jsonschema<5,>=4.23; extra == "dev"',
+                    "",
+                )
+            ),
+        )
+        archive.writestr("build_finance/__init__.py", "")
+
+    sdist = tmp_path / "build_finance-1.0.1.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        metadata = b"Metadata-Version: 2.1\nName: build-finance\nVersion: 1.0.1\n"
+        info = tarfile.TarInfo("build_finance-1.0.1/PKG-INFO")
+        info.size = len(metadata)
+        archive.addfile(info, fileobj=__import__("io").BytesIO(metadata))
+
+    with pytest.raises(VerificationError, match="wheel missing required member"):
+        verify_artifacts(wheel=wheel, sdist=sdist)
