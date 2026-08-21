@@ -24,6 +24,8 @@ _EXPECTED_FEE_QUOTE_ATOMS = "10000"
 _EXPECTED_RESERVED_QUOTE_ATOMS = "10010000"
 _EXPECTED_CASH_AFTER_FILL_ATOMS = "89990000"
 _EXPECTED_BASE_AFTER_FILL_ATOMS = "100000"
+_U64_MAX_TEXT = "18446744073709551615"
+_U64_OVERFLOW_TEXT = "18446744073709551616"
 _DIGEST_1 = "1" * 64
 _DIGEST_2 = "2" * 64
 _DIGEST_3 = "3" * 64
@@ -43,6 +45,15 @@ _TASK2_SELF_ID_FIELDS = {
     "trading.normalization-receipt/v1": "normalization_receipt_id",
     "trading.decision-group-manifest/v1": "decision_group_manifest_id",
 }
+_TASK2_U64_FIELDS = (
+    ("trading.normalization-receipt/v1", "input_count"),
+    ("trading.normalization-receipt/v1", "normalized_event_count"),
+    ("trading.algorithm-candidate/v1", "decision_sequence"),
+    ("trading.algorithm-candidate/v1", "equal_time_group"),
+    ("trading.fusion-decision/v1", "decision_sequence"),
+    ("trading.fusion-decision/v1", "equal_time_group"),
+    ("trading.decision-group-manifest/v1", "member_count"),
+)
 
 
 def _assert_schema_recursively_closed(schema: Mapping[str, Any]) -> None:
@@ -75,6 +86,19 @@ def _parse_canonical_record(record: bytes) -> dict[str, Any]:
     assert isinstance(parsed, dict)
     assert _canonical_json_bytes(parsed) + b"\n" == record
     return parsed
+
+
+def _task2_structural_issues_for_field(schema_id: str, field: str, value: Any) -> tuple[Any, ...]:
+    """Validate one generated schema property through the live-paper resolver."""
+
+    from build_finance.live_paper import registry
+
+    schema = registry.get_schema_document(schema_id)
+    properties = schema["properties"]
+    assert isinstance(properties, Mapping)
+    field_schema = properties[field]
+    assert isinstance(field_schema, Mapping)
+    return registry._validate_instance(field_schema, value, (field,), schema)
 
 
 def _normalization_body() -> dict[str, Any]:
@@ -601,6 +625,45 @@ def test_task2_contract_validation_enforces_authority_bounds_and_closed_membersh
     missing_member = seal_content_id(missing_member)
     member_issues = validate_contract(missing_member, expected_schema="trading.decision-group-manifest/v1")
     assert "decision_group_membership" in {issue.code for issue in member_issues}
+
+
+def test_task2_u64s_boundaries_are_enforced_after_ref_resolution_for_every_declared_field() -> None:
+    """Breaks if u64s validation checks only the digit pattern and ignores the declared maximum."""
+
+    from build_finance.live_paper.content_ids import seal_content_id
+    from build_finance.live_paper.registry import validate_contract
+
+    for schema_id, field in _TASK2_U64_FIELDS:
+        max_issues = _task2_structural_issues_for_field(schema_id, field, _U64_MAX_TEXT)
+        overflow_issues = _task2_structural_issues_for_field(schema_id, field, _U64_OVERFLOW_TEXT)
+
+        assert max_issues == (), f"{schema_id}.{field} rejected hand-derived 2**64 - 1"
+        assert "maximum" in {issue.code for issue in overflow_issues}, (
+            f"{schema_id}.{field} accepted hand-derived 2**64"
+        )
+
+    normalization, algorithm, _fusion, _manifest = _sealed_task2_vector()
+    assert _task2_structural_issues_for_field(
+        "trading.normalization-receipt/v1",
+        "input_count",
+        normalization["input_count"],
+    ) == ()
+
+    max_algorithm = dict(algorithm)
+    max_algorithm.pop("algorithm_candidate_id")
+    max_algorithm["decision_sequence"] = _U64_MAX_TEXT
+    max_algorithm = seal_content_id(max_algorithm)
+    assert validate_contract(max_algorithm, expected_schema="trading.algorithm-candidate/v1") == ()
+
+    overflow_algorithm = dict(algorithm)
+    overflow_algorithm.pop("algorithm_candidate_id")
+    overflow_algorithm["decision_sequence"] = _U64_OVERFLOW_TEXT
+    overflow_algorithm = seal_content_id(overflow_algorithm)
+    overflow_algorithm_issues = validate_contract(
+        overflow_algorithm,
+        expected_schema="trading.algorithm-candidate/v1",
+    )
+    assert "maximum" in {issue.code for issue in overflow_algorithm_issues}
 
 
 def test_vertical_contract_assertions_reject_placeholders() -> None:

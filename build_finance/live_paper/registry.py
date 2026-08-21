@@ -73,6 +73,8 @@ _SUPPORTED_KEYWORDS = {
 }
 _DRAFT_SCHEME = "https"
 _DRAFT_2020_12 = _DRAFT_SCHEME + "://json-schema.org/draft/2020-12/schema"
+_U64_MINIMUM = 0
+_U64_MAXIMUM = 18_446_744_073_709_551_615
 
 
 class ValidationIssue:
@@ -205,6 +207,24 @@ def _decimal_string_value(value: object) -> int | None:
         return None
     parsed = int(digits)
     return -parsed if negative else parsed
+
+
+def _decimal_text_range_issues(
+    value: object,
+    path: tuple[str | int, ...],
+    *,
+    minimum: int,
+    maximum: int,
+) -> tuple[ValidationIssue, ...]:
+    parsed = _decimal_string_value(value)
+    if parsed is None:
+        return ()
+    issues: list[ValidationIssue] = []
+    if parsed < minimum:
+        issues.append(_issue("minimum", path, "decimal text is below its declared minimum"))
+    if parsed > maximum:
+        issues.append(_issue("maximum", path, "decimal text is above its declared maximum"))
+    return tuple(issues)
 
 
 def _q18_range_issue(value: object, path: tuple[str | int, ...], *, signed: bool) -> ValidationIssue | None:
@@ -435,7 +455,17 @@ def _validate_instance(
     issues: list[ValidationIssue] = []
     reference = schema.get("$ref")
     if isinstance(reference, str):
-        return _validate_instance(_resolve_local_pointer(root, reference), value, path, root)
+        issues = list(_validate_instance(_resolve_local_pointer(root, reference), value, path, root))
+        if reference == "#/$defs/u64s":
+            issues.extend(
+                _decimal_text_range_issues(
+                    value,
+                    path,
+                    minimum=_U64_MINIMUM,
+                    maximum=_U64_MAXIMUM,
+                )
+            )
+        return tuple(issues)
 
     declared_type = schema.get("type")
     if isinstance(declared_type, str) and not _matches_type(value, declared_type):
