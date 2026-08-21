@@ -72,7 +72,7 @@ def scan_source_tree(root: str | os.PathLike[str], *, root_label: str) -> dict[s
     rows = [
         _file_row(discovered)
         for discovered in sorted(
-            _walk(root_absolute, root_absolute, "", seen_paths),
+            _walk(root_absolute, root_absolute, "", seen_paths, root_metadata),
             key=lambda item: item.relative_path.encode("utf-8"),
         )
     ]
@@ -138,34 +138,51 @@ def reconstruct_source_tree(source_tree: Mapping[str, JsonValue]) -> dict[str, J
     }
 
 
-def _walk(root_absolute: str, directory_absolute: str, prefix: str, seen_paths: set[str]) -> Iterator[_DiscoveredFile]:
+def _walk(
+    root_absolute: str,
+    directory_absolute: str,
+    prefix: str,
+    seen_paths: set[str],
+    expected_metadata: os.stat_result,
+) -> Iterator[_DiscoveredFile]:
     _require_inside_root(root_absolute, directory_absolute)
+    directory_label = prefix[:-1] if prefix else "root"
+    expected_identity = _identity(expected_metadata, directory_label)
+    _require_stable_directory(directory_absolute, directory_label, expected_identity)
     try:
         entries = os.scandir(directory_absolute)
     except OSError as error:
         raise SourceTreeError(f"directory cannot be listed without stable access: {error}") from error
-    with entries:
-        for entry in entries:
-            name = _safe_component(entry.name)
-            relative_path = f"{prefix}{name}"
-            relative_directory = f"{relative_path}/"
-            if _is_excluded_entry(relative_path, relative_directory):
-                continue
-            if relative_path in seen_paths:
-                raise SourceTreeError("normalized relative path collision prevents stable source-tree identity")
-            seen_paths.add(relative_path)
+    try:
+        _require_stable_directory(directory_absolute, directory_label, expected_identity)
+        with entries:
+            for entry in entries:
+                _require_stable_directory(directory_absolute, directory_label, expected_identity)
+                name = _safe_component(entry.name)
+                relative_path = f"{prefix}{name}"
+                relative_directory = f"{relative_path}/"
+                if _is_excluded_entry(relative_path, relative_directory):
+                    continue
+                if relative_path in seen_paths:
+                    raise SourceTreeError("normalized relative path collision prevents stable source-tree identity")
+                seen_paths.add(relative_path)
 
-            absolute_path = os.path.abspath(entry.path)
-            _require_inside_root(root_absolute, absolute_path)
-            metadata = _lstat(absolute_path, relative_path)
-            if _is_link_or_reparse(metadata):
-                raise SourceTreeError(f"{relative_path} is a symlink, junction, or reparse point; no-follow required")
-            if stat.S_ISDIR(metadata.st_mode):
-                yield from _walk(root_absolute, absolute_path, relative_directory, seen_paths)
-            elif stat.S_ISREG(metadata.st_mode):
-                yield _DiscoveredFile(relative_path=relative_path, absolute_path=absolute_path, metadata=metadata)
-            else:
-                raise SourceTreeError(f"{relative_path} is not a regular file or directory entry")
+                absolute_path = os.path.abspath(entry.path)
+                _require_inside_root(root_absolute, absolute_path)
+                metadata = _lstat(absolute_path, relative_path)
+                if _is_link_or_reparse(metadata):
+                    raise SourceTreeError(
+                        f"{relative_path} is a symlink, junction, or reparse point; no-follow required"
+                    )
+                if stat.S_ISDIR(metadata.st_mode):
+                    yield from _walk(root_absolute, absolute_path, relative_directory, seen_paths, metadata)
+                elif stat.S_ISREG(metadata.st_mode):
+                    yield _DiscoveredFile(relative_path=relative_path, absolute_path=absolute_path, metadata=metadata)
+                else:
+                    raise SourceTreeError(f"{relative_path} is not a regular file or directory entry")
+            _require_stable_directory(directory_absolute, directory_label, expected_identity)
+    finally:
+        entries.close()
 
 
 def _file_row(discovered: _DiscoveredFile) -> dict[str, JsonValue]:
@@ -296,6 +313,13 @@ def _identity(metadata: os.stat_result, label: str) -> _FileIdentity:
 def _require_same_identity(label: str, expected: _FileIdentity, observed: _FileIdentity) -> None:
     if observed != expected:
         raise SourceTreeError(f"{label} changed identity, size, or stability metadata during scan")
+
+
+def _require_stable_directory(path: str, label: str, expected: _FileIdentity) -> None:
+    metadata = _lstat(path, label)
+    if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        raise SourceTreeError(f"{label} changed to a symlink, junction, reparse point, or non-directory entry")
+    _require_same_identity(label, expected, _identity(metadata, label))
 
 
 def _require_inside_root(root_absolute: str, candidate_absolute: str) -> None:

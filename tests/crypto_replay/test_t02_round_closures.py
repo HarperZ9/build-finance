@@ -1183,6 +1183,45 @@ def test_source_tree_root_junction_is_rejected_without_resolution(
     assert attempts == [], f"scanner touched junction target before rejection: {attempts}"
 
 
+def test_source_tree_rejects_directory_junction_swap_before_recursive_listing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan, source_tree_error, module = _source_tree_api()
+    root = tmp_path / "root"
+    src = root / "src"
+    src.mkdir(parents=True)
+    outside = tmp_path / "outside-root"
+    outside.mkdir()
+    (outside / "evil.py").write_bytes(b"outside")
+
+    original_scandir = module.os.scandir
+    replaced = False
+    src_path = os.path.normcase(os.path.abspath(src))
+
+    def swap_directory_before_listing(path: Any) -> Any:
+        nonlocal replaced
+        if not replaced and os.path.normcase(os.path.abspath(os.fspath(path))) == src_path:
+            src.rmdir()
+            if os.name == "nt":
+                created = subprocess.run(
+                    ["cmd", "/d", "/c", "mklink", "/J", str(src), str(outside)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                assert created.returncode == 0, created.stderr
+            else:
+                os.symlink(outside, src, target_is_directory=True)
+            replaced = True
+        return original_scandir(path)
+
+    monkeypatch.setattr(module.os, "scandir", swap_directory_before_listing)
+    with pytest.raises(source_tree_error, match="changed|identity|junction|reparse|stable|no-follow|outside"):
+        scan(root, root_label="repository-root")
+    assert replaced
+
+
 def test_source_tree_replacement_race_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
