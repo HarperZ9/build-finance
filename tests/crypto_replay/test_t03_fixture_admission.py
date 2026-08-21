@@ -41,6 +41,7 @@ from tests.crypto_replay.support.synthetic_local_fixture import (
 
 _MAX_U64 = "18446744073709551615"
 _MAX_U64_PLUS_ONE = "18446744073709551616"
+_HUGE_U64_CANDIDATE = "1" * 5000
 
 
 def _capture_and_admit(root: Path):
@@ -110,6 +111,10 @@ def _reseal_first_manifest_file(fixture, **overrides: object) -> None:
     files[0] = {**files[0], **overrides}
     manifest["files"] = files
     reseal_SYNTHETIC_manifest(fixture, manifest)
+
+
+def _u64_case_root(tmp_path: Path, label: str, value: str) -> Path:
+    return tmp_path / f"{label}-{len(value)}-{value[:8]}"
 
 
 _SYNTHETIC_TARGET_EVENT_ID = "1" * 64
@@ -1090,6 +1095,10 @@ def test_parser_accepts_canonical_u64_maximum_values(tmp_path: Path) -> None:
         SYNTHETICEventSpec(source_subsequence=_MAX_U64_PLUS_ONE),
         SYNTHETICEventSpec(revision_availability_slot=_MAX_U64_PLUS_ONE),
         SYNTHETICEventSpec(revision_availability_admission_sequence=_MAX_U64_PLUS_ONE),
+        SYNTHETICEventSpec(source_position_slot=_HUGE_U64_CANDIDATE),
+        SYNTHETICEventSpec(source_subsequence=_HUGE_U64_CANDIDATE),
+        SYNTHETICEventSpec(revision_availability_slot=_HUGE_U64_CANDIDATE),
+        SYNTHETICEventSpec(revision_availability_admission_sequence=_HUGE_U64_CANDIDATE),
         SYNTHETICEventSpec(source_position_slot="01"),
         SYNTHETICEventSpec(source_subsequence="01"),
         SYNTHETICEventSpec(revision_availability_slot="01"),
@@ -1128,12 +1137,12 @@ def test_admission_accepts_resealed_u64_maximum_fixture(tmp_path: Path) -> None:
     assert receipt["availability_slot"] == _MAX_U64
 
 
-@pytest.mark.parametrize("admission_sequence", (_MAX_U64_PLUS_ONE, "01"))
+@pytest.mark.parametrize("admission_sequence", (_MAX_U64_PLUS_ONE, _HUGE_U64_CANDIDATE, "01"))
 def test_manifest_admission_sequence_defects_are_sequence_invalid(
     tmp_path: Path,
     admission_sequence: str,
 ) -> None:
-    fixture = write_SYNTHETIC_local_fixture(tmp_path / admission_sequence)
+    fixture = write_SYNTHETIC_local_fixture(_u64_case_root(tmp_path, "admission", admission_sequence))
     _reseal_first_manifest_file(fixture, admission_sequence=admission_sequence)
 
     captured, batch = _capture_and_admit(fixture.root)
@@ -1146,12 +1155,12 @@ def test_manifest_admission_sequence_defects_are_sequence_invalid(
     assert receipt["admission_sequence"] == admission_sequence
 
 
-@pytest.mark.parametrize("availability_slot", (_MAX_U64_PLUS_ONE, "01"))
+@pytest.mark.parametrize("availability_slot", (_MAX_U64_PLUS_ONE, _HUGE_U64_CANDIDATE, "01"))
 def test_manifest_availability_slot_defects_are_revision_causality(
     tmp_path: Path,
     availability_slot: str,
 ) -> None:
-    fixture = write_SYNTHETIC_local_fixture(tmp_path / availability_slot)
+    fixture = write_SYNTHETIC_local_fixture(_u64_case_root(tmp_path, "availability", availability_slot))
     _reseal_first_manifest_file(fixture, availability_slot=availability_slot)
 
     _captured, batch = _capture_and_admit(fixture.root)

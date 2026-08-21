@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - compatibility for isolated downstream 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _READ_CHUNK_SIZE = 1024 * 1024
 _MAX_U64 = 18_446_744_073_709_551_615
+_MAX_U64_TEXT = str(_MAX_U64)
 _O_BINARY = int(vars(os).get("O_BINARY", 0))
 _O_CLOEXEC = int(vars(os).get("O_CLOEXEC", 0))
 _O_DIRECTORY = int(vars(os).get("O_DIRECTORY", 0))
@@ -1325,7 +1326,9 @@ def _is_canonical_u64_string(value: object) -> bool:
         return False
     if value == "0":
         return True
-    return bool(value) and value[0] != "0" and value.isdecimal() and int(value) <= _MAX_U64
+    if not value or not value.isascii() or not value.isdecimal() or value.startswith("0"):
+        return False
+    return len(value) < len(_MAX_U64_TEXT) or (len(value) == len(_MAX_U64_TEXT) and value <= _MAX_U64_TEXT)
 
 
 def _is_valid_admission_sequence(value: object) -> bool:

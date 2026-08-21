@@ -23,6 +23,8 @@ from build_finance.crypto_replay.schema_model import ValidationIssue
 _PROFILE_VENUE = "solana-jupiter-fixture/v1"
 _SOURCE_KIND = "solana-jupiter-quote"
 _RIGHTS_ROLE = "offline_research_replay"
+_MAX_U64 = 18_446_744_073_709_551_615
+_MAX_U64_TEXT = str(_MAX_U64)
 _REQUIRED_MANIFEST_VALUES = {
     "schema": "trading.fixture-manifest/v1",
     "network": "solana-mainnet",
@@ -552,9 +554,19 @@ def _captured_file_sort_key(captured_file: CapturedFile) -> tuple[int, bytes]:
 
 
 def _admission_sequence_value(value: str) -> int:
-    if value.isascii() and value.isdecimal():
+    if _is_canonical_u64_string(value):
         return int(value)
     return 0
+
+
+def _is_canonical_u64_string(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value == "0":
+        return True
+    if not value or not value.isascii() or not value.isdecimal() or value.startswith("0"):
+        return False
+    return len(value) < len(_MAX_U64_TEXT) or (len(value) == len(_MAX_U64_TEXT) and value <= _MAX_U64_TEXT)
 
 
 def _is_content_id(value: str | None) -> bool:
