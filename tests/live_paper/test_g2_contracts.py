@@ -24,6 +24,155 @@ _EXPECTED_FEE_QUOTE_ATOMS = "10000"
 _EXPECTED_RESERVED_QUOTE_ATOMS = "10010000"
 _EXPECTED_CASH_AFTER_FILL_ATOMS = "89990000"
 _EXPECTED_BASE_AFTER_FILL_ATOMS = "100000"
+_DIGEST_1 = "1" * 64
+_DIGEST_2 = "2" * 64
+_DIGEST_3 = "3" * 64
+_DIGEST_4 = "4" * 64
+_DIGEST_5 = "5" * 64
+_DIGEST_6 = "6" * 64
+_DIGEST_7 = "7" * 64
+_TASK2_SCHEMA_IDS = (
+    "trading.algorithm-candidate/v1",
+    "trading.fusion-decision/v1",
+    "trading.normalization-receipt/v1",
+    "trading.decision-group-manifest/v1",
+)
+_TASK2_SELF_ID_FIELDS = {
+    "trading.algorithm-candidate/v1": "algorithm_candidate_id",
+    "trading.fusion-decision/v1": "fusion_decision_id",
+    "trading.normalization-receipt/v1": "normalization_receipt_id",
+    "trading.decision-group-manifest/v1": "decision_group_manifest_id",
+}
+
+
+def _assert_schema_recursively_closed(schema: Mapping[str, Any]) -> None:
+    """Fail if any object node can accept implicit or optional fields."""
+
+    nodes: list[Mapping[str, Any]] = [schema]
+    for node in nodes:
+        for keyword in ("$defs", "properties"):
+            children = node.get(keyword)
+            if isinstance(children, Mapping):
+                nodes.extend(child for child in children.values() if isinstance(child, Mapping))
+        items = node.get("items")
+        if isinstance(items, Mapping):
+            nodes.append(items)
+        for keyword in ("anyOf", "oneOf", "allOf"):
+            branches = node.get(keyword)
+            if isinstance(branches, list):
+                nodes.extend(branch for branch in branches if isinstance(branch, Mapping))
+        negated = node.get("not")
+        if isinstance(negated, Mapping):
+            nodes.append(negated)
+        if node.get("type") == "object":
+            assert node.get("additionalProperties") is False
+            assert set(node.get("required", ())) == set(node.get("properties", ()))
+
+
+def _parse_canonical_record(record: bytes) -> dict[str, Any]:
+    assert record.endswith(b"\n") and not record.endswith(b"\n\n")
+    parsed = json.loads(record[:-1].decode("utf-8"), parse_float=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    assert isinstance(parsed, dict)
+    assert _canonical_json_bytes(parsed) + b"\n" == record
+    return parsed
+
+
+def _normalization_body() -> dict[str, Any]:
+    return {
+        "schema": "trading.normalization-receipt/v1",
+        "normalization_receipt_id": "0" * 64,
+        "source_batch_id": "synthetic-g2-batch-001",
+        "normalization_code_sha256": _DIGEST_1,
+        "input_content_ids": [_DIGEST_2, _DIGEST_3],
+        "input_count": "2",
+        "normalized_event_ids": [_DIGEST_4, _DIGEST_5],
+        "normalized_event_count": "2",
+        "output_merkle_root_sha256": _DIGEST_6,
+        "status": "PASS",
+        "reason_codes": [],
+        "total_evidence": "TOTAL_INPUT_CLOSURE",
+    }
+
+
+def _algorithm_body(normalization_receipt_id: str) -> dict[str, Any]:
+    return {
+        "schema": "trading.algorithm-candidate/v1",
+        "algorithm_candidate_id": "0" * 64,
+        "normalization_receipt_id": normalization_receipt_id,
+        "feature_snapshot_id": _DIGEST_7,
+        "algorithm_id": "G2_LONG_OR_FLAT_SYNTHETIC_V1",
+        "algorithm_version": "2026-08-21",
+        "decision_group_key": "synthetic-g2-decision-group-001",
+        "decision_sequence": "1",
+        "equal_time_group": "1",
+        "input_content_ids": [normalization_receipt_id, _DIGEST_7],
+        "candidate_action": "OPEN_LONG",
+        "rationale_code": "OPEN_IF_FLAT",
+        "confidence_q18": "1000000000000000000",
+        "can_size": False,
+        "can_execute": False,
+    }
+
+
+def _fusion_body(normalization_receipt_id: str, algorithm_candidate_id: str) -> dict[str, Any]:
+    return {
+        "schema": "trading.fusion-decision/v1",
+        "fusion_decision_id": "0" * 64,
+        "normalization_receipt_id": normalization_receipt_id,
+        "algorithm_candidate_id": algorithm_candidate_id,
+        "model_signal_id": None,
+        "decision_sequence": "1",
+        "equal_time_group": "1",
+        "input_content_ids": [normalization_receipt_id, algorithm_candidate_id],
+        "model_mode": "DISABLED_ABSTAIN",
+        "model_action": "ABSTAIN",
+        "model_score_q18": "0",
+        "model_probability_abstain_q18": "1000000000000000000",
+        "candidate_action": "OPEN_LONG",
+        "fused_action": "OPEN_LONG",
+        "fusion_policy": "MODEL_ABSTAINS_USE_ALGORITHM_CANDIDATE",
+        "can_size": False,
+        "can_execute": False,
+    }
+
+
+def _manifest_body(normalization_receipt_id: str, algorithm_candidate_id: str, fusion_decision_id: str) -> dict[str, Any]:
+    return {
+        "schema": "trading.decision-group-manifest/v1",
+        "decision_group_manifest_id": "0" * 64,
+        "decision_group_key": "synthetic-g2-decision-group-001",
+        "normalization_receipt_id": normalization_receipt_id,
+        "algorithm_candidate_ids": [algorithm_candidate_id],
+        "fusion_decision_ids": [fusion_decision_id],
+        "member_content_ids": sorted(
+            [normalization_receipt_id, algorithm_candidate_id, fusion_decision_id],
+            key=lambda value: value.encode("utf-8"),
+        ),
+        "member_count": "3",
+        "sealed_by": "CONTENT_ID_REGISTRY_V1",
+    }
+
+
+def _sealed_task2_vector() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    from build_finance.live_paper.content_ids import seal_content_id
+
+    normalization_body = _normalization_body()
+    normalization_body.pop("normalization_receipt_id")
+    normalization = seal_content_id(normalization_body)
+    algorithm_body = _algorithm_body(str(normalization["normalization_receipt_id"]))
+    algorithm_body.pop("algorithm_candidate_id")
+    algorithm = seal_content_id(algorithm_body)
+    fusion_body = _fusion_body(str(normalization["normalization_receipt_id"]), str(algorithm["algorithm_candidate_id"]))
+    fusion_body.pop("fusion_decision_id")
+    fusion = seal_content_id(fusion_body)
+    manifest_body = _manifest_body(
+        str(normalization["normalization_receipt_id"]),
+        str(algorithm["algorithm_candidate_id"]),
+        str(fusion["fusion_decision_id"]),
+    )
+    manifest_body.pop("decision_group_manifest_id")
+    manifest = seal_content_id(manifest_body)
+    return normalization, algorithm, fusion, manifest
 
 
 def _synthetic_verified_inputs() -> dict[str, Any]:
@@ -276,6 +425,182 @@ def _assert_complete_vertical_contract(result: Mapping[str, Any]) -> None:
     assert closure["open_venue_order_count"] == 0
     assert closure["final_cash_quote_atoms"] == _EXPECTED_CASH_AFTER_FILL_ATOMS
     assert closure["final_position_base_atoms"] == _EXPECTED_BASE_AFTER_FILL_ATOMS
+
+
+def test_task2_live_paper_registry_is_independent_closed_and_resource_locked() -> None:
+    """Breaks if Task 2 schemas drift into crypto_replay or generated bytes stop being canonical."""
+
+    from build_finance.crypto_replay.schema_definitions import CONTRACT_SPECS_BY_SCHEMA as REPLAY_SPECS
+    from build_finance.live_paper import contracts, registry
+
+    assert contracts.LIVE_PAPER_SCHEMA_IDS == _TASK2_SCHEMA_IDS
+    assert dict(contracts.SELF_ID_FIELDS) == _TASK2_SELF_ID_FIELDS
+    assert not set(_TASK2_SCHEMA_IDS).intersection(REPLAY_SPECS)
+
+    expected_resources = registry.build_expected_resources()
+    assert tuple(expected_resources) == (
+        "schemas/algorithm-candidate-v1.schema.json",
+        "schemas/fusion-decision-v1.schema.json",
+        "schemas/normalization-receipt-v1.schema.json",
+        "schemas/decision-group-manifest-v1.schema.json",
+        "schema-bundle.json",
+        "schema-bundle.sha256",
+        "schema-lock.json",
+    )
+
+    bundle = _parse_canonical_record(expected_resources["schema-bundle.json"])
+    assert bundle["schema"] == "build-finance.live-paper.schema-bundle/v1"
+    assert bundle["jcs_profile"] == "RFC8785_INTEGER_AUTHORITY_V1"
+    assert bundle["aliases"] == [
+        {
+            "name": "ContentID",
+            "json_type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minimum": None,
+            "maximum": None,
+            "scale": None,
+        },
+        {
+            "name": "u64s",
+            "json_type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "minimum": "0",
+            "maximum": "18446744073709551615",
+            "scale": None,
+        },
+        {
+            "name": "sq18s",
+            "json_type": "string",
+            "pattern": "^(0|-?[1-9][0-9]*)$",
+            "minimum": "-170141183460469231731687303715884105728",
+            "maximum": "170141183460469231731687303715884105727",
+            "scale": "1000000000000000000",
+        },
+        {
+            "name": "uq18s",
+            "json_type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "minimum": "0",
+            "maximum": "1000000000000000000",
+            "scale": "1000000000000000000",
+        },
+    ]
+    assert [row["contract_schema"] for row in bundle["schemas"]] == sorted(
+        _TASK2_SCHEMA_IDS,
+        key=lambda value: value.encode("utf-8"),
+    )
+    for row in bundle["schemas"]:
+        schema_id = str(row["contract_schema"])
+        assert row["family"] == "LIVE_PAPER"
+        assert row["self_id_field"] == _TASK2_SELF_ID_FIELDS[schema_id]
+        schema_record = expected_resources[f"schemas/{schema_id.removeprefix('trading.').replace('/', '-')}.schema.json"]
+        schema = _parse_canonical_record(schema_record)
+        assert schema["x-contract-schema"] == schema_id
+        assert hashlib.sha256(schema_record[:-1]).hexdigest() == row["schema_sha256"]
+        _assert_schema_recursively_closed(schema)
+
+    assert expected_resources["schema-bundle.sha256"] == hashlib.sha256(
+        expected_resources["schema-bundle.json"][:-1]
+    ).hexdigest().encode("ascii") + b"\n"
+    lock = _parse_canonical_record(expected_resources["schema-lock.json"])
+    assert lock == {
+        "schema": "build-finance.live-paper.schema-lock/v1",
+        "contract_count": 4,
+        "generated_json_schema_count": 4,
+        "schema_bundle_sha256": hashlib.sha256(expected_resources["schema-bundle.json"][:-1]).hexdigest(),
+    }
+    registry.check_resources()
+
+
+def test_task2_content_ids_resolve_only_live_paper_self_fields_and_reject_float_authority() -> None:
+    """Breaks if the sealer hashes the wrong field, mutates input, accepts floats, or uses replay specs."""
+
+    from build_finance.live_paper.content_ids import compute_content_id, seal_content_id, verify_content_id
+
+    normalization_body = _normalization_body()
+    normalization_body.pop("normalization_receipt_id")
+    original_body = copy.deepcopy(normalization_body)
+    sealed = seal_content_id(normalization_body)
+
+    assert normalization_body == original_body
+    assert sealed is not normalization_body
+    assert set(sealed) == {*original_body, "normalization_receipt_id"}
+    supplied_id = str(sealed["normalization_receipt_id"])
+    assert _HEX64.fullmatch(supplied_id)
+    assert compute_content_id(sealed) == supplied_id
+    assert compute_content_id({**sealed, "normalization_receipt_id": "0" * 64}) == supplied_id
+    assert verify_content_id(sealed)
+    assert not verify_content_id(original_body)
+
+    changed_payload = {**sealed, "output_merkle_root_sha256": _DIGEST_7}
+    assert compute_content_id(changed_payload) != supplied_id
+
+    with pytest.raises(ValueError, match="normalization_receipt_id"):
+        seal_content_id({**sealed, "normalization_receipt_id": "0" * 64})
+
+    with pytest.raises(TypeError, match="floating-point"):
+        compute_content_id({**original_body, "input_count": 2.0})
+
+    with pytest.raises(KeyError, match="unknown live-paper"):
+        compute_content_id({"schema": "trading.raw-event/v1"})
+
+
+def test_task2_contract_validation_enforces_authority_bounds_and_closed_membership() -> None:
+    """Breaks if validation is only shape-checking and misses authority semantics."""
+
+    from build_finance.live_paper.content_ids import seal_content_id
+    from build_finance.live_paper.registry import validate_contract
+
+    normalization, algorithm, fusion, manifest = _sealed_task2_vector()
+    for document in (normalization, algorithm, fusion, manifest):
+        assert validate_contract(document, expected_schema=str(document["schema"])) == ()
+
+    stale_id = {**algorithm, "algorithm_candidate_id": "0" * 64}
+    stale_id_issues = validate_contract(stale_id, expected_schema="trading.algorithm-candidate/v1")
+    assert "content_id" in {issue.code for issue in stale_id_issues}
+
+    oversized_confidence = dict(algorithm)
+    oversized_confidence.pop("algorithm_candidate_id")
+    oversized_confidence["confidence_q18"] = "1000000000000000001"
+    oversized_confidence = seal_content_id(oversized_confidence)
+    oversized_issues = validate_contract(oversized_confidence, expected_schema="trading.algorithm-candidate/v1")
+    assert "fixed_point_range" in {issue.code for issue in oversized_issues}
+
+    order_shaped_algorithm = dict(algorithm)
+    order_shaped_algorithm.pop("algorithm_candidate_id")
+    order_shaped_algorithm["quantity_base_atoms"] = "100"
+    order_shaped_algorithm = seal_content_id(order_shaped_algorithm)
+    order_shape_issues = validate_contract(order_shaped_algorithm, expected_schema="trading.algorithm-candidate/v1")
+    assert "additionalProperties" in {issue.code for issue in order_shape_issues}
+
+    count_mismatch = dict(normalization)
+    count_mismatch.pop("normalization_receipt_id")
+    count_mismatch["input_count"] = "1"
+    count_mismatch = seal_content_id(count_mismatch)
+    count_issues = validate_contract(count_mismatch, expected_schema="trading.normalization-receipt/v1")
+    assert "normalization_total_evidence" in {issue.code for issue in count_issues}
+
+    non_abstain_score = dict(fusion)
+    non_abstain_score.pop("fusion_decision_id")
+    non_abstain_score["model_score_q18"] = "1"
+    non_abstain_score = seal_content_id(non_abstain_score)
+    abstain_issues = validate_contract(non_abstain_score, expected_schema="trading.fusion-decision/v1")
+    assert "disabled_model_abstain" in {issue.code for issue in abstain_issues}
+
+    order_shaped_fusion = dict(fusion)
+    order_shaped_fusion.pop("fusion_decision_id")
+    order_shaped_fusion["venue_order_id"] = "paper-order-001"
+    order_shaped_fusion = seal_content_id(order_shaped_fusion)
+    fusion_shape_issues = validate_contract(order_shaped_fusion, expected_schema="trading.fusion-decision/v1")
+    assert "additionalProperties" in {issue.code for issue in fusion_shape_issues}
+
+    missing_member = dict(manifest)
+    missing_member.pop("decision_group_manifest_id")
+    missing_member["member_content_ids"] = missing_member["member_content_ids"][:-1]
+    missing_member["member_count"] = "2"
+    missing_member = seal_content_id(missing_member)
+    member_issues = validate_contract(missing_member, expected_schema="trading.decision-group-manifest/v1")
+    assert "decision_group_membership" in {issue.code for issue in member_issues}
 
 
 def test_vertical_contract_assertions_reject_placeholders() -> None:
