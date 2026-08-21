@@ -302,6 +302,53 @@ allowlist. An unknown decoder, digest mismatch, parse ambiguity, or candidate
 that cannot be re-derived from the admitted bytes fails closed with a total
 normalization receipt.
 
+### Offline verified-run authority root
+
+The G2 offline run-input builder receives one explicit canonical
+`trading.run-receipt/v1` LF record as its authority root. It does not search a
+directory, enumerate an object store, infer a default run, or synthesize
+missing authority. The public construction boundary is:
+
+```python
+def build_verified_run_inputs(
+    run_receipt_record: bytes,
+    admitted_candidates: Sequence[ParsedSourceCandidate],
+    source_receipt_records: Sequence[bytes],
+    resolver: EvidenceResolver,
+    profiles: PaperKernelProfiles,
+) -> ContractVerifiedRunInputs: ...
+```
+
+The builder first parses and verifies the run receipt's canonical bytes,
+schema, and self ContentID. It may then resolve only identities explicitly
+reachable from that receipt and its verified descendants. A record ContentID
+is resolved with `resolve_record(content_id)`, which returns the exact
+LF-terminated canonical record. A SHA-256 digest is resolved with
+`resolve_bytes(sha256)`, which returns the exact digest-addressed bytes. The
+latter includes raw source/config payloads, the public seed, code preimages,
+and canonical JSON attachment payloads; attachments are canonical JSON bytes,
+not LF records.
+
+This closed traversal supplies the fixture manifest, config admission receipt,
+optional validated risk config and raw config bytes, source admission receipts,
+run-closure receipt, availability schedule, counter-capacity evidence, source
+tree, optional model registry/manifest, public seed, and all ten code
+preimages. The run-closure receipt is the verified parent of the
+counter-capacity digest. In G2, model mode is `DISABLED`, so both model bodies
+must be absent and the receipt fields must be null. Supplied source receipts
+must exactly match the run receipt's declared source-receipt set; normalized
+events are derived only from those admitted candidates and exact source
+payload bytes.
+
+`normalization_profile_record` is the exact fixture-manifest record bound by
+the run receipt and the source receipts. It is validated before normalization.
+The remaining immutable `PaperKernelProfiles` byte records are not aliases for
+the frozen run-receipt code-preimage fields; each later deterministic consumer
+validates its own profile immediately before use. After normalization, the
+builder constructs the existing frozen `RunInputBundle` and calls
+`verify_contract_run_inputs`. No new run-input authority contract and no
+mutation of the reviewed replay registry are permitted for G2.
+
 ### Canonical time and ordering
 
 The inherited vocabulary remains:
