@@ -11,10 +11,13 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from build_finance.crypto_replay.admission import ParsedSourceCandidate
+from build_finance.crypto_replay.canonical import (
+    canonical_json_bytes as replay_canonical_json_bytes,
+)
 from build_finance.crypto_replay.canonical import (
     canonical_record_bytes as replay_canonical_record_bytes,
 )
@@ -139,7 +142,7 @@ class G2EvidenceResolver:
 def build_g2_vector() -> G2Vector:
     """Build one complete G2-rooted graph from the frozen T02 vector."""
 
-    vector = build_t02_vector()
+    vector = _with_g2_payloads(build_t02_vector())
     records = _record_map(vector)
     payloads = _byte_map(vector)
     resolver = G2EvidenceResolver(records, payloads)
@@ -164,6 +167,97 @@ def build_g2_vector() -> G2Vector:
         required_record_content_ids=required_records,
         required_byte_sha256s=required_bytes,
         profile_records=_profile_records(records[str(run["fixture_manifest_sha256"])]),
+    )
+
+
+def _with_g2_payloads(vector: T02Vector) -> T02Vector:
+    """Replace opaque T02 payloads and reseal only their dependent rooted graph."""
+
+    payloads = _g2_payloads(vector)
+    fixture = copy.deepcopy(vector.documents["trading.fixture-manifest/v1"])
+    for row, payload in zip(fixture["files"], payloads, strict=True):
+        row["raw_payload_sha256"] = replay_sha256_hex(payload)
+        row["byte_length"] = str(len(payload))
+    fixture = reseal_replay_document(fixture)
+
+    source_receipts = []
+    for receipt, payload in zip(vector.source_receipts, payloads, strict=True):
+        changed = copy.deepcopy(receipt)
+        changed["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+        changed["raw_payload_sha256"] = replay_sha256_hex(payload)
+        changed["byte_length"] = str(len(payload))
+        source_receipts.append(reseal_replay_document(changed))
+
+    raw_events = []
+    for event, receipt, payload in zip(vector.raw_events, source_receipts, payloads, strict=True):
+        changed = copy.deepcopy(event)
+        changed["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+        changed["raw_payload_sha256"] = replay_sha256_hex(payload)
+        changed["source_admission_receipt_id"] = receipt["source_admission_receipt_id"]
+        raw_events.append(reseal_replay_document(changed))
+    source_ids = sorted(str(receipt["source_admission_receipt_id"]) for receipt in source_receipts)
+
+    availability = copy.deepcopy(vector.attachments["trading.availability-schedule/v1"])
+    availability["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+    availability["source_admission_receipt_ids"] = source_ids
+    availability_payload = replay_canonical_json_bytes(availability)
+
+    normalized_set = copy.deepcopy(vector.attachments["trading.normalized-event-set/v1"])
+    normalized_set["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+    normalized_set["event_ids"] = [event["event_id"] for event in raw_events]
+    normalized_payload = replay_canonical_json_bytes(normalized_set)
+
+    counter = copy.deepcopy(vector.attachments["trading.counter-capacity/v1"])
+    counter["normalized_event_set_sha256"] = replay_sha256_hex(normalized_payload)
+    counter_payload = replay_canonical_json_bytes(counter)
+
+    closure = copy.deepcopy(vector.documents["trading.run-closure-receipt/v1"])
+    closure["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+    closure["source_admission_receipt_ids"] = source_ids
+    closure["availability_schedule_sha256"] = replay_sha256_hex(availability_payload)
+    closure["counter_capacity_sha256"] = replay_sha256_hex(counter_payload)
+    closure = reseal_replay_document(closure)
+
+    run = copy.deepcopy(vector.documents["trading.run-receipt/v1"])
+    run["fixture_manifest_sha256"] = fixture["fixture_manifest_sha256"]
+    run["source_admission_receipt_ids"] = source_ids
+    run["availability_schedule_sha256"] = replay_sha256_hex(availability_payload)
+    run["run_closure_receipt_id"] = closure["run_closure_receipt_id"]
+    run = reseal_replay_document(run)
+
+    documents = copy.deepcopy(vector.documents)
+    documents["trading.fixture-manifest/v1"] = fixture
+    documents["trading.run-closure-receipt/v1"] = closure
+    documents["trading.run-receipt/v1"] = run
+    attachments = copy.deepcopy(vector.attachments)
+    attachments["trading.availability-schedule/v1"] = availability
+    attachments["trading.normalized-event-set/v1"] = normalized_set
+    attachments["trading.counter-capacity/v1"] = counter
+    attachment_payloads = dict(vector.attachment_payloads)
+    attachment_payloads["trading.availability-schedule/v1"] = availability_payload
+    attachment_payloads["trading.normalized-event-set/v1"] = normalized_payload
+    attachment_payloads["trading.counter-capacity/v1"] = counter_payload
+    return replace(
+        vector,
+        documents=documents,
+        attachments=attachments,
+        attachment_payloads=attachment_payloads,
+        raw_payloads=payloads,
+        source_receipts=(source_receipts[0], source_receipts[1]),
+        raw_events=(raw_events[0], raw_events[1]),
+    )
+
+
+def _g2_payloads(vector: T02Vector) -> tuple[bytes, bytes]:
+    return tuple(
+        replay_canonical_json_bytes(
+            {
+                "schema": "build-finance.live-paper.synthetic-normalization-input/v1",
+                "event_kind": event["event_kind"],
+                "market": copy.deepcopy(event["market"]),
+            }
+        )
+        for event in vector.raw_events
     )
 
 

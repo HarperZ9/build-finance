@@ -9,7 +9,11 @@ from typing import Any, get_type_hints
 
 import pytest
 
-from build_finance.crypto_replay.canonical import canonical_record_bytes, parse_canonical_record
+from build_finance.crypto_replay.canonical import (
+    canonical_record_bytes,
+    parse_canonical_json,
+    parse_canonical_record,
+)
 from build_finance.crypto_replay.run_inputs import ContractVerifiedRunInputs
 from tests.live_paper.support.g2_vectors import (
     G2Vector,
@@ -67,6 +71,11 @@ def test_synthetic_rooted_vector_is_valid_before_task3_imports() -> None:
     assert vector.run_receipt["model_registry_sha256"] is None
     assert vector.run_receipt["model_signal_manifest_sha256"] is None
     assert not vector.resolver.resolve_bytes(vector.availability_schedule_sha256).endswith(b"\n")
+    for case in vector.normalization_cases:
+        payload = parse_canonical_json(case.raw_payload)
+        event = parse_canonical_record(case.raw_event_record)
+        assert event["event_kind"] == payload["event_kind"]
+        assert event["market"] == payload["market"]
 
 
 def test_task3_public_interfaces_are_exact() -> None:
@@ -160,7 +169,10 @@ def test_complete_root_normalizes_once_and_is_copy_stable() -> None:
     assert not hasattr(verified, "decision_groups")
 
 
-@pytest.mark.parametrize("case", ("missing_lf", "wrong_schema", "tampered_id", "missing_record", "lf_attachment"))
+@pytest.mark.parametrize(
+    "case",
+    ("missing_lf", "wrong_schema", "tampered_id", "missing_record", "lf_attachment", "wrong_profile"),
+)
 def test_root_and_resolved_evidence_fail_closed(case: str) -> None:
     vector = build_g2_vector()
     run = vector.run_receipt_record
@@ -175,9 +187,33 @@ def test_root_and_resolved_evidence_fail_closed(case: str) -> None:
     elif case == "missing_record":
         resolver = resolver.without_record(vector.required_record_content_ids[0])
         expected = KeyError
-    else:
+    elif case == "lf_attachment":
         attachment = resolver.resolve_bytes(vector.availability_schedule_sha256)
         resolver = resolver.with_resolved_bytes(vector.availability_schedule_sha256, attachment + b"\n")
+    else:
+        profile = parse_canonical_record(vector.fixture_manifest_record)
+        profile["network"] = "synthetic-wrong-network"
+        wrong_profile = canonical_record_bytes(reseal_replay_document(profile))
+        normalize = _symbol("normalization", "normalize_admitted_candidate")
+        with pytest.raises(ValueError):
+            normalize(
+                vector.admitted_candidates[0],
+                vector.source_receipt_records[0],
+                vector.resolver,
+                wrong_profile,
+            )
+        profile_kwargs = dict(vector.profile_records)
+        profile_kwargs["normalization_profile_record"] = wrong_profile
+        profiles = _symbol("profiles", "PaperKernelProfiles")(**profile_kwargs)
+        with pytest.raises(ValueError):
+            _symbol("run_input_builder", "build_verified_run_inputs")(
+                vector.run_receipt_record,
+                vector.admitted_candidates,
+                vector.source_receipt_records,
+                vector.resolver,
+                profiles,
+            )
+        return
 
     with pytest.raises(expected):
         _build(vector, run=run, resolver=resolver)
