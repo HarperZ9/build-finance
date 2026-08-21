@@ -13,7 +13,7 @@ import zipfile
 from dataclasses import asdict, dataclass
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import IO, Any
 
 JsonValue = None | bool | int | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -75,6 +75,11 @@ SYNTHETIC_DEFAULT_PAYLOAD = (
     b'"fees":{"venue_fee_quote_atoms":"100","priority_fee_quote_atoms":"7"}}'
 )
 SYNTHETIC_SENTINELS = (SYNTHETIC_TERMS_PAYLOAD, SYNTHETIC_DEFAULT_PAYLOAD)
+MAX_ARCHIVE_MEMBER_COUNT = 2_048
+MAX_ARCHIVE_MEMBER_SIZE = 16 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_SIZE = 64 * 1024 * 1024
+ARCHIVE_READ_CHUNK_SIZE = 1024 * 1024
+_STREAM_SCAN_TAIL = max(4096, *(len(sentinel) for sentinel in SYNTHETIC_SENTINELS))
 
 
 class VerificationError(AssertionError):
@@ -140,8 +145,10 @@ def verify_artifacts(*, wheel: Path, sdist: Path) -> VerificationReport:
         attachment_bundle_sha256=str(lock["attachment_bundle_sha256"]),
         binary_formula_bundle_sha256=str(lock["binary_formula_bundle_sha256"]),
         schema_bundle_sha256=str(lock["schema_bundle_sha256"]),
-        generated_json_schema_count=int(lock["generated_json_schema_count"]),
-        total_authority_contract_count=int(lock["total_authority_contract_count"]),
+        generated_json_schema_count=_require_int(lock["generated_json_schema_count"], "generated_json_schema_count"),
+        total_authority_contract_count=_require_int(
+            lock["total_authority_contract_count"], "total_authority_contract_count"
+        ),
     )
 
 
@@ -149,15 +156,26 @@ def _read_wheel_members(path: Path) -> ArchiveMembers:
     if not path.is_file() or path.suffix != ".whl":
         raise VerificationError(f"wheel path is not a .whl file: {path}")
     members: dict[str, bytes] = {}
+    aggregate_size = 0
     with zipfile.ZipFile(path) as archive:
-        for info in archive.infolist():
+        infos = archive.infolist()
+        if len(infos) > MAX_ARCHIVE_MEMBER_COUNT:
+            raise VerificationError(f"wheel member count exceeds {MAX_ARCHIVE_MEMBER_COUNT}: {len(infos)}")
+        for info in infos:
             if info.is_dir():
                 continue
             name = _normalize_member_name(info.filename)
             _reject_env_member(name, "wheel")
             if name in members:
                 raise VerificationError(f"wheel duplicate member after normalization: {name}")
-            members[name] = archive.read(info)
+            aggregate_size = _check_declared_member_size(
+                "wheel",
+                name,
+                info.file_size,
+                aggregate_size,
+            )
+            with archive.open(info, "r") as fileobj:
+                members[name] = _read_bounded_member(fileobj, expected_size=info.file_size, label="wheel", name=name)
     return ArchiveMembers("wheel", members)
 
 
@@ -165,8 +183,13 @@ def _read_sdist_members(path: Path) -> ArchiveMembers:
     if not path.is_file() or not path.name.endswith(".tar.gz"):
         raise VerificationError(f"sdist path is not a .tar.gz file: {path}")
     members: dict[str, bytes] = {}
+    member_count = 0
+    aggregate_size = 0
     with tarfile.open(path, "r:gz") as archive:
-        for info in archive.getmembers():
+        for info in archive:
+            member_count += 1
+            if member_count > MAX_ARCHIVE_MEMBER_COUNT:
+                raise VerificationError(f"sdist member count exceeds {MAX_ARCHIVE_MEMBER_COUNT}: {member_count}")
             raw_name = _normalize_member_name(info.name)
             _reject_env_member(raw_name, "sdist")
             if info.isdir():
@@ -176,11 +199,58 @@ def _read_sdist_members(path: Path) -> ArchiveMembers:
             name = _strip_sdist_root(raw_name)
             if name in members:
                 raise VerificationError(f"sdist duplicate member after normalization: {name}")
+            aggregate_size = _check_declared_member_size("sdist", name, info.size, aggregate_size)
             fileobj = archive.extractfile(info)
             if fileobj is None:
                 raise VerificationError(f"sdist member could not be read: {raw_name}")
-            members[name] = fileobj.read()
+            with fileobj:
+                members[name] = _read_bounded_member(fileobj, expected_size=info.size, label="sdist", name=name)
     return ArchiveMembers("sdist", members)
+
+
+def _check_declared_member_size(label: str, name: str, size: int, aggregate_size: int) -> int:
+    if not isinstance(size, int) or size < 0:
+        raise VerificationError(f"{label} member has invalid declared size: {name} size={size!r}")
+    if size > MAX_ARCHIVE_MEMBER_SIZE:
+        raise VerificationError(
+            f"{label} member exceeds maximum uncompressed size: {name} size={size} max={MAX_ARCHIVE_MEMBER_SIZE}"
+        )
+    next_aggregate = aggregate_size + size
+    if next_aggregate > MAX_ARCHIVE_TOTAL_SIZE:
+        raise VerificationError(
+            f"{label} aggregate uncompressed size exceeds {MAX_ARCHIVE_TOTAL_SIZE}: {next_aggregate}"
+        )
+    return next_aggregate
+
+
+def _read_bounded_member(fileobj: IO[bytes], *, expected_size: int, label: str, name: str) -> bytes:
+    chunks: list[bytes] = []
+    total_size = 0
+    tail = b""
+    while True:
+        chunk = fileobj.read(ARCHIVE_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > expected_size:
+            raise VerificationError(
+                f"{label} member decompressed size exceeds declared size: {name} declared={expected_size} read>{total_size}"
+            )
+        _scan_payload_bytes(label, name, tail + chunk)
+        tail = (tail + chunk)[-_STREAM_SCAN_TAIL:]
+        chunks.append(chunk)
+    if total_size != expected_size:
+        raise VerificationError(f"{label} member size mismatch: {name} declared={expected_size} read={total_size}")
+    return b"".join(chunks)
+
+
+def _scan_payload_bytes(label: str, name: str, payload: bytes) -> None:
+    for pattern in SECRET_BYTE_PATTERNS:
+        if pattern.search(payload):
+            raise VerificationError(f"{label} contains credential-shaped content: {name}")
+    for sentinel in SYNTHETIC_SENTINELS:
+        if sentinel in payload:
+            raise VerificationError(f"{label} contains synthetic fixture sentinel bytes: {name}")
 
 
 def _normalize_member_name(name: str) -> str:
@@ -464,6 +534,12 @@ def _require_list(value: Any, label: str) -> list[JsonValue]:
 def _require_mapping(value: JsonValue, label: str) -> dict[str, JsonValue]:
     if not isinstance(value, dict):
         raise VerificationError(f"{label} is not an object")
+    return value
+
+
+def _require_int(value: JsonValue, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise VerificationError(f"{label} is not an integer")
     return value
 
 

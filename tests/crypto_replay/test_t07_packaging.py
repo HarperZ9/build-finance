@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import tarfile
 import zipfile
@@ -102,3 +103,119 @@ def test_artifact_verifier_rejects_archives_without_replay_contracts(tmp_path: P
 
     with pytest.raises(VerificationError, match="wheel missing required member"):
         verify_artifacts(wheel=wheel, sdist=sdist)
+
+
+def _write_probe_wheel(path: Path, members: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return path
+
+
+def _write_probe_sdist(path: Path, members: dict[str, bytes]) -> Path:
+    with tarfile.open(path, "w:gz") as archive:
+        for name, payload in members.items():
+            info = tarfile.TarInfo(f"build_finance-1.0.1/{name}")
+            info.size = len(payload)
+            archive.addfile(info, fileobj=io.BytesIO(payload))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("archive_kind", "reader_name", "writer_name", "archive_name"),
+    (
+        ("wheel", "_read_wheel_members", "_write_probe_wheel", "budget.whl"),
+        ("sdist", "_read_sdist_members", "_write_probe_sdist", "budget.tar.gz"),
+    ),
+)
+def test_artifact_reader_rejects_member_count_budget_before_payload_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_kind: str,
+    reader_name: str,
+    writer_name: str,
+    archive_name: str,
+) -> None:
+    """Catches archive readers that ignore declared member-count budgets."""
+
+    from scripts import verify_crypto_replay_artifacts as verifier
+
+    monkeypatch.setattr(verifier, "MAX_ARCHIVE_MEMBER_COUNT", 1, raising=False)
+    writer = globals()[writer_name]
+    archive = writer(tmp_path / archive_name, {"one.txt": b"1", "two.txt": b"2"})
+    reader = getattr(verifier, reader_name)
+
+    with pytest.raises(verifier.VerificationError, match=f"{archive_kind} member count exceeds"):
+        reader(archive)
+
+
+@pytest.mark.parametrize(
+    ("archive_kind", "reader_name", "writer_name", "archive_name"),
+    (
+        ("wheel", "_read_wheel_members", "_write_probe_wheel", "member-size.whl"),
+        ("sdist", "_read_sdist_members", "_write_probe_sdist", "member-size.tar.gz"),
+    ),
+)
+def test_artifact_reader_rejects_individual_uncompressed_size_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_kind: str,
+    reader_name: str,
+    writer_name: str,
+    archive_name: str,
+) -> None:
+    """Catches archive readers that allocate a member larger than the configured budget."""
+
+    from scripts import verify_crypto_replay_artifacts as verifier
+
+    monkeypatch.setattr(verifier, "MAX_ARCHIVE_MEMBER_SIZE", 2, raising=False)
+    writer = globals()[writer_name]
+    archive = writer(tmp_path / archive_name, {"oversized.txt": b"123"})
+    reader = getattr(verifier, reader_name)
+
+    with pytest.raises(verifier.VerificationError, match=f"{archive_kind} member exceeds"):
+        reader(archive)
+
+
+@pytest.mark.parametrize(
+    ("archive_kind", "reader_name", "writer_name", "archive_name"),
+    (
+        ("wheel", "_read_wheel_members", "_write_probe_wheel", "aggregate.whl"),
+        ("sdist", "_read_sdist_members", "_write_probe_sdist", "aggregate.tar.gz"),
+    ),
+)
+def test_artifact_reader_rejects_aggregate_uncompressed_size_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_kind: str,
+    reader_name: str,
+    writer_name: str,
+    archive_name: str,
+) -> None:
+    """Catches archive readers that do not cap total uncompressed bytes."""
+
+    from scripts import verify_crypto_replay_artifacts as verifier
+
+    monkeypatch.setattr(verifier, "MAX_ARCHIVE_TOTAL_SIZE", 5, raising=False)
+    writer = globals()[writer_name]
+    archive = writer(tmp_path / archive_name, {"left.txt": b"123", "right.txt": b"456"})
+    reader = getattr(verifier, reader_name)
+
+    with pytest.raises(verifier.VerificationError, match=f"{archive_kind} aggregate uncompressed size exceeds"):
+        reader(archive)
+
+
+def test_artifact_reader_still_rejects_non_regular_sdist_members(tmp_path: Path) -> None:
+    """Catches tar hardening changes that accidentally allow links or devices."""
+
+    from scripts.verify_crypto_replay_artifacts import VerificationError, _read_sdist_members
+
+    sdist = tmp_path / "non-regular.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        info = tarfile.TarInfo("build_finance-1.0.1/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "target"
+        archive.addfile(info)
+
+    with pytest.raises(VerificationError, match="sdist contains non-regular member"):
+        _read_sdist_members(sdist)
