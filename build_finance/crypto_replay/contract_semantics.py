@@ -3834,6 +3834,104 @@ SUPPORTING_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
 }
 
 
+def validate_benchmark_request_attachment_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate raw benchmark attachment digest/length totality."""
+    issues: list[ValidationIssue] = []
+    for digest_field, length_field in (
+        ("benchmark_manifest_raw_sha256", "benchmark_manifest_raw_byte_length"),
+        ("preregistered_thresholds_raw_sha256", "preregistered_thresholds_raw_byte_length"),
+        ("hardware_profile_raw_sha256", "hardware_profile_raw_byte_length"),
+    ):
+        length = _u64(document[length_field])
+        if length is None:
+            issues.append(_issue("semantic_u64", (length_field,), "raw byte length exceeds the u64 authority range"))
+            continue
+        if document[digest_field] is None and length != 0:
+            issues.append(
+                _issue(
+                    "semantic_raw_totality",
+                    (length_field,),
+                    "absent retained bytes require zero byte length",
+                )
+            )
+    return tuple(issues)
+
+
+def validate_force_close_state_envelope_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
+    """Validate non-negative signed-i128 force-close state aliases."""
+    issues: list[ValidationIssue] = []
+    numeric_fields = set(document) - {"schema", "market_id"}
+    for field in numeric_fields:
+        value = _i128(document[field])
+        if value is None or value < 0:
+            issues.append(
+                _issue(
+                    "semantic_force_close_state_range",
+                    (field,),
+                    "force-close state alias must be a non-negative signed-i128 value",
+                )
+            )
+    return tuple(issues)
+
+
+def validate_run_closure_full_fill_proof_row_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate force-close proof row bounded integer aliases."""
+    issues: list[ValidationIssue] = []
+    for field in ("reference_price_q18", "cash_delta_quote_atoms", "execution_price_q18"):
+        if _i128(document[field]) is None:
+            issues.append(
+                _issue("semantic_force_proof_row_range", (field,), "proof row signed alias exceeds i128 range")
+            )
+    for field in (
+        "residual_base_atoms",
+        "capacity_atoms",
+        "filled_base_atoms",
+        "unfilled_base_atoms",
+        "gross_quote_atoms",
+        "venue_fee_quote_atoms",
+        "priority_fee_quote_atoms",
+        "simulation_fee_quote_atoms",
+    ):
+        if _u64(document[field]) is None:
+            issues.append(_issue("semantic_u64", (field,), "proof row unsigned alias exceeds u64 range"))
+    return tuple(issues)
+
+
+def validate_run_closure_full_fill_proof_set_semantics(
+    document: Mapping[str, JsonValue],
+) -> tuple[ValidationIssue, ...]:
+    """Validate force-close proof row cardinality and deterministic sort order."""
+    issues: list[ValidationIssue] = []
+    rows_value = document["rows"]
+    assert isinstance(rows_value, list)
+    rows = [row for row in rows_value if isinstance(row, Mapping)]
+    proof_row_count = _u64(document["proof_row_count"])
+    if proof_row_count != len(rows):
+        issues.append(_issue("semantic_proof_row_count", ("proof_row_count",), "proof row count must equal rows"))
+
+    def row_key(row: Mapping[str, JsonValue]) -> tuple[int, int, int]:
+        reference = _i128(row["reference_price_q18"])
+        residual = _u64(row["residual_base_atoms"])
+        adverse = row["adverse_fill_bps"]
+        if reference is None or residual is None or not isinstance(adverse, int):
+            return (2**255, 2**255, 2**255)
+        return (reference, residual, adverse)
+
+    if [row_key(row) for row in rows] != sorted(row_key(row) for row in rows):
+        issues.append(_issue("semantic_proof_row_order", ("rows",), "proof rows are not deterministically sorted"))
+    return tuple(issues)
+
+
+ATTACHMENT_SEMANTIC_VALIDATORS: dict[str, SemanticValidator] = {
+    "trading.benchmark-request/v1": validate_benchmark_request_attachment_semantics,
+    "trading.force-close-state-envelope/v1": validate_force_close_state_envelope_semantics,
+    "trading.run-closure-full-fill-proof-row/v1": validate_run_closure_full_fill_proof_row_semantics,
+    "trading.run-closure-full-fill-proof-set/v1": validate_run_closure_full_fill_proof_set_semantics,
+}
+
+
 def validate_contract_semantics(document: Mapping[str, JsonValue]) -> tuple[ValidationIssue, ...]:
     """Dispatch one structurally valid document to its pure semantic validator."""
     schema_id = document.get("schema")
@@ -3842,4 +3940,6 @@ def validate_contract_semantics(document: Mapping[str, JsonValue]) -> tuple[Vali
     validator = SEMANTIC_VALIDATORS.get(schema_id)
     if validator is None:
         validator = SUPPORTING_SEMANTIC_VALIDATORS.get(schema_id)
+    if validator is None:
+        validator = ATTACHMENT_SEMANTIC_VALIDATORS.get(schema_id)
     return () if validator is None else validator(document)

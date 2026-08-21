@@ -188,6 +188,20 @@ def _primary_schema(schema_id: str, properties: Mapping[str, JsonObject]) -> Jso
     return document
 
 
+def _attachment_schema(schema_id: str, properties: Mapping[str, JsonObject]) -> JsonObject:
+    """Return a closed attachment JSON Schema without changing sealed primary schemas."""
+    document = _closed_object(properties)
+    document.update(
+        {
+            "$schema": _DRAFT_2020_12,
+            "$id": json_schema_id(schema_id),
+            "x-contract-schema": schema_id,
+            "$defs": _shared_scalar_definitions(),
+        }
+    )
+    return document
+
+
 _QUALITY_FLAGS = [
     "GAP_BEFORE",
     "MISSING_EVENT_TIME",
@@ -1579,6 +1593,612 @@ def benchmark_receipt_schema() -> JsonObject:
     )
 
 
+_EXECUTION_PHASES = [
+    "INITIAL_PREFIX",
+    "RAW_GROUP_COMMIT",
+    "FILL_OR_EXPIRY",
+    "GROUP_MARK",
+    "SNAPSHOT",
+    "RISK_AND_STATE_EFFECT",
+    "GROUP_GATE",
+    "FINAL_GATE",
+    "TERMINAL_KILL_BATCH",
+    "RUN_END",
+]
+_FOOTPRINT_COMPONENT_KINDS = [
+    "JOURNAL_KEY",
+    "CANONICAL_OBJECT",
+    "LEDGER_SEQUENCE_START",
+    "LEDGER_SEQUENCE_END",
+    "CONSUMED_PRODUCER_SEQUENCE",
+    "CLAIMED_REQUEST_KEY",
+    "PRIOR_LEDGER_HEAD",
+    "PRIOR_PORTFOLIO_STATE",
+    "RESULTING_LEDGER_HEAD",
+    "RESULTING_PORTFOLIO_STATE",
+    "NEXT_LEDGER_SEQUENCE",
+    "NEXT_STATE_SEQUENCE",
+    "NEXT_DECISION_SEQUENCE",
+    "NEXT_INTENT_SEQUENCE",
+    "NEXT_FILL_RECEIPT_SEQUENCE",
+]
+_COUNTER_CAPACITY_FIELDS = [
+    "DECISION_ATTEMPT",
+    "DECISION_SEQUENCE",
+    "PRODUCER_SEQUENCE",
+    "INTENT_SEQUENCE",
+    "FILL_RECEIPT_SEQUENCE",
+    "UNMATCHED_RESERVATION_COUNT",
+    "STATE_SEQUENCE",
+    "LEDGER_SEQUENCE",
+]
+_ARITHMETIC_OPERATIONS = [
+    "GROUP_MARK_VALUE",
+    "SUMMARY_EQUITY",
+    "LEDGER_POSTING",
+    "RESIDUAL_SERIALIZATION",
+]
+
+
+def adverse_fill_draw_key_schema() -> JsonObject:
+    schema_id = "trading.adverse-fill-draw-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "intent_id": _ref("ContentID"),
+            "fill_event_id": _nullable_ref("ContentID"),
+            "decision_equal_time_group": _ref("u64s"),
+            "fill_equal_time_group": _nullable_ref("u64s"),
+            "requested_base_atoms": _ref("u64s"),
+            "max_adverse_fill_bps": {"type": "integer", "minimum": 0, "maximum": 9_999},
+        },
+    )
+
+
+def availability_schedule_schema() -> JsonObject:
+    schema_id = "trading.availability-schedule/v1"
+    availability_group = _closed_object(
+        {
+            "availability_slot": _ref("u64s"),
+            "equal_time_group": _ref("u64s"),
+            "admission_cutoff": _ref("u64s"),
+        }
+    )
+    groups = _array(availability_group, unique=True)
+    groups["minItems"] = 1
+    source_ids = _array(_ref("ContentID"), unique=True)
+    source_ids["minItems"] = 1
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "config_admission_receipt_id": _ref("ContentID"),
+            "source_admission_receipt_ids": source_ids,
+            "availability_groups": groups,
+        },
+    )
+
+
+def benchmark_manifest_schema() -> JsonObject:
+    schema_id = "trading.benchmark-manifest/v1"
+    case = _closed_object(
+        {
+            "case_id": {"type": "string", "minLength": 1},
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "config_admission_receipt_id": _ref("ContentID"),
+            "run_closure_receipt_id": _ref("ContentID"),
+            "warmup_event_count": _ref("u64s"),
+            "measured_event_count": _ref("u64s"),
+            "warmup_group_count": _ref("u64s"),
+            "measured_group_count": _ref("u64s"),
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "benchmark_manifest_version": {"const": "OFFLINE_REPLAY_CORE_V1"},
+            "requested_metric_set": {"const": "OFFLINE_REPLAY_CORE_V1"},
+            "case_count": _ref("u64s"),
+            "repetition_count": _ref("u64s"),
+            "cases": _array(case, unique=True),
+        },
+    )
+
+
+def benchmark_metrics_schema() -> JsonObject:
+    schema_id = "trading.benchmark-metrics/v1"
+    metric = _closed_object(
+        {
+            "case_id": {"type": "string", "minLength": 1},
+            "phase": {"enum": ["admission", "feature", "risk", "fill", "accounting", "end_to_end"]},
+            "unit": {
+                "enum": [
+                    "RAW_EVENT",
+                    "FEATURE_SNAPSHOT",
+                    "RISK_DECISION",
+                    "SIMULATED_FILL_RECEIPT",
+                    "RECONCILIATION_RECEIPT",
+                    "EQUAL_TIME_GROUP",
+                ]
+            },
+            "sample_count": _ref("u64s"),
+            "p50_ns": _nullable_ref("u64s"),
+            "p95_ns": _nullable_ref("u64s"),
+            "p99_ns": _nullable_ref("u64s"),
+            "max_ns": _nullable_ref("u64s"),
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "benchmark_manifest_sha256": _ref("sha256"),
+            "hardware_profile_sha256": _ref("sha256"),
+            "measurement_count": _ref("u64s"),
+            "metrics": _array(metric, unique=True),
+        },
+    )
+
+
+def benchmark_request_schema() -> JsonObject:
+    schema_id = "trading.benchmark-request/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "request_code_sha256": _ref("sha256"),
+            "fixture_manifest_sha256": _nullable_ref("ContentID"),
+            "config_admission_receipt_id": _nullable_ref("ContentID"),
+            "run_closure_receipt_id": _nullable_ref("ContentID"),
+            "benchmark_manifest_raw_sha256": _nullable_ref("sha256"),
+            "preregistered_thresholds_raw_sha256": _nullable_ref("sha256"),
+            "hardware_profile_raw_sha256": _nullable_ref("sha256"),
+            "benchmark_manifest_raw_byte_length": _ref("u64s"),
+            "preregistered_thresholds_raw_byte_length": _ref("u64s"),
+            "hardware_profile_raw_byte_length": _ref("u64s"),
+            "requested_metric_set": {"const": "OFFLINE_REPLAY_CORE_V1"},
+        },
+    )
+
+
+def counter_capacity_schema() -> JsonObject:
+    schema_id = "trading.counter-capacity/v1"
+    nullable_counter = _nullable_ref("u64s")
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "model_signal_mode": {"enum": ["DISABLED", "CACHED_FIXTURES"]},
+            "model_registry_sha256": _nullable_ref("ContentID"),
+            "model_signal_manifest_sha256": _nullable_ref("ContentID"),
+            "normalized_event_set_sha256": _ref("sha256"),
+            "source_admission_count": _ref("u64s"),
+            "raw_event_count": _ref("u64s"),
+            "availability_group_count": _ref("u64s"),
+            "market_count": _ref("u64s"),
+            "model_candidate_count": _ref("u64s"),
+            "decision_attempt_upper_bound": nullable_counter,
+            "decision_sequence_next_upper_bound": nullable_counter,
+            "producer_sequence_next_upper_bound": nullable_counter,
+            "intent_sequence_next_upper_bound": nullable_counter,
+            "fill_receipt_sequence_next_upper_bound": nullable_counter,
+            "unmatched_reservation_count_upper_bound": nullable_counter,
+            "state_sequence_next_upper_bound": nullable_counter,
+            "ledger_sequence_next_upper_bound": nullable_counter,
+            "status": {"enum": ["WITHIN_LIMIT", "EXCEEDED"]},
+            "first_exceeded_counter": {"anyOf": [{"enum": _COUNTER_CAPACITY_FIELDS}, {"type": "null"}]},
+        },
+    )
+
+
+def execution_footprint_component_schema() -> JsonObject:
+    schema_id = "trading.execution-footprint-component/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "component_kind": {"enum": _FOOTPRINT_COMPONENT_KINDS},
+            "ordinal": _nullable_ref("u64s"),
+            "component_sha256": _nullable_ref("sha256"),
+            "object_id": _nullable_ref("ContentID"),
+            "byte_sha256": _nullable_ref("sha256"),
+            "u64_value": _nullable_ref("u64s"),
+        },
+    )
+
+
+def execution_transition_footprint_schema() -> JsonObject:
+    schema_id = "trading.execution-transition-footprint/v1"
+    component = _closed_object(
+        {
+            "component_kind": {"enum": _FOOTPRINT_COMPONENT_KINDS},
+            "ordinal": _nullable_ref("u64s"),
+            "component_sha256": _nullable_ref("sha256"),
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "transition_key_sha256": _ref("sha256"),
+            "ledger_head_before_id": _nullable_ref("ContentID"),
+            "ledger_head_after_id": _nullable_ref("ContentID"),
+            "portfolio_state_before_id": _nullable_ref("ContentID"),
+            "portfolio_state_after_id": _nullable_ref("ContentID"),
+            "components": _array(component, unique=True),
+        },
+    )
+
+
+def execution_transition_key_schema() -> JsonObject:
+    schema_id = "trading.execution-transition-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "equal_time_group": _ref("u64s"),
+            "phase": {"enum": _EXECUTION_PHASES},
+            "market_id": _nullable_ref("bounded_utf8_registry_string"),
+            "item_sequence": _nullable_ref("u64s"),
+        },
+    )
+
+
+def fill_idempotency_key_schema() -> JsonObject:
+    schema_id = "trading.fill-idempotency-key/v1"
+    return _attachment_schema(schema_id, {"schema": {"const": schema_id}, "intent_id": _ref("ContentID")})
+
+
+def force_close_state_envelope_schema() -> JsonObject:
+    schema_id = "trading.force-close-state-envelope/v1"
+    fields = (
+        "decision_attempt_upper_bound",
+        "position_quantity_base_atoms_max",
+        "position_cost_basis_quote_atoms_max",
+        "all_position_cost_basis_quote_atoms_max",
+        "single_fill_gross_quote_atoms_max",
+        "single_fill_fee_quote_atoms_max",
+        "all_market_value_quote_atoms_max",
+        "pre_quote_total_atoms_max",
+        "post_quote_total_atoms_max",
+        "pre_realized_pnl_abs_max",
+        "post_realized_pnl_abs_max",
+        "pre_unrealized_pnl_abs_max",
+        "post_unrealized_pnl_abs_max",
+        "pre_session_pnl_abs_max",
+        "post_session_pnl_abs_max",
+        "pre_cumulative_fees_quote_atoms_max",
+        "post_cumulative_fees_quote_atoms_max",
+        "pre_equity_quote_atoms_max",
+        "post_equity_quote_atoms_max",
+        "pre_peak_equity_quote_atoms_max",
+        "post_peak_equity_quote_atoms_max",
+        "ledger_posting_abs_max",
+    )
+    properties = {field: _ref("u64s") for field in fields}
+    properties.update(
+        {
+            "schema": {"const": schema_id},
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "terminal_horizon_equal_time_group": _ref("u64s"),
+        }
+    )
+    return _attachment_schema(schema_id, properties)
+
+
+def group_mark_key_schema() -> JsonObject:
+    schema_id = "trading.group-mark-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "equal_time_group": _ref("u64s"),
+            "as_of_ingest_sequence": _ref("u64s"),
+            "portfolio_state_before_id": _ref("ContentID"),
+        },
+    )
+
+
+def hardware_profile_schema() -> JsonObject:
+    schema_id = "trading.hardware-profile/v1"
+    positive_count: JsonObject = {"type": "string", "pattern": "^[1-9][0-9]*$"}
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "os_name": {"type": "string", "minLength": 1},
+            "os_version": {"type": "string", "minLength": 1},
+            "architecture": {"type": "string", "minLength": 1},
+            "cpu_vendor": {"type": "string", "minLength": 1},
+            "cpu_model": {"type": "string", "minLength": 1},
+            "runtime_isolation": {"type": "string", "minLength": 1},
+            "logical_cpu_count": positive_count,
+            "physical_memory_bytes": positive_count,
+            "timer_resolution_ns": positive_count,
+            "virtualization": {"enum": ["NONE_DECLARED", "UNKNOWN_DECLARED", "HYPERVISOR_DECLARED"]},
+            "power_profile": {"enum": ["UNKNOWN_DECLARED", "BATTERY", "BALANCED", "HIGH_PERFORMANCE"]},
+            "timer_source": {"enum": ["PERF_COUNTER", "MONOTONIC", "PROCESS_TIME"]},
+        },
+    )
+
+
+def model_attempt_footprint_schema() -> JsonObject:
+    schema_id = "trading.model-attempt-footprint/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "validation_attempt_key_sha256": _ref("sha256"),
+            "model_signal_manifest_sha256": _ref("ContentID"),
+            "raw_signal_sha256": _ref("sha256"),
+            "declared_signal_id": _nullable_ref("ContentID"),
+            "accepted_signal_id": _nullable_ref("ContentID"),
+            "feature_snapshot_id": _ref("ContentID"),
+            "decision_sequence": _ref("u64s"),
+            "producer_sequence": _nullable_ref("u64s"),
+            "producer_scope_key_sha256": _nullable_ref("sha256"),
+        },
+    )
+
+
+def model_request_key_schema() -> JsonObject:
+    schema_id = "trading.model-request-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "decision_sequence": _ref("u64s"),
+            "horizon_ns": _ref("u64s"),
+            "producer_scope_key_sha256": _ref("sha256"),
+        },
+    )
+
+
+def model_validation_attempt_key_schema() -> JsonObject:
+    schema_id = "trading.model-validation-attempt-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "model_signal_manifest_sha256": _ref("ContentID"),
+            "relative_path": _ref("safe_relative_path"),
+            "raw_signal_sha256": _ref("sha256"),
+            "feature_snapshot_id": _ref("ContentID"),
+            "decision_sequence": _ref("u64s"),
+            "requested_producer_scope_key_sha256": _ref("sha256"),
+            "horizon_ns": _ref("u64s"),
+        },
+    )
+
+
+def normalized_event_set_schema() -> JsonObject:
+    schema_id = "trading.normalized-event-set/v1"
+    event_ids = _array(_ref("ContentID"), unique=True)
+    event_ids["minItems"] = 1
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "fixture_manifest_sha256": _ref("ContentID"),
+            "raw_event_count": _ref("u64s"),
+            "event_ids": event_ids,
+        },
+    )
+
+
+def preregistered_thresholds_schema() -> JsonObject:
+    schema_id = "trading.preregistered-thresholds/v1"
+    threshold = _closed_object(
+        {
+            "metric_name": {"type": "string", "minLength": 1},
+            "maximum_value": _nullable_ref("u64s"),
+            "minimum_value": _nullable_ref("u64s"),
+            "unit": {"enum": ["ns", "bytes", "count", "bps", "ratio_q18"]},
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "requested_metric_set": {"const": "OFFLINE_REPLAY_CORE_V1"},
+            "percentile_method": {"const": "NEAREST_RANK_CEIL"},
+            "thresholds": _array(threshold, unique=True),
+        },
+    )
+
+
+def reconciliation_arithmetic_operands_schema() -> JsonObject:
+    schema_id = "trading.reconciliation-arithmetic-operands/v1"
+    operand = _closed_object(
+        {
+            "operand_name": {"type": "string", "minLength": 1},
+            "operand_value": _ref("i128s"),
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "arithmetic_operation": {"enum": _ARITHMETIC_OPERATIONS},
+            "operands": _array(operand),
+        },
+    )
+
+
+def reconciliation_arithmetic_range_key_schema() -> JsonObject:
+    schema_id = "trading.reconciliation-arithmetic-range-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "portfolio_state_before_id": _ref("ContentID"),
+            "ingest_sequence": _ref("u64s"),
+            "equal_time_group": _ref("u64s"),
+            "replay_clock_ns": _ref("u64s"),
+            "arithmetic_operation": {"enum": _ARITHMETIC_OPERATIONS},
+            "arithmetic_operands_sha256": _ref("sha256"),
+        },
+    )
+
+
+def reservation_key_schema() -> JsonObject:
+    schema_id = "trading.reservation-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "intent_id": _nullable_ref("ContentID"),
+            "risk_decision_id": _nullable_ref("ContentID"),
+            "equal_time_group": _ref("u64s"),
+            "reservation_scope": {"enum": ["QUOTE_FOR_BUY", "BASE_FOR_CLOSE_LONG"]},
+        },
+    )
+
+
+def risk_idempotency_key_schema() -> JsonObject:
+    schema_id = "trading.risk-idempotency-key/v1"
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "run_receipt_id": _ref("ContentID"),
+            "equal_time_group": _ref("u64s"),
+            "market_id": _ref("bounded_utf8_registry_string"),
+        },
+    )
+
+
+def run_closure_fill_candidate_semantic_schema() -> JsonObject:
+    schema_id = "trading.run-closure-fill-candidate-semantic/v1"
+    nonnegative_bps = {"type": "integer", "minimum": 0, "maximum": 2_147_483_647}
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "event_kind": {"const": "ROUTE_QUOTE"},
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "base_mint": _ref("bounded_utf8_registry_string"),
+            "quote_mint": _ref("bounded_utf8_registry_string"),
+            "base_decimals": {"type": "integer", "minimum": 0, "maximum": 18},
+            "quote_decimals": {"type": "integer", "minimum": 0, "maximum": 18},
+            "base_amount_atoms": _ref("u64s"),
+            "quote_amount_atoms": _ref("u64s"),
+            "route_capacity_base_atoms": _ref("u64s"),
+            "liquidity_quote_atoms": _ref("u64s"),
+            "venue_fee_quote_atoms": _ref("u64s"),
+            "priority_fee_quote_atoms": _ref("u64s"),
+            "route_impact_bps": nonnegative_bps,
+            "executable": {"type": "boolean"},
+            "quality_flags": _array({"enum": _QUALITY_FLAGS}, unique=True),
+        },
+    )
+
+
+def run_closure_full_fill_proof_row_schema() -> JsonObject:
+    schema_id = "trading.run-closure-full-fill-proof-row/v1"
+    nonnegative_bps = {"type": "integer", "minimum": 0, "maximum": 2_147_483_647}
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "residual_base_atoms": _ref("u64s"),
+            "reference_price_q18": _ref("sq18s"),
+            "capacity_atoms": _ref("u64s"),
+            "filled_base_atoms": _ref("u64s"),
+            "unfilled_base_atoms": _ref("u64s"),
+            "gross_quote_atoms": _ref("u64s"),
+            "venue_fee_quote_atoms": _ref("u64s"),
+            "priority_fee_quote_atoms": _ref("u64s"),
+            "simulation_fee_quote_atoms": _ref("u64s"),
+            "cash_delta_quote_atoms": _ref("i128s"),
+            "execution_price_q18": _ref("sq18s"),
+            "participation_bps": nonnegative_bps,
+            "reference_deviation_bps": nonnegative_bps,
+            "impact_bps": nonnegative_bps,
+            "fee_bps": nonnegative_bps,
+            "adverse_fill_bps": nonnegative_bps,
+            "status": {"const": "FILLED"},
+            "reason_codes": _array({"enum": _FILL_REASON_CODES}, unique=True),
+        },
+    )
+
+
+def run_closure_full_fill_proof_set_schema() -> JsonObject:
+    schema_id = "trading.run-closure-full-fill-proof-set/v1"
+    extremes = _array({"type": "integer", "minimum": 0, "maximum": 9_999}, unique=True)
+    extremes["minItems"] = 2
+    rows = _array({"$ref": json_schema_id("trading.run-closure-full-fill-proof-row/v1")}, unique=True)
+    rows["minItems"] = 1
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "earliest_trigger_equal_time_group": _ref("u64s"),
+            "fill_candidate_semantic_sha256": _ref("sha256"),
+            "q_cap_base_atoms": _ref("u64s"),
+            "reference_set_root_sha256": _ref("sha256"),
+            "adverse_fill_extremes_bps": extremes,
+            "proof_domain": {"const": "ALL_RESIDUAL_REFERENCE_PAIRS_AT_FILL_EXTREMES_V1"},
+            "proof_row_count": _ref("u64s"),
+            "rows": rows,
+        },
+    )
+
+
+def run_closure_reference_set_schema() -> JsonObject:
+    schema_id = "trading.run-closure-reference-set/v1"
+    prices = _array(_ref("sq18s"), unique=True)
+    prices["minItems"] = 1
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "market_id": _ref("bounded_utf8_registry_string"),
+            "reference_prices_q18": prices,
+        },
+    )
+
+
+def source_tree_schema() -> JsonObject:
+    schema_id = "trading.source-tree/v1"
+    exclusion_prefix: JsonObject = {
+        "type": "string",
+        "pattern": (
+            r"^(?![A-Za-z]:)(?!/)(?!\.{1,2}/)(?!.*(?:/\.{1,2})(?:/|$))(?!.*//)"
+            r"[^/\\:\x00]+(?:/[^/\\:\x00]+)*/$"
+        ),
+    }
+    file_row = _closed_object(
+        {
+            "relative_path": _ref("safe_relative_path"),
+            "byte_length": _ref("u64s"),
+            "file_sha256": _ref("sha256"),
+        }
+    )
+    return _attachment_schema(
+        schema_id,
+        {
+            "schema": {"const": schema_id},
+            "root_label": {"type": "string", "minLength": 1},
+            "path_policy": {"const": "UTF8_NFC_POSIX_RELATIVE_NO_SYMLINK_V1"},
+            "exclusion_prefixes": _array(exclusion_prefix, unique=True),
+            "files": _array(file_row, unique=True),
+        },
+    )
+
+
 PRIMARY_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.raw-event/v1": raw_event_schema(),
     "trading.feature-snapshot/v1": feature_snapshot_schema(),
@@ -1604,7 +2224,35 @@ SUPPORTING_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
     "trading.benchmark-measurement/v1": benchmark_measurement_schema(),
     "trading.benchmark-receipt/v1": benchmark_receipt_schema(),
 }
-ATTACHMENT_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {}
+ATTACHMENT_SCHEMA_DOCUMENTS: dict[str, JsonObject] = {
+    "trading.adverse-fill-draw-key/v1": adverse_fill_draw_key_schema(),
+    "trading.availability-schedule/v1": availability_schedule_schema(),
+    "trading.benchmark-manifest/v1": benchmark_manifest_schema(),
+    "trading.benchmark-metrics/v1": benchmark_metrics_schema(),
+    "trading.benchmark-request/v1": benchmark_request_schema(),
+    "trading.counter-capacity/v1": counter_capacity_schema(),
+    "trading.execution-footprint-component/v1": execution_footprint_component_schema(),
+    "trading.execution-transition-footprint/v1": execution_transition_footprint_schema(),
+    "trading.execution-transition-key/v1": execution_transition_key_schema(),
+    "trading.fill-idempotency-key/v1": fill_idempotency_key_schema(),
+    "trading.force-close-state-envelope/v1": force_close_state_envelope_schema(),
+    "trading.group-mark-key/v1": group_mark_key_schema(),
+    "trading.hardware-profile/v1": hardware_profile_schema(),
+    "trading.model-attempt-footprint/v1": model_attempt_footprint_schema(),
+    "trading.model-request-key/v1": model_request_key_schema(),
+    "trading.model-validation-attempt-key/v1": model_validation_attempt_key_schema(),
+    "trading.normalized-event-set/v1": normalized_event_set_schema(),
+    "trading.preregistered-thresholds/v1": preregistered_thresholds_schema(),
+    "trading.reconciliation-arithmetic-operands/v1": reconciliation_arithmetic_operands_schema(),
+    "trading.reconciliation-arithmetic-range-key/v1": reconciliation_arithmetic_range_key_schema(),
+    "trading.reservation-key/v1": reservation_key_schema(),
+    "trading.risk-idempotency-key/v1": risk_idempotency_key_schema(),
+    "trading.run-closure-fill-candidate-semantic/v1": run_closure_fill_candidate_semantic_schema(),
+    "trading.run-closure-full-fill-proof-row/v1": run_closure_full_fill_proof_row_schema(),
+    "trading.run-closure-full-fill-proof-set/v1": run_closure_full_fill_proof_set_schema(),
+    "trading.run-closure-reference-set/v1": run_closure_reference_set_schema(),
+    "trading.source-tree/v1": source_tree_schema(),
+}
 
 
 def get_defined_schema_documents() -> dict[str, JsonObject]:

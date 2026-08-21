@@ -35,6 +35,9 @@ from tests.crypto_replay.test_t02_supporting_contracts import (
     build_t02_vector,
 )
 
+RESOURCE_ROOT = Path(__file__).resolve().parents[2] / "build_finance" / "crypto_replay" / "resources"
+EXPECTED_SCHEMA_BUNDLE_SHA256 = "3ce41cda0e6f561ab5011baf9d5a9e330fbb44d6e2165809ac770671fd94c552"
+
 
 def _future_symbol(module_name: str, symbol_name: str, capability: str) -> Any:
     """Require one delayed T02 capability without hiding dependency errors."""
@@ -117,6 +120,23 @@ def _component_observation(component_kind: str, classification: str) -> dict[str
         "observed_component_sha256": (None if classification == "MISSING" else _digest(f"observed-{component_kind}")),
         "classification": classification,
     }
+
+
+def test_t02_schema_bundle_digest_is_pinned_independently() -> None:
+    bundle_record = (RESOURCE_ROOT / "schema-bundle.json").read_bytes()
+    digest_record = (RESOURCE_ROOT / "schema-bundle.sha256").read_text(encoding="ascii")
+    lock = parse_canonical_record((RESOURCE_ROOT / "schema-lock.json").read_bytes())
+
+    bundle = parse_canonical_record(bundle_record)
+    observed_digest = sha256_hex(canonical_json_bytes(bundle))
+    assert observed_digest == EXPECTED_SCHEMA_BUNDLE_SHA256
+    assert digest_record == f"{EXPECTED_SCHEMA_BUNDLE_SHA256}\n"
+    assert lock["schema_bundle_sha256"] == EXPECTED_SCHEMA_BUNDLE_SHA256
+    assert lock["primary_contract_count"] == 8
+    assert lock["supporting_contract_count"] == 13
+    assert lock["json_attachment_schema_count"] == 27
+    assert lock["generated_json_schema_count"] == 48
+    assert lock["total_authority_contract_count"] == 49
 
 
 def test_initial_prefix_missing_anchor_emits_out_of_band_quarantine() -> None:
