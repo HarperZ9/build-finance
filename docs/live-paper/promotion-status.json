@@ -1,1 +1,1 @@
-{"artifact":"build-finance-paper-core","g2":"GREEN","live_readiness":"BLOCKED","model_inference":"DISABLED_ABSTAIN","next_authorized_node":null,"paper_only":true,"profitability_claim":false,"publication":"BLOCKED"}
+{"artifact":"build-finance-paper-core","evidence_receipt":"docs/live-paper/evidence/G2-green.json","g2":"GREEN","implementation_sha":"d9c30859a722f1455d69f97aaa6d30b977abd8df","live_readiness":"BLOCKED","model_inference":"DISABLED_ABSTAIN","next_authorized_node":null,"paper_only":true,"profitability_claim":false,"publication":"BLOCKED"}
