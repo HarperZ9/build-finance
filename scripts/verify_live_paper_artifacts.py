@@ -4,21 +4,33 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
+import csv
 import hashlib
+import io
 import json
 import re
+import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from verify_crypto_replay_artifacts import (
-    ArchiveMembers,
-    VerificationError,
-    _read_sdist_members,
-    _read_wheel_members,
-)
+try:
+    from scripts.verify_crypto_replay_artifacts import (
+        ArchiveMembers,
+        VerificationError,
+        _read_sdist_members,
+        _read_wheel_members,
+    )
+except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
+    from verify_crypto_replay_artifacts import (
+        ArchiveMembers,
+        VerificationError,
+        _read_sdist_members,
+        _read_wheel_members,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "build_finance" / "live_paper" / "paper_core_manifest.json"
@@ -32,8 +44,11 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "ftplib",
     "http",
     "ibapi",
+    "importlib",
     "kraken",
+    "_socket",
     "requests",
+    "runpy",
     "socket",
     "ssl",
     "subprocess",
@@ -42,6 +57,27 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "web3",
     "websocket",
     "websockets",
+)
+WHEEL_METADATA = frozenset(
+    {
+        "build_finance_paper_core-1.0.1.dist-info/METADATA",
+        "build_finance_paper_core-1.0.1.dist-info/RECORD",
+        "build_finance_paper_core-1.0.1.dist-info/WHEEL",
+        "build_finance_paper_core-1.0.1.dist-info/top_level.txt",
+    }
+)
+SDIST_METADATA = frozenset(
+    {
+        "PKG-INFO",
+        "README.md",
+        "build_finance_paper_core.egg-info/PKG-INFO",
+        "build_finance_paper_core.egg-info/SOURCES.txt",
+        "build_finance_paper_core.egg-info/dependency_links.txt",
+        "build_finance_paper_core.egg-info/requires.txt",
+        "build_finance_paper_core.egg-info/top_level.txt",
+        "pyproject.toml",
+        "setup.cfg",
+    }
 )
 FORBIDDEN_BUILD_FINANCE_PREFIXES = (
     "build_finance.autotrader",
@@ -90,12 +126,140 @@ class VerificationReport:
     wheel_sha256: str
 
 
+CRITICAL_IMPLEMENTATION_PATHS = (
+    ".github/workflows/ci.yml",
+    "build_finance/crypto_replay",
+    "build_finance/live_paper",
+    "pyproject.toml",
+    "scripts/build_paper_core_artifacts.py",
+    "scripts/capture_live_paper_gate.py",
+    "scripts/capture_paper_core_gate.py",
+    "scripts/run_network_denied.py",
+    "scripts/verify_crypto_replay_artifacts.py",
+    "scripts/verify_live_paper_artifacts.py",
+    "tests/live_paper",
+)
+
+
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
 def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def _load_canonical_json(path: Path) -> dict[str, Any]:
+    payload = path.read_bytes()
+    if not payload.endswith(b"\n") or b"\r" in payload:
+        raise VerificationError(f"evidence JSON must be LF-terminated canonical JSON: {path}")
+    value = json.loads(payload)
+    if not isinstance(value, dict) or _canonical_json_bytes(value) + b"\n" != payload:
+        raise VerificationError(f"evidence JSON is not canonical: {path}")
+    return value
+
+
+def _relative_artifact_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError as error:
+        raise VerificationError(f"gate artifact must be beneath the repository: {path}") from error
+
+
+def _derived_promotion(implementation_sha: str, receipt_path: str) -> dict[str, object]:
+    return {
+        "artifact": "build-finance-paper-core",
+        "evidence_receipt": receipt_path,
+        "g2": "GREEN",
+        "implementation_sha": implementation_sha,
+        "live_readiness": "BLOCKED",
+        "model_inference": "DISABLED_ABSTAIN",
+        "next_authorized_node": None,
+        "paper_only": True,
+        "profitability_claim": False,
+        "publication": "BLOCKED",
+    }
+
+
+def verify_gate_evidence(
+    *,
+    receipt_path: Path,
+    promotion_path: Path,
+    transcript_path: Path,
+    wheel: Path,
+    sdist: Path,
+    manifest_sha256: str,
+    repo_root: Path = ROOT,
+    verify_git: bool = True,
+) -> None:
+    """Verify GREEN is derived from captured output and the current local artifacts."""
+
+    receipt = _load_canonical_json(receipt_path)
+    promotion = _load_canonical_json(promotion_path)
+    transcript_payload = transcript_path.read_bytes()
+    transcript = _load_canonical_json(transcript_path)
+    implementation_sha = receipt.get("implementation_sha")
+    if not isinstance(implementation_sha, str) or re.fullmatch(r"[0-9a-f]{40}", implementation_sha) is None:
+        raise VerificationError("gate receipt has an invalid implementation_sha")
+    transcript_ref = receipt.get("transcript")
+    expected_transcript_path = _relative_artifact_path(transcript_path, repo_root)
+    if transcript_ref != {"path": expected_transcript_path, "sha256": _sha256(transcript_payload)}:
+        raise VerificationError("gate receipt transcript path or digest is stale")
+    transcript_commands = transcript.get("commands")
+    if transcript.get("implementation_sha") != implementation_sha or not isinstance(transcript_commands, list):
+        raise VerificationError("gate transcript implementation or commands are invalid")
+    verified_commands: list[dict[str, object]] = []
+    for index, row in enumerate(transcript_commands):
+        if not isinstance(row, dict) or not isinstance(row.get("output"), str):
+            raise VerificationError(f"gate transcript command row {index} is invalid")
+        output_digest = _sha256(row["output"].encode("utf-8"))
+        if row.get("stdout_sha256") != output_digest:
+            raise VerificationError(f"gate transcript command row {index} output digest is invalid")
+        command_args = row.get("command_args")
+        exit_code = row.get("exit_code")
+        if not isinstance(command_args, list) or not all(isinstance(arg, str) for arg in command_args):
+            raise VerificationError(f"gate transcript command row {index} command_args are invalid")
+        if exit_code != 0:
+            raise VerificationError(f"gate transcript command row {index} did not pass: exit_code={exit_code!r}")
+        verified_commands.append(
+            {"command_args": command_args, "exit_code": exit_code, "stdout_sha256": output_digest}
+        )
+    if receipt.get("commands") != verified_commands or not verified_commands:
+        raise VerificationError("gate receipt command evidence differs from captured transcript")
+    artifact_ref = receipt.get("artifacts")
+    expected_artifacts = {
+        "sdist": {
+            "path": _relative_artifact_path(sdist, repo_root),
+            "sha256": _sha256(sdist.read_bytes()),
+        },
+        "wheel": {
+            "path": _relative_artifact_path(wheel, repo_root),
+            "sha256": _sha256(wheel.read_bytes()),
+        },
+    }
+    if artifact_ref != expected_artifacts:
+        raise VerificationError("gate receipt artifact paths or digests are stale")
+    receipt_relative = _relative_artifact_path(receipt_path, repo_root)
+    expected_promotion = _derived_promotion(implementation_sha, receipt_relative)
+    if receipt.get("paper_core_manifest_sha256") != manifest_sha256:
+        raise VerificationError("gate receipt paper-core manifest digest is stale")
+    if receipt.get("status") != "GREEN" or receipt.get("promotion_status") != expected_promotion:
+        raise VerificationError("gate receipt GREEN/promotion state is not derived from passing evidence")
+    if promotion != expected_promotion:
+        raise VerificationError("promotion status differs from the derived gate state")
+    if verify_git:
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", implementation_sha, "HEAD"],
+            cwd=repo_root,
+            check=False,
+        )
+        unchanged = subprocess.run(
+            ["git", "diff", "--quiet", implementation_sha, "HEAD", "--", *CRITICAL_IMPLEMENTATION_PATHS],
+            cwd=repo_root,
+            check=False,
+        )
+        if ancestor.returncode != 0 or unchanged.returncode != 0:
+            raise VerificationError("gate receipt implementation_sha is stale for critical package-gate paths")
 
 
 def _load_expected_manifest() -> tuple[bytes, dict[str, Any], dict[str, str]]:
@@ -143,6 +307,63 @@ def _verify_exact_sources(archive: ArchiveMembers, expected: dict[str, str], man
             raise VerificationError(f"{archive.label} source digest mismatch: {name}")
 
 
+def _verify_complete_member_sets(
+    wheel: ArchiveMembers,
+    sdist: ArchiveMembers,
+    expected: dict[str, str],
+) -> None:
+    """Reject every archive member outside the reviewed sources and narrow metadata."""
+
+    for archive, metadata in ((wheel, WHEEL_METADATA), (sdist, SDIST_METADATA)):
+        allowed = set(expected) | set(metadata)
+        actual = set(archive.members)
+        if actual != allowed:
+            raise VerificationError(
+                f"{archive.label} archive allowlist mismatch: "
+                f"missing={sorted(allowed - actual)!r} extra={sorted(actual - allowed)!r}"
+            )
+
+
+def _verify_wheel_record(wheel: ArchiveMembers) -> None:
+    """Validate RECORD coverage, sizes, and sha256 digests for the complete wheel."""
+
+    record_names = [name for name in wheel.members if name.endswith(".dist-info/RECORD")]
+    if record_names != ["build_finance_paper_core-1.0.1.dist-info/RECORD"]:
+        raise VerificationError(f"wheel must contain the expected RECORD member, found {record_names!r}")
+    record_name = record_names[0]
+    try:
+        rows = list(csv.reader(io.StringIO(wheel.members[record_name].decode("utf-8", errors="strict"))))
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise VerificationError(f"wheel RECORD is invalid: {error}") from error
+    indexed: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        if len(row) != 3:
+            raise VerificationError(f"wheel RECORD row must have three fields: {row!r}")
+        path, digest, size = row
+        if path in indexed:
+            raise VerificationError(f"wheel RECORD contains duplicate path: {path}")
+        if not path or PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts:
+            raise VerificationError(f"wheel RECORD contains unsafe path: {path!r}")
+        indexed[path] = (digest, size)
+    if set(indexed) != set(wheel.members):
+        raise VerificationError(
+            "wheel RECORD member set mismatch: "
+            f"missing={sorted(set(wheel.members) - set(indexed))!r} "
+            f"extra={sorted(set(indexed) - set(wheel.members))!r}"
+        )
+    for path, payload in wheel.members.items():
+        digest, size = indexed[path]
+        if path == record_name:
+            if digest or size:
+                raise VerificationError("wheel RECORD self-row must have empty digest and size")
+            continue
+        expected_digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode("ascii")
+        if digest != f"sha256={expected_digest}":
+            raise VerificationError(f"wheel RECORD digest mismatch: {path}")
+        if size != str(len(payload)):
+            raise VerificationError(f"wheel RECORD size mismatch: {path}")
+
+
 def _module_name(path: str) -> str:
     pure = PurePosixPath(path)
     parts = pure.with_suffix("").parts
@@ -156,33 +377,98 @@ def _is_forbidden_import(name: str) -> bool:
     return any(name == prefix or name.startswith(f"{prefix}.") for prefix in prefixes)
 
 
+def _expression_path(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    root = aliases.get(current.id, current.id)
+    return ".".join((root, *reversed(parts)))
+
+
+def _resolve_import_from(module: str, source_name: str, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+    package = module if source_name.endswith("/__init__.py") else module.rpartition(".")[0]
+    parts = package.split(".")
+    if node.level > len(parts):
+        return None
+    base = parts[: len(parts) - (node.level - 1)]
+    if node.module:
+        base.extend(node.module.split("."))
+    return ".".join(base)
+
+
+def _import_aliases(tree: ast.AST, module: str, source_name: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            imported = _resolve_import_from(module, source_name, node)
+            if imported is None:
+                continue
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{imported}.{alias.name}"
+    return aliases
+
+
+def _verify_import_target(name: str, imported: str, modules: set[str], *, member: bool = False) -> None:
+    if _is_forbidden_import(imported):
+        raise VerificationError(f"wheel imports forbidden capability: {name}:{imported}")
+    if not imported.startswith("build_finance"):
+        return
+    if imported in modules:
+        return
+    if member:
+        base, _separator, _symbol = imported.rpartition(".")
+        if base in modules:
+            return
+    raise VerificationError(f"wheel internal import is outside allowlist: {name}:{imported}")
+
+
 def _verify_ast_closure(wheel: ArchiveMembers) -> None:
     sources = _package_members(wheel)
     python_sources = {name: payload for name, payload in sources.items() if name.endswith(".py")}
     modules = {_module_name(name) for name in python_sources}
     for name, payload in sorted(python_sources.items()):
         tree = ast.parse(payload, filename=name)
+        module = _module_name(name)
+        aliases = _import_aliases(tree, module, name)
         for node in ast.walk(tree):
-            imports: tuple[str, ...] = ()
             if isinstance(node, ast.Import):
-                imports = tuple(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                imports = (node.module,)
-            for imported in imports:
-                if _is_forbidden_import(imported):
-                    raise VerificationError(f"wheel imports forbidden capability: {name}:{imported}")
-                if imported.startswith("build_finance") and imported not in modules:
-                    raise VerificationError(f"wheel internal import is outside allowlist: {name}:{imported}")
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if (
-                    isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "os"
-                    and node.func.attr in FORBIDDEN_OS_CALLS
-                ):
-                    raise VerificationError(f"wheel calls forbidden OS capability: {name}:os.{node.func.attr}")
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-                if node.value.id == "os" and node.attr == "environ":
-                    raise VerificationError(f"wheel reads process environment: {name}:os.environ")
+                for alias in node.names:
+                    _verify_import_target(name, alias.name, modules)
+            elif isinstance(node, ast.ImportFrom):
+                imported = _resolve_import_from(module, name, node)
+                if imported is None:
+                    raise VerificationError(f"wheel contains invalid relative import: {name}")
+                _verify_import_target(name, imported, modules)
+                for alias in node.names:
+                    if alias.name != "*":
+                        _verify_import_target(name, f"{imported}.{alias.name}", modules, member=True)
+            if isinstance(node, ast.Call):
+                call_path = _expression_path(node.func, aliases)
+                if call_path in {
+                    "builtins.__import__",
+                    "builtins.compile",
+                    "builtins.eval",
+                    "builtins.exec",
+                    "importlib.__import__",
+                    "importlib.import_module",
+                    "runpy.run_module",
+                    "runpy.run_path",
+                } or (isinstance(node.func, ast.Name) and node.func.id in {"__import__", "compile", "eval", "exec"}):
+                    raise VerificationError(f"wheel calls dynamic execution/import capability: {name}:{call_path}")
+                if call_path and call_path.startswith("os.") and call_path.removeprefix("os.") in FORBIDDEN_OS_CALLS:
+                    raise VerificationError(f"wheel calls forbidden OS capability: {name}:{call_path}")
+            if isinstance(node, (ast.Attribute, ast.Name)) and _expression_path(node, aliases) == "os.environ":
+                raise VerificationError(f"wheel reads process environment: {name}:os.environ")
 
 
 def _verify_metadata(wheel: ArchiveMembers) -> None:
@@ -210,8 +496,10 @@ def verify_artifacts(*, wheel: Path, sdist: Path) -> VerificationReport:
     manifest_payload, manifest, expected = _load_expected_manifest()
     wheel_members = _read_wheel_members(wheel)
     sdist_members = _read_sdist_members(sdist)
+    _verify_complete_member_sets(wheel_members, sdist_members, expected)
     _verify_exact_sources(wheel_members, expected, manifest_payload)
     _verify_exact_sources(sdist_members, expected, manifest_payload)
+    _verify_wheel_record(wheel_members)
     _verify_metadata(wheel_members)
     _verify_ast_closure(wheel_members)
     return VerificationReport(
@@ -231,6 +519,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--sdist", required=True, type=Path)
+    parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--promotion-status", type=Path)
+    parser.add_argument("--transcript", type=Path)
     return parser.parse_args(argv)
 
 
@@ -238,7 +529,19 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
         report = verify_artifacts(wheel=args.wheel, sdist=args.sdist)
-    except (OSError, json.JSONDecodeError, SyntaxError, VerificationError) as error:
+        evidence_paths = (args.receipt, args.promotion_status, args.transcript)
+        if any(evidence_paths):
+            if not all(evidence_paths):
+                raise VerificationError("--receipt, --promotion-status, and --transcript must be supplied together")
+            verify_gate_evidence(
+                receipt_path=args.receipt,
+                promotion_path=args.promotion_status,
+                transcript_path=args.transcript,
+                wheel=args.wheel,
+                sdist=args.sdist,
+                manifest_sha256=report.manifest_sha256,
+            )
+    except (OSError, json.JSONDecodeError, subprocess.SubprocessError, SyntaxError, VerificationError) as error:
         print(f"live-paper artifact verification failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(asdict(report), separators=(",", ":"), sort_keys=True))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import _socket
 import importlib
 import json
 import socket
@@ -20,6 +21,9 @@ class NetworkDenied(RuntimeError):
 
 _TARGETS = (
     (socket, "create_connection"),
+    (socket, "create_server"),
+    (socket, "fromfd"),
+    (socket, "fromshare"),
     (socket, "getaddrinfo"),
     (socket, "gethostbyaddr"),
     (socket, "gethostbyname"),
@@ -30,9 +34,20 @@ _TARGETS = (
     (socket.socket, "connect"),
     (socket.socket, "connect_ex"),
     (socket.socket, "listen"),
+    (socket.socket, "recv"),
+    (socket.socket, "recv_into"),
     (socket.socket, "recvfrom"),
     (socket.socket, "recvfrom_into"),
+    (socket.socket, "recvmsg"),
+    (socket.socket, "recvmsg_into"),
+    (socket.socket, "send"),
+    (socket.socket, "sendall"),
+    (socket.socket, "sendmsg"),
     (socket.socket, "sendto"),
+    (socket, "socketpair"),
+    (socket, "SocketType"),
+    (socket, "socket"),
+    (_socket, "socket"),
 )
 
 
@@ -49,12 +64,25 @@ def deny_network(events: list[str]):
 
         return reject
 
+    def denied_socket_type(original: type[Any], name: str) -> type[Any]:
+        class DeniedSocket(original):
+            def __new__(cls, *_args: object, **_kwargs: object) -> Any:
+                events.append(name)
+                raise NetworkDenied(f"network primitive denied: {name}")
+
+        DeniedSocket.__name__ = original.__name__
+        DeniedSocket.__qualname__ = original.__qualname__
+        return DeniedSocket
+
     try:
         for owner, name in _TARGETS:
             if not hasattr(owner, name):
                 continue
-            originals.append((owner, name, getattr(owner, name)))
-            setattr(owner, name, denied(f"{owner.__name__}.{name}"))
+            original = getattr(owner, name)
+            target_name = f"{owner.__name__}.{name}"
+            originals.append((owner, name, original))
+            replacement = denied_socket_type(original, target_name) if isinstance(original, type) else denied(target_name)
+            setattr(owner, name, replacement)
         yield
     finally:
         for owner, name, original in reversed(originals):
@@ -93,26 +121,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     events: list[str] = []
     exit_code = 0
     error: str | None = None
+    error_type: str | None = None
     self_test = "PENDING"
+    root_inserted = False
     try:
         with deny_network(events):
             _prove_shim(events)
             self_test = "PASS"
             sys.path.insert(0, str(ROOT))
+            root_inserted = True
             if mode == "--import":
                 importlib.import_module(args[0])
             else:
                 import pytest
 
                 exit_code = int(pytest.main(args))
-    except (NetworkDenied, AssertionError) as caught:
+    except Exception as caught:
         exit_code = 1
         error = str(caught)
+        error_type = type(caught).__name__
+    finally:
+        if root_inserted and sys.path[0] == str(ROOT):
+            sys.path.pop(0)
 
     summary = {
         "action": "import" if mode == "--import" else "pytest",
         "blocked_calls": events,
         "error": error,
+        "error_type": error_type,
         "exit_code": exit_code,
         "network": "DENIED",
         "self_test": self_test,
