@@ -173,6 +173,14 @@ def _resolver_for(*groups: EventGroup) -> RecordingResolver:
     )
 
 
+def _resealed_event_group(group: EventGroup, event: dict[str, Any]) -> EventGroup:
+    body = copy.deepcopy(event)
+    body.pop("event_id", None)
+    record = canonical_record_bytes(seal_replay_content_id(body))
+    resealed = parse_canonical_record(record)
+    return replace(group, event_ids=(str(resealed["event_id"]),), event_records=(record,))
+
+
 def _receipt(evidence: TerminalFillEvidence) -> dict[str, Any]:
     receipt = parse_canonical_record(evidence.fill_receipt_record)
     require_valid_replay_contract(receipt, expected_schema="trading.simulated-fill-receipt/v1")
@@ -215,6 +223,24 @@ def test_causal_fill_rejects_decision_group_uses_later_group_and_is_byte_stable(
     assert later_receipt["fill_equal_time_group"] == "2"
     assert later_receipt["fill_ingest_sequence"] == "2"
     assert later_receipt["portfolio_state_before_id"] == parse_canonical_record(portfolio_record)["portfolio_state_id"]
+
+    non_later_ingest_event = parse_canonical_record(groups[1].event_records[0])
+    non_later_ingest_event["ingest_sequence"] = "1"
+    non_later_ingest_group = _resealed_event_group(groups[1], non_later_ingest_event)
+    non_later_ingest = _receipt(
+        simulate_terminal_fill(
+            verified,
+            intent_record,
+            portfolio_record,
+            non_later_ingest_group,
+            _resolver_for(non_later_ingest_group),
+        )
+    )
+    assert non_later_ingest["status"] == "REJECTED"
+    assert non_later_ingest["reason_codes"] == ["FILL_SAME_OR_EARLIER_EVENT"]
+    assert non_later_ingest["fill_event_id"] == non_later_ingest_group.event_ids[0]
+    assert non_later_ingest["fill_equal_time_group"] == "1"
+    assert non_later_ingest["fill_ingest_sequence"] == "1"
 
 
 def test_terminal_fill_arithmetic_pins_full_partial_and_no_next_event() -> None:
@@ -293,6 +319,54 @@ def test_terminal_fill_arithmetic_pins_full_partial_and_no_next_event() -> None:
     assert expired["execution_price_q18"] is None
     assert expired["released_quote_atoms"] == "101000"
     assert expired["released_base_atoms"] == "0"
+
+    extreme_event = parse_canonical_record(groups[1].event_records[0])
+    extreme_event["base_decimals"] = 0
+    extreme_event["quote_decimals"] = 18
+    extreme_event["market"] = {
+        **extreme_event["market"],
+        "base_amount_atoms": "1",
+        "quote_amount_atoms": "1000000000000000000",
+        "route_capacity_base_atoms": "18446744073709551615",
+        "liquidity_quote_atoms": "18446744073709551615",
+        "venue_fee_quote_atoms": "0",
+        "priority_fee_quote_atoms": "0",
+        "route_impact_bps": 0,
+    }
+    extreme_group = _resealed_event_group(groups[1], extreme_event)
+    overflow_intent = parse_canonical_record(full_intent_record)
+    overflow_intent.pop("intent_id")
+    overflow_intent.update(
+        {
+            "action": "CLOSE_LONG",
+            "base_decimals": 0,
+            "quote_decimals": 18,
+            "quantity_base_atoms": "18446744073709551615",
+            "reference_price_q18": "1000000000000000000",
+            "stop_price_q18": "1",
+            "take_price_q18": "2",
+            "reserved_quote_atoms": "0",
+            "reserved_base_atoms": "18446744073709551615",
+            "max_participation_bps": 10000,
+            "max_impact_bps": 0,
+        }
+    )
+    overflow_intent_record = canonical_record_bytes(seal_replay_content_id(overflow_intent))
+    overflow = _receipt(
+        simulate_terminal_fill(
+            verified,
+            overflow_intent_record,
+            full_portfolio_record,
+            extreme_group,
+            _resolver_for(extreme_group),
+        )
+    )
+    assert overflow["status"] == "REJECTED"
+    assert overflow["reason_codes"] == ["FILL_ARITHMETIC_RANGE"]
+    assert overflow["fill_event_id"] == extreme_group.event_ids[0]
+    assert overflow["filled_base_atoms"] == "0"
+    assert overflow["gross_quote_atoms"] == "0"
+    assert overflow["released_base_atoms"] == "18446744073709551615"
 
 
 def test_authority_binding_failures_are_closed_and_in_memory_only() -> None:

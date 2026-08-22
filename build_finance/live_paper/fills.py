@@ -477,31 +477,42 @@ def _terminal_fill(
             fill_event=event,
         )
 
-    return _receipt_evidence(
-        run_receipt=run_receipt,
-        public_seed=public_seed,
-        intent=intent,
-        portfolio=portfolio,
-        status=status,
-        reason_codes=reason_codes,
-        fill_event=event,
-        requested_base_atoms=requested,
-        filled_base_atoms=filled,
-        unfilled_base_atoms=unfilled,
-        gross_quote_atoms=gross,
-        venue_fee_quote_atoms=venue_fee,
-        priority_fee_quote_atoms=priority_fee,
-        simulation_fee_quote_atoms=simulation_fee,
-        cash_delta_quote_atoms=cash_delta,
-        execution_price_q18=execution_price,
-        participation_bps=participation_bps,
-        reference_deviation_bps=total_deviation_bps,
-        impact_bps=impact_bps,
-        fee_bps=fee_bps,
-        adverse_fill_bps=adverse_fill_bps,
-        released_quote_atoms=released_quote,
-        released_base_atoms=released_base,
-    )
+    try:
+        return _receipt_evidence(
+            run_receipt=run_receipt,
+            public_seed=public_seed,
+            intent=intent,
+            portfolio=portfolio,
+            status=status,
+            reason_codes=reason_codes,
+            fill_event=event,
+            requested_base_atoms=requested,
+            filled_base_atoms=filled,
+            unfilled_base_atoms=unfilled,
+            gross_quote_atoms=gross,
+            venue_fee_quote_atoms=venue_fee,
+            priority_fee_quote_atoms=priority_fee,
+            simulation_fee_quote_atoms=simulation_fee,
+            cash_delta_quote_atoms=cash_delta,
+            execution_price_q18=execution_price,
+            participation_bps=participation_bps,
+            reference_deviation_bps=total_deviation_bps,
+            impact_bps=impact_bps,
+            fee_bps=fee_bps,
+            adverse_fill_bps=adverse_fill_bps,
+            released_quote_atoms=released_quote,
+            released_base_atoms=released_base,
+        )
+    except _ArithmeticRange:
+        return _terminal_denial(
+            run_receipt=run_receipt,
+            public_seed=public_seed,
+            intent=intent,
+            portfolio=portfolio,
+            status="REJECTED",
+            reason="FILL_ARITHMETIC_RANGE",
+            fill_event=event,
+        )
 
 
 def simulate_terminal_fill(
@@ -535,6 +546,8 @@ def simulate_terminal_fill(
     events = _resolved_group_events(selected_event_group, resolver)
     fill_event = events[0]
     decision_group = _u64_text(intent["decision_equal_time_group"], field="decision_equal_time_group", positive=True)
+    decision_ingest = _u64_text(intent["decision_ingest_sequence"], field="decision_ingest_sequence", positive=True)
+    fill_ingest = _u64_text(fill_event["ingest_sequence"], field="fill_event.ingest_sequence", positive=True)
     selected_group = _u64_text(selected_event_group.group_sequence, field="selected_event_group.group_sequence", positive=True)
     if selected_group <= decision_group:
         return _terminal_denial(
@@ -545,6 +558,18 @@ def simulate_terminal_fill(
             status="REJECTED",
             reason="FILL_SAME_OR_EARLIER_EVENT",
             fill_event=fill_event,
+        )
+    if fill_ingest <= decision_ingest:
+        same_or_earlier_event = dict(fill_event)
+        same_or_earlier_event["equal_time_group"] = intent["decision_equal_time_group"]
+        return _terminal_denial(
+            run_receipt=run_receipt,
+            public_seed=public_seed,
+            intent=intent,
+            portfolio=portfolio,
+            status="REJECTED",
+            reason="FILL_SAME_OR_EARLIER_EVENT",
+            fill_event=same_or_earlier_event,
         )
     if selected_group != decision_group + 1:
         _fail("STRICT_NEXT_EVENT/ONE_EVENT_GROUP requires the immediate next event group")
