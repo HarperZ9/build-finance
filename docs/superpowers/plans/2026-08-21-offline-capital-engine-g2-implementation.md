@@ -253,13 +253,18 @@ def validate_model_signal(
 
 ```python
 # build_finance/live_paper/fusion.py
+@dataclass(frozen=True)
+class FusionResult:
+    fusion_decision_record: bytes
+    decision_group_manifest_record: bytes
+
 def fuse_signal_evidence(
+    event_group: EventGroup,
     feature_snapshot_record: bytes,
     algorithm_candidate_records: Sequence[bytes],
     model_evidence: ValidatedModelEvidence,
-    fusion_profile_record: bytes,
-) -> bytes:
-    """Return a sealed non-authoritative trading.fusion-decision/v1 record."""
+) -> FusionResult:
+    """Return sealed non-authoritative fusion and final group-membership evidence."""
 ```
 
 ```python
@@ -569,11 +574,11 @@ Commit message: `feat(live-paper): validate model evidence with abstain fallback
 
 - [ ] **Step 1: Write failing fusion tests**
 
-Cover algorithm consensus, disagreement, model ABSTAIN, accepted-model support, model conflict, veto precedence, score bounds, stable ordering, and proof that fusion receives no portfolio/equity/risk state.
+Cover the positive deterministic vertical with caller-order invariance, one liquidity-veto plus directional-conflict case, and one evidence-binding failure. Active-model support/conflict is outside model-disabled G2.
 
 - [ ] **Step 2: Implement profile-bound fusion**
 
-Return direction/flat/ABSTAIN evidence plus confidence band, vetoes, reason codes, and input IDs. Do not emit quantity, stop, leverage, order, or executable action.
+Return one sealed FusionDecision plus the final decision-group manifest. Bind all three fixed algorithm candidates, the FeatureSnapshot, and normalization receipt in fusion inputs; select one schema-representable candidate by fixed veto-first/momentum-primary policy, with mean-reversion directional conflict forcing ABSTAIN through the neutral veto candidate. The model always ABSTAINS. Do not inspect the synthetic fusion profile or emit quantity, stop, leverage, order, or executable action.
 
 - [ ] **Step 3: Verify and commit**
 
