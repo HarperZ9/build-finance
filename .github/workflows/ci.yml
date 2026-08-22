@@ -78,3 +78,38 @@ jobs:
           python -m venv .artifacts/crypto-replay/import-venv
           .artifacts/crypto-replay/import-venv/bin/python -m pip install --no-index --no-deps "${{ steps.replay_artifacts.outputs.wheel }}"
           .artifacts/crypto-replay/import-venv/bin/python -I -c "import importlib,pkgutil,build_finance.crypto_replay as p; [importlib.import_module(m.name) for m in pkgutil.walk_packages(p.__path__,p.__name__+'.')]"
+
+  g2-paper-core-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install G2 gate dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build ruff mypy
+          python -m pip install -e ".[test]"
+      - name: Run deterministic and confinement gates
+        run: |
+          python -m pytest tests/live_paper tests/crypto_replay -q -p no:cacheprovider
+          python scripts/run_network_denied.py --pytest tests/live_paper tests/crypto_replay -q -p no:cacheprovider
+          python scripts/run_network_denied.py --import build_finance.live_paper.kernel
+          python -m build_finance.crypto_replay.schema_codegen --scope full --check
+          python -m build_finance.live_paper.registry --check
+          ruff check build_finance/live_paper tests/live_paper scripts/capture_live_paper_gate.py scripts/verify_live_paper_artifacts.py scripts/run_network_denied.py scripts/build_paper_core_artifacts.py
+          mypy build_finance/live_paper
+      - name: Build exact paper-core artifact pair
+        run: python scripts/build_paper_core_artifacts.py --out-dir .artifacts/paper-core/dist
+      - name: Freeze paper-core artifact paths
+        id: paper_core_artifacts
+        run: >-
+          python -c "import os; from pathlib import Path; d=Path('.artifacts/paper-core/dist');
+          w=list(d.glob('*.whl')); s=list(d.glob('*.tar.gz'));
+          assert len(w)==len(s)==1, (w,s);
+          open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8').write(f'wheel={w[0]}\nsdist={s[0]}\n')"
+      - name: Verify exact paper-core package closure
+        run: |
+          python scripts/verify_crypto_replay_artifacts.py --wheel "${{ steps.paper_core_artifacts.outputs.wheel }}" --sdist "${{ steps.paper_core_artifacts.outputs.sdist }}"
+          python scripts/verify_live_paper_artifacts.py --wheel "${{ steps.paper_core_artifacts.outputs.wheel }}" --sdist "${{ steps.paper_core_artifacts.outputs.sdist }}"

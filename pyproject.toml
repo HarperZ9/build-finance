@@ -47,6 +47,12 @@ include = ["build_finance*"]
     "resources/schemas/*.json",
     "resources/formulas/*.txt",
 ]
+"build_finance.live_paper" = [
+    "paper_core_manifest.json",
+    "resources/*.json",
+    "resources/*.sha256",
+    "resources/schemas/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
