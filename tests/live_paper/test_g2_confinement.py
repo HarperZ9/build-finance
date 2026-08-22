@@ -179,8 +179,17 @@ def _call_path(node: ast.Call, aliases: dict[str, str]) -> tuple[str | None, str
     return _call_path_from_func(node.func, aliases)
 
 
-def _is_allowed_import(module: str, package_prefix: str) -> bool:
+def _is_allowed_import(
+    module: str,
+    package_prefix: str,
+    *,
+    allow_allowed_module_member: bool = False,
+) -> bool:
     if module == package_prefix or module.startswith(f"{package_prefix}."):
+        return True
+    if module in ALLOWED_FROZEN_REPLAY_IMPORTS:
+        return True
+    if allow_allowed_module_member and _matches_module_prefix(module, ALLOWED_FROZEN_REPLAY_IMPORTS):
         return True
     return _matches_module_prefix(module, DETERMINISTIC_STDLIB_IMPORT_PREFIXES)
 
@@ -299,7 +308,11 @@ def _ast_confinement_failures(
                 allow_allowed_module_member=allow_allowed_module_member,
             ):
                 failures.append(f"{module}:forbidden build_finance import {imported}")
-            elif not _is_allowed_import(imported, package_prefix):
+            elif not _is_allowed_import(
+                imported,
+                package_prefix,
+                allow_allowed_module_member=allow_allowed_module_member,
+            ):
                 failures.append(f"{module}:forbidden import {imported}")
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_path(node, aliases) in FORBIDDEN_CALLS:
@@ -442,24 +455,33 @@ def test_frozen_replay_import_boundary_allows_only_audited_contract_modules(tmp_
     ):
         assert _is_forbidden_build_finance_import(module, PACKAGE_PREFIX)
 
-    package_root = tmp_path / "isolated_live_paper"
-    package_root.mkdir()
-    (package_root / "__init__.py").write_text('"""Synthetic package for frozen replay import confinement."""\n')
-    (package_root / "allowed.py").write_text(
+    allowed_package_root = tmp_path / "allowed_live_paper"
+    allowed_package_root.mkdir()
+    (allowed_package_root / "__init__.py").write_text(
+        '"""Synthetic package for allowed frozen replay imports."""\n'
+    )
+    (allowed_package_root / "allowed.py").write_text(
         "from build_finance.crypto_replay.admission import ParsedSourceCandidate\n"
         "from build_finance.crypto_replay.canonical import canonical_json_bytes\n"
         "from build_finance.crypto_replay.content_ids import compute_content_id\n"
         "from build_finance.crypto_replay.run_inputs import ContractVerifiedRunInputs\n"
         "from build_finance.crypto_replay.schema_registry import require_valid_contract\n"
     )
-    (package_root / "escaped.py").write_text(
+
+    assert _ast_confinement_failures(allowed_package_root, "isolated_live_paper") == ()
+
+    escaped_package_root = tmp_path / "escaped_live_paper"
+    escaped_package_root.mkdir()
+    (escaped_package_root / "__init__.py").write_text(
+        '"""Synthetic package for escaped frozen replay imports."""\n'
+    )
+    (escaped_package_root / "escaped.py").write_text(
         "import build_finance.crypto_replay.admission.unlisted_submodule\n"
         "from build_finance.crypto_replay.canonical.provider_escape import Provider\n"
     )
 
-    failures = set(_ast_confinement_failures(package_root, "isolated_live_paper"))
+    failures = set(_ast_confinement_failures(escaped_package_root, "isolated_live_paper"))
 
-    assert "isolated_live_paper.allowed:forbidden build_finance import" not in "\n".join(failures)
     assert {
         (
             "isolated_live_paper.escaped:forbidden build_finance import "
