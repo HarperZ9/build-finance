@@ -16,6 +16,7 @@ from scripts.run_network_denied import NetworkDenied, deny_network
 from scripts.run_network_denied import main as network_denied_main
 from scripts.verify_crypto_replay_artifacts import ArchiveMembers, VerificationError
 from scripts.verify_live_paper_artifacts import (
+    PAPER_CORE_DIST_INFO,
     PRESCRIBED_GATE_COMMANDS,
     _derived_promotion,
     _verify_ast_closure,
@@ -39,7 +40,7 @@ def _otherwise_valid_members() -> tuple[ArchiveMembers, ArchiveMembers, dict[str
     source_name = "build_finance/live_paper/kernel.py"
     source_payload = b"MODE = 'OFFLINE_PAPER_ONLY'\n"
     expected = {source_name: hashlib.sha256(source_payload).hexdigest()}
-    dist_info = "build_finance_paper_core-1.0.1.dist-info"
+    dist_info = PAPER_CORE_DIST_INFO
     wheel_members = {
         source_name: source_payload,
         f"{dist_info}/METADATA": b"Name: build-finance-paper-core\nVersion: 1.0.1\n",
@@ -67,7 +68,7 @@ def _otherwise_valid_members() -> tuple[ArchiveMembers, ArchiveMembers, dict[str
     ("archive_kind", "injected_name"),
     (
         ("wheel", "requests.py"),
-        ("wheel", "build_finance_paper_core-1.0.1.data/scripts/send-order"),
+        ("wheel", f"{PAPER_CORE_DIST_INFO}.data/scripts/send-order"),
         ("sdist", "setup.py"),
     ),
 )
@@ -292,6 +293,144 @@ def test_gate_evidence_verifies_transcript_artifacts_and_derived_promotion(tmp_p
     _write_json(promotion_path, receipt["promotion_status"])
     wheel.write_bytes(b"stale wheel")
     with pytest.raises(VerificationError, match="artifact paths or digests are stale"):
+        verify_gate_evidence(
+            receipt_path=receipt_path,
+            promotion_path=promotion_path,
+            transcript_path=transcript_path,
+            wheel=wheel,
+            sdist=sdist,
+            manifest_sha256="b" * 64,
+            repo_root=tmp_path,
+            verify_git=False,
+        )
+
+
+def test_derived_promotion_stays_fail_closed_without_authorization() -> None:
+    promotion = _derived_promotion("a" * 40, "docs/live-paper/evidence/G2-green.json")
+
+    assert promotion["publication"] == "BLOCKED"
+    assert promotion["next_authorized_node"] is None
+    assert "authorization" not in promotion
+    assert promotion["paper_only"] is True
+
+
+def _authorization_record(implementation_sha: str) -> dict[str, str]:
+    return {
+        "authorized_at": "2026-08-22T00:00:00+00:00",
+        "authorized_by": "operator",
+        "implementation_sha": implementation_sha,
+        "node": "test-node",
+    }
+
+
+def test_derived_promotion_records_complete_bound_authorization() -> None:
+    implementation_sha = "a" * 40
+    promotion = _derived_promotion(
+        implementation_sha,
+        "docs/live-paper/evidence/G2-green.json",
+        _authorization_record(implementation_sha),
+    )
+
+    assert promotion["publication"] == "AUTHORIZED"
+    assert promotion["next_authorized_node"] == "test-node"
+    assert promotion["authorization"]["authorized_by"] == "operator"
+
+
+def test_derived_promotion_rejects_mismatched_authorization_binding() -> None:
+    with pytest.raises(VerificationError, match="different implementation"):
+        _derived_promotion(
+            "a" * 40,
+            "docs/live-paper/evidence/G2-green.json",
+            _authorization_record("b" * 40),
+        )
+
+    incomplete = _authorization_record("a" * 40)
+    del incomplete["node"]
+    with pytest.raises(VerificationError, match="authorization fields are invalid"):
+        _derived_promotion(
+            "a" * 40,
+            "docs/live-paper/evidence/G2-green.json",
+            incomplete,
+        )
+
+
+def test_gate_evidence_verifies_authorized_promotion_against_receipt(tmp_path: Path) -> None:
+    implementation_sha = "c" * 40
+    wheel = tmp_path / ".artifacts/paper-core/dist/paper.whl"
+    sdist = tmp_path / ".artifacts/paper-core/dist/paper.tar.gz"
+    wheel.parent.mkdir(parents=True)
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    transcript_path = tmp_path / "docs/live-paper/evidence/G2-command-transcript.json"
+    receipt_path = tmp_path / "docs/live-paper/evidence/G2-green.json"
+    promotion_path = tmp_path / "docs/live-paper/promotion-status.json"
+    outputs = [f"gate {index} passed\n" for index, _command in enumerate(_prescribed_gate_commands())]
+    transcript = {
+        "commands": [
+            {
+                "command_args": command,
+                "exit_code": 0,
+                "output": output,
+                "stdout_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            }
+            for command, output in zip(_prescribed_gate_commands(), outputs, strict=True)
+        ],
+        "implementation_sha": implementation_sha,
+        "schema": "build-finance.live-paper.g2-command-transcript/v1",
+    }
+    _write_json(transcript_path, transcript)
+    promotion = _derived_promotion(
+        implementation_sha,
+        "docs/live-paper/evidence/G2-green.json",
+        _authorization_record(implementation_sha),
+    )
+    receipt = {
+        "artifacts": {
+            "sdist": {
+                "path": ".artifacts/paper-core/dist/paper.tar.gz",
+                "sha256": hashlib.sha256(b"sdist").hexdigest(),
+            },
+            "wheel": {
+                "path": ".artifacts/paper-core/dist/paper.whl",
+                "sha256": hashlib.sha256(b"wheel").hexdigest(),
+            },
+        },
+        "commands": [
+            {
+                "command_args": command,
+                "exit_code": 0,
+                "stdout_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            }
+            for command, output in zip(_prescribed_gate_commands(), outputs, strict=True)
+        ],
+        "implementation_sha": implementation_sha,
+        "paper_core_manifest_sha256": "b" * 64,
+        "promotion_status": promotion,
+        "schema": "build-finance.live-paper.g2-gate-receipt/v2",
+        "status": "GREEN",
+        "transcript": {
+            "path": "docs/live-paper/evidence/G2-command-transcript.json",
+            "sha256": hashlib.sha256(transcript_path.read_bytes()).hexdigest(),
+        },
+    }
+    _write_json(receipt_path, receipt)
+    _write_json(promotion_path, promotion)
+
+    verify_gate_evidence(
+        receipt_path=receipt_path,
+        promotion_path=promotion_path,
+        transcript_path=transcript_path,
+        wheel=wheel,
+        sdist=sdist,
+        manifest_sha256="b" * 64,
+        repo_root=tmp_path,
+        verify_git=False,
+    )
+
+    tampered = json.loads(json.dumps(promotion))
+    tampered["authorization"]["authorized_by"] = "someone-else"
+    _write_json(promotion_path, tampered)
+    with pytest.raises(VerificationError, match="derived gate state"):
         verify_gate_evidence(
             receipt_path=receipt_path,
             promotion_path=promotion_path,

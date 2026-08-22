@@ -8,19 +8,29 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
     from scripts.capture_live_paper_gate import _normalize_output
-    from scripts.verify_live_paper_artifacts import PRESCRIBED_GATE_COMMANDS, _derived_promotion
+    from scripts.verify_live_paper_artifacts import (
+        PAPER_CORE_SDIST,
+        PAPER_CORE_WHEEL,
+        PRESCRIBED_GATE_COMMANDS,
+        _derived_promotion,
+    )
 except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
     from capture_live_paper_gate import _normalize_output
-    from verify_live_paper_artifacts import PRESCRIBED_GATE_COMMANDS, _derived_promotion
+    from verify_live_paper_artifacts import (
+        PAPER_CORE_SDIST,
+        PAPER_CORE_WHEEL,
+        PRESCRIBED_GATE_COMMANDS,
+        _derived_promotion,
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = Path(".artifacts/paper-core/dist")
-WHEEL = DIST / "build_finance_paper_core-1.0.1-py3-none-any.whl"
-SDIST = DIST / "build_finance_paper_core-1.0.1.tar.gz"
+WHEEL = ROOT / PAPER_CORE_WHEEL
+SDIST = ROOT / PAPER_CORE_SDIST
 TRANSCRIPT = Path("docs/live-paper/evidence/G2-command-transcript.json")
 RECEIPT = Path("docs/live-paper/evidence/G2-green.json")
 PROMOTION = Path("docs/live-paper/promotion-status.json")
@@ -63,7 +73,34 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--transcript", type=Path, default=TRANSCRIPT)
     parser.add_argument("--receipt", type=Path, default=RECEIPT)
     parser.add_argument("--promotion-status", type=Path, default=PROMOTION)
+    parser.add_argument(
+        "--authorize-node",
+        default=None,
+        help="Record an operator authorization for this node in the promotion state.",
+    )
+    parser.add_argument(
+        "--authorized-by",
+        default=None,
+        help="Who authorized the node; required with --authorize-node.",
+    )
     return parser.parse_args()
+
+
+def _authorization(implementation_sha: str, args: argparse.Namespace) -> dict[str, str] | None:
+    if (args.authorize_node is None) != (args.authorized_by is None):
+        raise SystemExit("--authorize-node and --authorized-by must be supplied together")
+    if args.authorize_node is None:
+        return None
+    node = args.authorize_node.strip()
+    authorized_by = args.authorized_by.strip()
+    if not node or not authorized_by:
+        raise SystemExit("--authorize-node and --authorized-by must be non-empty")
+    return {
+        "authorized_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "authorized_by": authorized_by,
+        "implementation_sha": implementation_sha,
+        "node": node,
+    }
 
 
 def main() -> int:
@@ -103,13 +140,17 @@ def main() -> int:
     _canonical_write(transcript_path, transcript)
     if len(rows) != len(_commands()) or any(row["exit_code"] != 0 for row in rows):
         return 1
-    wheel = ROOT / WHEEL
-    sdist = ROOT / SDIST
+    wheel = WHEEL
+    sdist = SDIST
     if not wheel.is_file() or not sdist.is_file():
         return 1
     receipt_path = args.receipt if args.receipt.is_absolute() else ROOT / args.receipt
     promotion_path = args.promotion_status if args.promotion_status.is_absolute() else ROOT / args.promotion_status
-    promotion = _derived_promotion(implementation_sha, receipt_path.relative_to(ROOT).as_posix())
+    promotion = _derived_promotion(
+        implementation_sha,
+        receipt_path.relative_to(ROOT).as_posix(),
+        _authorization(implementation_sha, args),
+    )
     command_evidence = [
         {
             "command_args": row["command_args"],
@@ -120,8 +161,8 @@ def main() -> int:
     ]
     receipt = {
         "artifacts": {
-            "sdist": {"path": SDIST.as_posix(), "sha256": _sha256(sdist.read_bytes())},
-            "wheel": {"path": WHEEL.as_posix(), "sha256": _sha256(wheel.read_bytes())},
+        "sdist": {"path": PAPER_CORE_SDIST, "sha256": _sha256(sdist.read_bytes())},
+        "wheel": {"path": PAPER_CORE_WHEEL, "sha256": _sha256(wheel.read_bytes())},
         },
         "commands": command_evidence,
         "implementation_sha": implementation_sha,

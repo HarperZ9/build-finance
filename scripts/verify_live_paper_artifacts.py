@@ -34,6 +34,17 @@ except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "build_finance" / "live_paper" / "paper_core_manifest.json"
+
+
+def _distribution_version() -> str:
+    value = json.loads(MANIFEST_PATH.read_bytes()).get("distribution_version")
+    if not isinstance(value, str) or not value.strip():
+        raise VerificationError("paper-core manifest distribution_version is invalid")
+    return value
+
+
+PAPER_CORE_VERSION = _distribution_version()
+PAPER_CORE_DIST_INFO = f"build_finance_paper_core-{PAPER_CORE_VERSION}.dist-info"
 EXPECTED_REQUIREMENTS = frozenset({"numpy>=1.24", "pandas>=2.0", "scipy>=1.10"})
 FORBIDDEN_IMPORT_PREFIXES = (
     "aiohttp",
@@ -60,10 +71,10 @@ FORBIDDEN_IMPORT_PREFIXES = (
 )
 WHEEL_METADATA = frozenset(
     {
-        "build_finance_paper_core-1.0.1.dist-info/METADATA",
-        "build_finance_paper_core-1.0.1.dist-info/RECORD",
-        "build_finance_paper_core-1.0.1.dist-info/WHEEL",
-        "build_finance_paper_core-1.0.1.dist-info/top_level.txt",
+        f"{PAPER_CORE_DIST_INFO}/METADATA",
+        f"{PAPER_CORE_DIST_INFO}/RECORD",
+        f"{PAPER_CORE_DIST_INFO}/WHEEL",
+        f"{PAPER_CORE_DIST_INFO}/top_level.txt",
     }
 )
 SDIST_METADATA = frozenset(
@@ -139,8 +150,10 @@ CRITICAL_IMPLEMENTATION_PATHS = (
     "scripts/verify_live_paper_artifacts.py",
     "tests/live_paper",
 )
-PAPER_CORE_WHEEL = ".artifacts/paper-core/dist/build_finance_paper_core-1.0.1-py3-none-any.whl"
-PAPER_CORE_SDIST = ".artifacts/paper-core/dist/build_finance_paper_core-1.0.1.tar.gz"
+PAPER_CORE_WHEEL = (
+    f".artifacts/paper-core/dist/build_finance_paper_core-{PAPER_CORE_VERSION}-py3-none-any.whl"
+)
+PAPER_CORE_SDIST = f".artifacts/paper-core/dist/build_finance_paper_core-{PAPER_CORE_VERSION}.tar.gz"
 PRESCRIBED_GATE_COMMANDS = (
     ("python", "-m", "pytest", "tests/live_paper", "tests/crypto_replay", "-q", "-p", "no:cacheprovider"),
     (
@@ -202,8 +215,32 @@ def _relative_artifact_path(path: Path, repo_root: Path) -> str:
         raise VerificationError(f"gate artifact must be beneath the repository: {path}") from error
 
 
-def _derived_promotion(implementation_sha: str, receipt_path: str) -> dict[str, object]:
-    return {
+AUTHORIZATION_KEYS = frozenset({"authorized_at", "authorized_by", "implementation_sha", "node"})
+
+
+def _validate_authorization(implementation_sha: str, authorization: object) -> dict[str, str]:
+    """Fail closed unless the authorization record is complete and bound to this build."""
+
+    if not isinstance(authorization, dict) or set(authorization) != AUTHORIZATION_KEYS:
+        raise VerificationError("gate authorization fields are invalid")
+    for key in ("authorized_at", "authorized_by", "node"):
+        value = authorization[key]
+        if not isinstance(value, str) or not value.strip():
+            raise VerificationError(f"gate authorization {key} is invalid")
+    recorded = authorization["implementation_sha"]
+    if not isinstance(recorded, str) or re.fullmatch(r"[0-9a-f]{40}", recorded) is None:
+        raise VerificationError("gate authorization implementation_sha is invalid")
+    if recorded != implementation_sha:
+        raise VerificationError("gate authorization is bound to a different implementation")
+    return {key: authorization[key] for key in sorted(authorization)}
+
+
+def _derived_promotion(
+    implementation_sha: str,
+    receipt_path: str,
+    authorization: dict[str, str] | None = None,
+) -> dict[str, object]:
+    promotion: dict[str, object] = {
         "artifact": "build-finance-paper-core",
         "evidence_receipt": receipt_path,
         "g2": "GREEN",
@@ -215,6 +252,11 @@ def _derived_promotion(implementation_sha: str, receipt_path: str) -> dict[str, 
         "profitability_claim": False,
         "publication": "BLOCKED",
     }
+    if authorization is not None:
+        promotion["authorization"] = _validate_authorization(implementation_sha, authorization)
+        promotion["next_authorized_node"] = authorization["node"]
+        promotion["publication"] = "AUTHORIZED"
+    return promotion
 
 
 def verify_gate_evidence(
@@ -279,7 +321,11 @@ def verify_gate_evidence(
     if artifact_ref != expected_artifacts:
         raise VerificationError("gate receipt artifact paths or digests are stale")
     receipt_relative = _relative_artifact_path(receipt_path, repo_root)
-    expected_promotion = _derived_promotion(implementation_sha, receipt_relative)
+    recorded_promotion = receipt.get("promotion_status")
+    authorization = (
+        recorded_promotion.get("authorization") if isinstance(recorded_promotion, dict) else None
+    )
+    expected_promotion = _derived_promotion(implementation_sha, receipt_relative, authorization)
     if receipt.get("paper_core_manifest_sha256") != manifest_sha256:
         raise VerificationError("gate receipt paper-core manifest digest is stale")
     if receipt.get("status") != "GREEN" or receipt.get("promotion_status") != expected_promotion:
@@ -367,7 +413,8 @@ def _verify_wheel_record(wheel: ArchiveMembers) -> None:
     """Validate RECORD coverage, sizes, and sha256 digests for the complete wheel."""
 
     record_names = [name for name in wheel.members if name.endswith(".dist-info/RECORD")]
-    if record_names != ["build_finance_paper_core-1.0.1.dist-info/RECORD"]:
+    expected_record = f"{PAPER_CORE_DIST_INFO}/RECORD"
+    if record_names != [expected_record]:
         raise VerificationError(f"wheel must contain the expected RECORD member, found {record_names!r}")
     record_name = record_names[0]
     try:
