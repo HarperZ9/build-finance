@@ -239,15 +239,15 @@ def derive_algorithm_candidates(
 @dataclass(frozen=True)
 class ValidatedModelEvidence:
     accepted_signal_record: bytes | None
-    validation_receipt_record: bytes
-    disposition: Literal["ACCEPTED", "ABSTAIN"]
+    feature_snapshot_id: str
+    disposition: Literal["ABSTAIN"]
+    reason_code: Literal["MODEL_DISABLED"]
 
 def validate_model_signal(
     signal_record: bytes | None,
     signal_manifest_record: bytes | None,
     model_registry_record: bytes | None,
     feature_snapshot_record: bytes,
-    validation_profile_record: bytes,
 ) -> ValidatedModelEvidence: ...
 ```
 
@@ -545,11 +545,11 @@ Commit message: `feat(live-paper): emit deterministic algorithm evidence`.
 
 - [ ] **Step 1: Write failing validation tests**
 
-Cover absent model, timeout marker, malformed record, unknown model, unapproved model version, wrong feature snapshot, stale signal, future signal, noncanonical floats, overbound evidence, forbidden sizing/order fields, and valid closed signal.
+Cover the exact G2 boundary only: absent signal/manifest/registry produces a frozen FeatureSnapshot-bound ABSTAIN; any supplied model body rejects; a tampered FeatureSnapshot self-ID rejects. Active/cached model acceptance is not part of the model-disabled G2 release.
 
 - [ ] **Step 2: Implement total validation**
 
-Every input yields a `ModelValidationReceipt`. Invalid, missing, late, or untrusted model evidence maps to ABSTAIN and never blocks deterministic algorithms.
+The verified G2 run is model `DISABLED`. Return an immutable in-memory `ValidatedModelEvidence` with `ABSTAIN/MODEL_DISABLED` and no accepted signal. Do not invent a durable model-validation receipt for an absent model: the frozen receipt requires manifest/signal hashes, while Task 7's sealed FusionDecision already records the total disabled-model ABSTAIN.
 
 - [ ] **Step 3: Verify and commit**
 
