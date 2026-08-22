@@ -212,16 +212,16 @@ def test_veto_hold_and_directional_conflict_abstain() -> None:
 def test_tampered_candidate_or_wrong_model_feature_binding_rejects() -> None:
     group, snapshot_record, candidates, model_evidence = _case()
     tampered_records = list(candidates)
-    veto_index = next(
+    momentum_index = next(
         index
         for index, record in enumerate(tampered_records)
-        if parse_live_record(record)["algorithm_id"] == "g2-liquidity-quality-veto"
+        if parse_live_record(record)["algorithm_id"] == "g2-momentum"
     )
-    tampered = parse_live_record(tampered_records[veto_index])
+    tampered = parse_live_record(tampered_records[momentum_index])
     tampered.pop("algorithm_candidate_id")
-    tampered["candidate_action"] = "OPEN_LONG"
-    tampered["rationale_code"] = "OPEN_IF_FLAT"
-    tampered_records[veto_index] = live_canonical_record_bytes(seal_live_content_id(tampered))
+    tampered["candidate_action"] = "CLOSE_LONG"
+    tampered["rationale_code"] = "CLOSE_IF_LONG"
+    tampered_records[momentum_index] = live_canonical_record_bytes(seal_live_content_id(tampered))
 
     with pytest.raises(ValueError, match="candidate|content"):
         fuse_signal_evidence(

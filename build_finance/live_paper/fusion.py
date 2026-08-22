@@ -9,6 +9,7 @@ from typing import Any, cast
 from build_finance.crypto_replay.canonical import parse_canonical_record
 from build_finance.crypto_replay.content_ids import verify_content_id as verify_replay_content_id
 from build_finance.crypto_replay.schema_registry import require_valid_contract as require_valid_replay_contract
+from build_finance.live_paper.algorithms import derive_algorithm_candidates
 from build_finance.live_paper.content_ids import canonical_record_bytes, seal_content_id
 from build_finance.live_paper.grouping import EventGroup
 from build_finance.live_paper.model_validation import ValidatedModelEvidence
@@ -67,11 +68,16 @@ def _verified_candidates(
     records: Sequence[bytes],
     *,
     event_group: EventGroup,
+    feature_snapshot_record: bytes,
     receipt_id: str,
     snapshot_id: str,
 ) -> dict[str, dict[str, Any]]:
     if len(records) != len(_ALGORITHM_IDS):
         raise ValueError("fusion requires exactly three G2 algorithm candidates")
+    expected_records = {
+        cast(str, parse_canonical_record(record)["algorithm_id"]): record
+        for record in derive_algorithm_candidates(event_group, feature_snapshot_record)
+    }
     by_algorithm: dict[str, dict[str, Any]] = {}
     expected_group_key = f"g2-group-{event_group.group_sequence}"
     expected_inputs = [receipt_id, snapshot_id]
@@ -85,11 +91,8 @@ def _verified_candidates(
             raise ValueError("algorithm candidate identities must be exact and unique")
         if candidate["algorithm_version"] != "1.0.0":
             raise ValueError("algorithm candidate version is not the fixed G2 version")
-        if algorithm_id == "g2-liquidity-quality-veto" and (
-            candidate["candidate_action"] not in ("ABSTAIN", "HOLD")
-            or candidate["rationale_code"] != "NO_ACTION"
-        ):
-            raise ValueError("liquidity-quality candidate must remain a neutral veto")
+        if expected_records.get(algorithm_id) != record:
+            raise ValueError("algorithm candidate does not match fixed G2 derivation")
         if (
             candidate["normalization_receipt_id"] != receipt_id
             or candidate["feature_snapshot_id"] != snapshot_id
@@ -146,6 +149,7 @@ def fuse_signal_evidence(
     candidates = _verified_candidates(
         algorithm_candidate_records,
         event_group=event_group,
+        feature_snapshot_record=feature_snapshot_record,
         receipt_id=receipt_id,
         snapshot_id=snapshot_id,
     )
