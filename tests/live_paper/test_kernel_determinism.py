@@ -1,108 +1,107 @@
-"""G2 RED tests for deterministic offline paper-kernel replay."""
+"""Task 11 vertical determinism tests for the G2 offline paper kernel."""
 
 from __future__ import annotations
 
-import copy
-import json
-from typing import Any
+from dataclasses import replace
 
-_EXPECTED_PRICE_Q18 = "100000000000000000000"
-
-
-def _synthetic_verified_inputs() -> dict[str, Any]:
-    return {
-        "schema": "build-finance.live-paper.synthetic-verified-input/v1",
-        "evidence_classification": "SYNTHETIC_CONTRACT_VECTOR",
-        "synthetic_notice": "Synthetic fixture; never observed market data, credentials, or venue state.",
-        "run_id": "g2-red-synthetic-long-flat-001",
-        "market_id": "SYNTH_BASE_SYNTH_QUOTE_SPOT",
-        "base_mint": "SYNTH_BASE_MINT",
-        "quote_mint": "SYNTH_QUOTE_MINT",
-        "base_decimals": 6,
-        "quote_decimals": 6,
-        "positioning": "LONG_OR_FLAT_SPOT",
-        "execution_mode": "OFFLINE_PAPER_ONLY",
-        "model_mode": "DISABLED_ABSTAIN",
-        "initial_portfolio": {"base_atoms": "0", "quote_atoms": "100000000"},
-        "risk": {
-            "deterministic_risk_only": True,
-            "max_notional_quote_atoms": "10000000",
-            "fee_bps": 10,
-            "max_impact_bps": 0,
-            "max_participation_bps": 10000,
-        },
-        "events": [
-            {
-                "source_event_id": "synthetic-event-0001",
-                "ingest_sequence": "1",
-                "equal_time_group": "1",
-                "replay_clock_ns": "1000000000",
-                "kind": "QUOTE",
-                "price_q18": _EXPECTED_PRICE_Q18,
-                "executable_base_atoms": "250000",
-            },
-            {
-                "source_event_id": "synthetic-event-0002",
-                "ingest_sequence": "2",
-                "equal_time_group": "2",
-                "replay_clock_ns": "2000000000",
-                "kind": "QUOTE",
-                "price_q18": _EXPECTED_PRICE_Q18,
-                "executable_base_atoms": "250000",
-            },
-        ],
-    }
+from build_finance.crypto_replay.canonical import canonical_record_bytes, parse_canonical_record
+from build_finance.crypto_replay.schema_registry import require_valid_contract as require_valid_replay_contract
+from build_finance.live_paper.profiles import PaperKernelProfiles
+from build_finance.live_paper.run_input_builder import build_verified_run_inputs
+from tests.live_paper.support.g2_vectors import G2Vector, build_g2_vector
 
 
-def _canonical_json_bytes(value: Any) -> bytes:
-    _reject_float(value)
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+def _profiles(vector: G2Vector) -> PaperKernelProfiles:
+    return PaperKernelProfiles(
+        **{
+            **vector.profile_records,
+            "risk_config_record": canonical_record_bytes(vector.run_input_bundle.replay_risk_config),
+        }
+    )  # type: ignore[arg-type]
 
 
-def _reject_float(value: Any) -> None:
-    if isinstance(value, float):
-        raise TypeError("G2 deterministic contracts use integer atoms/q18 strings, never floats")
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("G2 deterministic contracts use string object keys")
-            _reject_float(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_float(item)
+def _verified_case() -> tuple[G2Vector, object, PaperKernelProfiles]:
+    vector = build_g2_vector()
+    profiles = _profiles(vector)
+    verified = build_verified_run_inputs(
+        vector.run_receipt_record,
+        vector.admitted_candidates,
+        vector.source_receipt_records,
+        vector.resolver,
+        profiles,
+    )
+    return vector, verified, profiles
 
 
-def test_kernel_replay_is_byte_stable_and_does_not_mutate_verified_input() -> None:
-    """Equivalent synthetic verified inputs must produce identical canonical bytes."""
+def test_kernel_replay_is_byte_stable_and_retains_vertical_records() -> None:
+    """Breaks if kernel output uses ambient state or omits a vertical record family."""
+
+    from build_finance.live_paper.kernel import run_offline_paper_kernel
+    from build_finance.live_paper.projections import kernel_result_canonical_bytes
+
+    vector, verified, profiles = _verified_case()
+    first = run_offline_paper_kernel(verified, vector.resolver, profiles)
+    second = run_offline_paper_kernel(verified, vector.resolver, profiles)
+
+    assert first == second
+    assert kernel_result_canonical_bytes(first) == kernel_result_canonical_bytes(second)
+    assert first.closure.status == "CLOSED"
+    assert first.closure.reason_codes == ()
+    assert first.closure.failure_boundary is None
+    assert first.closure.ledger_head_id is not None
+    assert first.ledger_records == first.store.ledger_records
+
+    assert len(first.event_groups) == 2
+    assert len(first.feature_snapshot_records) == 2
+    assert len(first.algorithm_candidate_records) == 2
+    assert len(first.fusion_decision_records) == 2
+    assert len(first.decision_group_manifest_records) == 2
+    assert len(first.risk_decision_records) == 2
+    assert len(first.simulated_order_intent_records) == 0
+    assert len(first.simulated_fill_receipt_records) == 0
+    assert len(first.reconciliation_receipt_records) == 1
+    assert len(first.portfolio_state_records) == 1
+    assert len(first.ledger_records) == 0
+
+    final_state = parse_canonical_record(first.final_portfolio_state_record)
+    require_valid_replay_contract(final_state, expected_schema="trading.portfolio-state/v1")
+    assert first.projection.cash_quote_atoms == final_state["balances"][0]["total_atoms"]
+    assert first.projection.equity_quote_atoms == final_state["summary"]["equity_quote_atoms"]
+    assert first.projection.receipt_ids.ledger_head_id == first.closure.ledger_head_id
+    assert first.projection.fills == ()
+    assert tuple(row.disposition for row in first.projection.model_validation) == ("ABSTAIN", "ABSTAIN")
+    assert tuple(decision.decision_sequence for decision in first.projection.decisions) == ("1", "2")
+
+
+def test_kernel_replay_is_independent_of_resolver_hit_history() -> None:
+    """Breaks if resolver access counters or object identity leak into output bytes."""
+
+    from build_finance.live_paper.kernel import run_offline_paper_kernel
+    from build_finance.live_paper.projections import kernel_result_canonical_bytes
+
+    vector, verified, profiles = _verified_case()
+    first = run_offline_paper_kernel(verified, vector.resolver, profiles)
+    resolver_with_history = vector.resolver.with_resolved_bytes("0" * 64, b"unread bytes")
+    second = run_offline_paper_kernel(verified, resolver_with_history, profiles)
+
+    assert kernel_result_canonical_bytes(first) == kernel_result_canonical_bytes(second)
+
+
+def test_kernel_result_is_immutable_and_snapshots_profile_bytes() -> None:
+    """Breaks if retained kernel evidence can be mutated after the run returns."""
 
     from build_finance.live_paper.kernel import run_offline_paper_kernel
 
-    first_inputs = _synthetic_verified_inputs()
-    first_before = copy.deepcopy(first_inputs)
-    second_inputs = _synthetic_verified_inputs()
+    vector, verified, profiles = _verified_case()
+    result = run_offline_paper_kernel(verified, vector.resolver, profiles)
 
-    first_result = run_offline_paper_kernel(first_inputs)
-    second_result = run_offline_paper_kernel(second_inputs)
+    try:
+        result.portfolio_state_records += (b"extra\n",)  # type: ignore[misc]
+    except Exception as error:
+        assert type(error).__name__ in {"FrozenInstanceError", "AttributeError"}
+    else:  # pragma: no cover - this branch is the failure signal.
+        raise AssertionError("PaperKernelResult accepted mutation")
 
-    assert first_inputs == first_before
-    assert first_result == second_result
-    assert _canonical_json_bytes(first_result) == _canonical_json_bytes(second_result)
-    assert first_result["closure"]["determinism"] == {
-        "ambient_environment_used": False,
-        "dynamic_import_used": False,
-        "process_or_network_used": False,
-        "status": "PASS",
-        "wall_clock_used": False,
-    }
-
-
-def test_kernel_replay_is_independent_of_input_mapping_order() -> None:
-    """Input key order must not change deterministic evidence, IDs, or ledger closure."""
-
-    from build_finance.live_paper.kernel import run_offline_paper_kernel
-
-    original_inputs = _synthetic_verified_inputs()
-    canonicalized_inputs = json.loads(_canonical_json_bytes(original_inputs).decode("utf-8"))
-
-    assert list(original_inputs) != list(canonicalized_inputs)
-    assert run_offline_paper_kernel(original_inputs) == run_offline_paper_kernel(canonicalized_inputs)
+    mutated_profiles = replace(profiles, risk_config_record=bytearray(profiles.risk_config_record))
+    replayed = run_offline_paper_kernel(verified, vector.resolver, mutated_profiles)
+    assert replayed.profile_records.risk_config_record == profiles.risk_config_record

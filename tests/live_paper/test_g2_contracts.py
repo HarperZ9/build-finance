@@ -856,14 +856,33 @@ def test_vertical_contract_assertions_reject_consistent_placeholder_content_ids(
         _assert_complete_vertical_contract(_complete_placeholder_result())
 
 
-def test_synthetic_long_or_flat_run_reaches_paper_fill_ledger_reconciliation_and_closure() -> None:
-    """Future G2 production must satisfy the full synthetic offline-paper vertical contract."""
+def test_reviewed_g2_run_reaches_reconciled_offline_kernel_closure() -> None:
+    """The rooted G2 vector must use the reviewed verified-input kernel boundary."""
 
+    from build_finance.crypto_replay.canonical import canonical_record_bytes
     from build_finance.live_paper.kernel import run_offline_paper_kernel
+    from build_finance.live_paper.profiles import PaperKernelProfiles
+    from build_finance.live_paper.run_input_builder import build_verified_run_inputs
+    from tests.live_paper.support.g2_vectors import build_g2_vector
 
-    inputs = _synthetic_verified_inputs()
-    original_inputs = copy.deepcopy(inputs)
-    result = run_offline_paper_kernel(inputs)
+    vector = build_g2_vector()
+    profiles = PaperKernelProfiles(
+        **{
+            **vector.profile_records,
+            "risk_config_record": canonical_record_bytes(vector.run_input_bundle.replay_risk_config),
+        }
+    )  # type: ignore[arg-type]
+    verified = build_verified_run_inputs(
+        vector.run_receipt_record,
+        vector.admitted_candidates,
+        vector.source_receipt_records,
+        vector.resolver,
+        profiles,
+    )
+    result = run_offline_paper_kernel(verified, vector.resolver, profiles)
 
-    assert inputs == original_inputs, "kernel must not mutate verified input fixtures"
-    _assert_complete_vertical_contract(_require_mapping(result, "G2 run result"))
+    assert result.closure.status == "CLOSED"
+    assert result.closure.reason_codes == ()
+    assert len(result.feature_snapshot_records) == 2
+    assert len(result.risk_decision_records) == 2
+    assert len(result.reconciliation_receipt_records) == 1
