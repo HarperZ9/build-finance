@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib
 from typing import Any
-
-import pytest
 
 from build_finance.crypto_replay.canonical import (
     canonical_record_bytes,
@@ -18,7 +15,10 @@ from build_finance.crypto_replay.content_ids import seal_content_id as seal_repl
 from build_finance.crypto_replay.content_ids import verify_content_id as verify_replay_content_id
 from build_finance.crypto_replay.run_inputs import ContractVerifiedRunInputs
 from build_finance.crypto_replay.schema_registry import require_valid_contract as require_valid_replay_contract
+from build_finance.live_paper.accounting import apply_fill_receipt, initialize_accounting, reserve_intent
+from build_finance.live_paper.event_store import InMemoryLedgerStore, append_ledger_record
 from build_finance.live_paper.profiles import PaperKernelProfiles
+from build_finance.live_paper.reconciliation import reconcile_transition
 from build_finance.live_paper.run_input_builder import build_verified_run_inputs
 from tests.live_paper.support.g2_vectors import G2Vector, build_g2_vector
 
@@ -26,30 +26,6 @@ _MAX_U64 = 18_446_744_073_709_551_615
 _QUOTE = "synthetic-quote"
 _BASE = "synthetic-base"
 _MARKET = "synthetic-base/synthetic-quote:jupiter"
-
-
-def _task10_api() -> tuple[Any, Any, Any, Any, Any, Any]:
-    targets = {
-        "build_finance.live_paper.event_store",
-        "build_finance.live_paper.accounting",
-        "build_finance.live_paper.reconciliation",
-    }
-    try:
-        event_store = importlib.import_module("build_finance.live_paper.event_store")
-        accounting = importlib.import_module("build_finance.live_paper.accounting")
-        reconciliation = importlib.import_module("build_finance.live_paper.reconciliation")
-    except ModuleNotFoundError as error:
-        if error.name in targets:
-            pytest.fail(f"Task 10 RED - missing hash-chained accounting module: {error.name}", pytrace=False)
-        raise
-    return (
-        event_store.InMemoryLedgerStore,
-        event_store.append_ledger_record,
-        accounting.initialize_accounting,
-        accounting.reserve_intent,
-        accounting.apply_fill_receipt,
-        reconciliation.reconcile_transition,
-    )
 
 
 def _profiles(vector: G2Vector) -> PaperKernelProfiles:
@@ -219,6 +195,13 @@ def _assert_reconciliation(record: bytes) -> dict[str, Any]:
     return _assert_replay_record(record, "trading.reconciliation-receipt/v1")
 
 
+def _resealed_record(record: bytes, identity_field: str, expected_schema: str, **updates: Any) -> bytes:
+    document = _doc(record)
+    document.pop(identity_field)
+    document.update(updates)
+    return _sealed_record(document, expected_schema)
+
+
 def _tampered_valid_ledger_record(ledger_record: bytes) -> bytes:
     ledger = _doc(ledger_record)
     ledger.pop("ledger_record_id")
@@ -241,6 +224,23 @@ def _tampered_valid_state_record(state_record: bytes) -> bytes:
     summary["equity_quote_atoms"] = str(int(summary["equity_quote_atoms"]) + 1)
     state["summary"] = summary
     return _sealed_record(state, "trading.portfolio-state/v1")
+
+
+def _invalid_self_id_ledger_record(ledger_record: bytes) -> bytes:
+    ledger = _doc(ledger_record)
+    ledger["ledger_record_id"] = _digest("invalid retained duplicate ledger self id")
+    return canonical_record_bytes(ledger)
+
+
+def _assert_group_gate_invariant(receipt: dict[str, Any], expected_state_id: str) -> None:
+    assert receipt["status"] == "KILLED"
+    assert receipt["reconciliation_kind"] == "GROUP_GATE"
+    assert receipt["reason_codes"] == [
+        "RECONCILIATION_ABSOLUTE_STATE_INVARIANT",
+        "RECONCILIATION_MISMATCH",
+    ]
+    assert receipt["portfolio_state_before_id"] == expected_state_id
+    assert receipt["portfolio_state_after_id"] == expected_state_id
 
 
 def _overflow_close_case(
@@ -343,9 +343,6 @@ def _overflow_close_case(
 
 
 def test_genesis_and_intent_reservation_hash_chain_reservations_and_replay_are_byte_stable() -> None:
-    InMemoryLedgerStore, append_ledger_record, initialize_accounting, reserve_intent, _apply_fill, _reconcile = (
-        _task10_api()
-    )
     _vector, verified = _verified_case()
 
     genesis = initialize_accounting(
@@ -453,9 +450,54 @@ def test_genesis_and_intent_reservation_hash_chain_reservations_and_replay_are_b
     assert reserved_receipt["reconciliation_kind"] == "INTENT_RESERVATION"
     assert reserved_receipt["causation_ids"] == [reserved_ledger["ledger_record_id"]]
 
+    reserved_as_genesis = _assert_reconciliation(
+        reconcile_transition(
+            verified,
+            kind="GENESIS",
+            portfolio_state_before_record=genesis.portfolio_state_record,
+            portfolio_state_after_record=reserved.portfolio_state_record,
+            ledger_record=reserved.ledger_record,
+            causation_records=(intent_record,),
+        )
+    )
+    _assert_group_gate_invariant(reserved_as_genesis, genesis_state["portfolio_state_id"])
+
+    bad_intent_record = _resealed_record(
+        intent_record,
+        "intent_id",
+        "trading.simulated-order-intent/v1",
+        portfolio_state_before_id=_digest("foreign-before-state"),
+    )
+    bad_intent = _assert_replay_record(bad_intent_record, "trading.simulated-order-intent/v1")
+    bad_reserved_state_record = _resealed_record(
+        reserved.portfolio_state_record,
+        "portfolio_state_id",
+        "trading.portfolio-state/v1",
+        causation_id=bad_intent["intent_id"],
+        open_intent_ids=[bad_intent["intent_id"]],
+    )
+    bad_reserved_ledger_record = _resealed_record(
+        reserved.ledger_record,
+        "ledger_record_id",
+        "trading.ledger-record/v1",
+        object_id=bad_intent["intent_id"],
+        object_sha256=bad_intent["intent_id"],
+        causation_ids=sorted([bad_intent["risk_decision_id"], genesis_state["portfolio_state_id"]]),
+    )
+    bad_intent_binding = _assert_reconciliation(
+        reconcile_transition(
+            verified,
+            kind="INTENT_RESERVATION",
+            portfolio_state_before_record=genesis.portfolio_state_record,
+            portfolio_state_after_record=bad_reserved_state_record,
+            ledger_record=bad_reserved_ledger_record,
+            causation_records=(bad_intent_record,),
+        )
+    )
+    _assert_group_gate_invariant(bad_intent_binding, genesis_state["portfolio_state_id"])
+
 
 def test_open_and_close_fills_project_portfolio_fees_pnl_and_hash_chain() -> None:
-    _Store, _append, initialize_accounting, reserve_intent, apply_fill_receipt, _reconcile = _task10_api()
     _vector, verified = _verified_case()
     genesis = initialize_accounting(verified, quote_mint=_QUOTE, quote_decimals=6, starting_quote_atoms=1_000_000)
     open_intent_record = _intent_record(
@@ -626,7 +668,6 @@ def test_open_and_close_fills_project_portfolio_fees_pnl_and_hash_chain() -> Non
 
 
 def test_reconciliation_halts_duplicate_tampered_evidence_and_arithmetic_range() -> None:
-    _Store, _append, initialize_accounting, reserve_intent, apply_fill_receipt, reconcile_transition = _task10_api()
     vector, verified = _verified_case()
     genesis = initialize_accounting(verified, quote_mint=_QUOTE, quote_decimals=6, starting_quote_atoms=1_000_000)
     open_intent_record = _intent_record(
@@ -687,6 +728,18 @@ def test_reconciliation_halts_duplicate_tampered_evidence_and_arithmetic_range()
     assert duplicate_receipt["original_object_id"] == _self_id(open_fill_record, "fill_receipt_id")
     assert duplicate_receipt["conflicting_body_sha256"] == sha256_hex(open_fill_record)
 
+    invalid_retained_duplicate = _assert_reconciliation(
+        reconcile_transition(
+            verified,
+            kind="FILL_TRANSITION",
+            portfolio_state_before_record=opened.portfolio_state_record,
+            portfolio_state_after_record=opened.portfolio_state_record,
+            ledger_record=None,
+            causation_records=(open_intent_record, open_fill_record, _invalid_self_id_ledger_record(opened.ledger_record)),
+        )
+    )
+    _assert_group_gate_invariant(invalid_retained_duplicate, _self_id(opened.portfolio_state_record, "portfolio_state_id"))
+
     tampered_ledger_receipt = _assert_reconciliation(
         reconcile_transition(
             verified,
@@ -732,11 +785,97 @@ def test_reconciliation_halts_duplicate_tampered_evidence_and_arithmetic_range()
             causation_records=(open_intent_record, tampered_fill_record),
         )
     )
-    for receipt in (tampered_ledger_receipt, tampered_state_receipt, tampered_fill_receipt):
-        assert receipt["status"] == "KILLED"
-        assert receipt["reconciliation_kind"] == "FILL_TRANSITION"
-        assert receipt["reason_codes"][-1] == "RECONCILIATION_MISMATCH"
-        assert receipt["account_residuals"] or receipt["asset_residuals"] or receipt["equity_residual_quote_atoms"] != "0"
+    assert tampered_ledger_receipt["status"] == "KILLED"
+    assert tampered_ledger_receipt["reconciliation_kind"] == "FILL_TRANSITION"
+    assert tampered_ledger_receipt["reason_codes"] == [
+        "RECONCILIATION_ACCOUNT_RESIDUAL",
+        "RECONCILIATION_MISMATCH",
+    ]
+    assert tampered_ledger_receipt["account_residuals"] == [
+        {"asset_mint": _BASE, "account": "POSITION_AVAILABLE", "residual_atoms": "-1"}
+    ]
+    assert tampered_ledger_receipt["asset_residuals"] == []
+
+    assert tampered_state_receipt["status"] == "KILLED"
+    assert tampered_state_receipt["reconciliation_kind"] == "FILL_TRANSITION"
+    assert tampered_state_receipt["reason_codes"] == [
+        "RECONCILIATION_ACCOUNT_RESIDUAL",
+        "RECONCILIATION_ASSET_RESIDUAL",
+        "RECONCILIATION_EQUITY_RESIDUAL",
+        "RECONCILIATION_MISMATCH",
+    ]
+    assert tampered_state_receipt["account_residuals"] == [
+        {"asset_mint": _QUOTE, "account": "CASH_AVAILABLE", "residual_atoms": "1"}
+    ]
+    assert tampered_state_receipt["asset_residuals"] == [{"asset_mint": _QUOTE, "residual_atoms": "1"}]
+    assert tampered_state_receipt["equity_residual_quote_atoms"] == "1"
+
+    assert tampered_fill_receipt["status"] == "KILLED"
+    assert tampered_fill_receipt["reconciliation_kind"] == "FILL_TRANSITION"
+    assert tampered_fill_receipt["reason_codes"] == [
+        "RECONCILIATION_ACCOUNT_RESIDUAL",
+        "RECONCILIATION_ASSET_RESIDUAL",
+        "RECONCILIATION_MISMATCH",
+    ]
+    assert tampered_fill_receipt["account_residuals"] == [
+        {"asset_mint": _QUOTE, "account": "CASH_AVAILABLE", "residual_atoms": "1"}
+    ]
+    assert tampered_fill_receipt["asset_residuals"] == [{"asset_mint": _QUOTE, "residual_atoms": "1"}]
+
+    chain_tampered_ledger_receipt = _assert_reconciliation(
+        reconcile_transition(
+            verified,
+            kind="FILL_TRANSITION",
+            portfolio_state_before_record=open_reserved.portfolio_state_record,
+            portfolio_state_after_record=opened.portfolio_state_record,
+            ledger_record=_resealed_record(
+                opened.ledger_record,
+                "ledger_record_id",
+                "trading.ledger-record/v1",
+                ledger_sequence="99",
+            ),
+            causation_records=(open_intent_record, open_fill_record, *open_reserved.store.ledger_records),
+        )
+    )
+    _assert_group_gate_invariant(
+        chain_tampered_ledger_receipt,
+        _self_id(open_reserved.portfolio_state_record, "portfolio_state_id"),
+    )
+
+    bad_fill_record = _resealed_record(
+        open_fill_record,
+        "fill_receipt_id",
+        "trading.simulated-fill-receipt/v1",
+        intent_id=_digest("foreign-fill-intent"),
+    )
+    bad_fill = _assert_replay_record(bad_fill_record, "trading.simulated-fill-receipt/v1")
+    bad_fill_state_record = _resealed_record(
+        opened.portfolio_state_record,
+        "portfolio_state_id",
+        "trading.portfolio-state/v1",
+        causation_id=bad_fill["fill_receipt_id"],
+    )
+    bad_fill_ledger_record = _resealed_record(
+        opened.ledger_record,
+        "ledger_record_id",
+        "trading.ledger-record/v1",
+        object_id=bad_fill["fill_receipt_id"],
+        object_sha256=bad_fill["fill_receipt_id"],
+    )
+    bad_fill_binding = _assert_reconciliation(
+        reconcile_transition(
+            verified,
+            kind="FILL_TRANSITION",
+            portfolio_state_before_record=open_reserved.portfolio_state_record,
+            portfolio_state_after_record=bad_fill_state_record,
+            ledger_record=bad_fill_ledger_record,
+            causation_records=(open_intent_record, bad_fill_record),
+        )
+    )
+    _assert_group_gate_invariant(
+        bad_fill_binding,
+        _self_id(open_reserved.portfolio_state_record, "portfolio_state_id"),
+    )
 
     overflow_state_record, overflow_intent_record, overflow_fill_record = _overflow_close_case(
         vector,
@@ -756,6 +895,6 @@ def test_reconciliation_halts_duplicate_tampered_evidence_and_arithmetic_range()
     assert overflow_receipt["status"] == "KILLED"
     assert overflow_receipt["reconciliation_kind"] == "ARITHMETIC_RANGE"
     assert overflow_receipt["reason_codes"] == ["RECONCILIATION_ARITHMETIC_RANGE", "RECONCILIATION_MISMATCH"]
-    assert overflow_receipt["arithmetic_operation"] == "SUMMARY_EQUITY"
+    assert overflow_receipt["arithmetic_operation"] == "LEDGER_POSTING"
     assert overflow_receipt["arithmetic_operands_sha256"] is not None
     assert overflow_receipt["arithmetic_range_key_sha256"] is not None

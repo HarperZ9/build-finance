@@ -529,9 +529,9 @@ def initialize_accounting(
     starting_quote_atoms: int,
 ) -> AccountingTransition:
     run = _require_verified_run(verified)
-    if isinstance(starting_quote_atoms, bool):
+    if type(starting_quote_atoms) is not int:
         raise ValueError("starting quote atoms must be an integer amount")
-    starting = _checked_u64(int(starting_quote_atoms))
+    starting = _checked_u64(starting_quote_atoms)
     state = {
         "schema": "trading.portfolio-state/v1",
         "state_sequence": "0",
@@ -613,7 +613,7 @@ def reserve_intent(
         portfolio_state_before_record=bytes(portfolio_state_record),
         portfolio_state_after_record=after_record,
         ledger_record=ledger_record,
-        causation_records=(bytes(intent_record),),
+        causation_records=(bytes(intent_record), *store.ledger_records),
     )
     if _receipt_status(receipt_record) != "PASS":
         return AccountingTransition(store=store, portfolio_state_record=bytes(portfolio_state_record), ledger_record=None, reconciliation_receipt_record=receipt_record)
@@ -668,7 +668,7 @@ def apply_fill_receipt(
             portfolio_state_before_record=before_record,
             portfolio_state_after_record=before_record,
             ledger_record=None,
-            causation_records=(bytes(intent_record), bytes(fill_receipt_record)),
+            causation_records=(bytes(intent_record), bytes(fill_receipt_record), *store.ledger_records),
         )
         return AccountingTransition(
             store=store,
@@ -696,7 +696,7 @@ def apply_fill_receipt(
         portfolio_state_before_record=before_record,
         portfolio_state_after_record=after_record,
         ledger_record=ledger_record,
-        causation_records=(bytes(intent_record), bytes(fill_receipt_record)),
+        causation_records=(bytes(intent_record), bytes(fill_receipt_record), *store.ledger_records),
     )
     if _receipt_status(receipt_record) != "PASS":
         return AccountingTransition(store=store, portfolio_state_record=before_record, ledger_record=None, reconciliation_receipt_record=receipt_record)
