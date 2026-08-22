@@ -692,15 +692,79 @@ Commit message: `feat(live-paper): simulate causal terminal fills`.
 
 - [ ] **Step 1: Write failing accounting tests**
 
-Pin genesis, append order, previous-record ID, debit/credit balance, fees, realized/unrealized P&L, cost basis, portfolio projection, duplicate fill idempotency, tamper detection, arithmetic bounds, and reconciliation halt.
+Add exactly three qualitative test functions:
+
+1. genesis plus intent reservation: construct a deterministic genesis portfolio, append a `SIMULATED_INTENT` ledger record, pin ledger sequence/previous-head, quote/base reservation postings, `open_intent_ids`, and byte-stable replay;
+2. fill application plus portfolio projection: apply an `OPEN_LONG` fill and a `CLOSE_LONG` fill through frozen intents/receipts, pin cash, position quantity, cost basis, realized/unrealized P&L, fees, equity, release postings, and hash-chain head; and
+3. reconciliation halt: duplicate-fill idempotency, tampered ledger/state/fill evidence, and arithmetic overflow must emit a frozen `KILLED` reconciliation receipt and prevent a successful state advance.
+
+Use real sealed `trading.portfolio-state/v1`, `trading.ledger-record/v1`, `trading.reconciliation-receipt/v1`, `trading.simulated-order-intent/v1`, and `trading.simulated-fill-receipt/v1` records. Hand-pin consumer-visible arithmetic in the tests. Do not add a database, filesystem log, schema, external store, broker/wallet/signer/order surface, or exhaustive mutation matrix.
 
 - [ ] **Step 2: Implement append-only in-memory store and accounting**
 
-G2 storage is an explicit in-memory authority for deterministic tests. No filesystem append is needed in this milestone.
+G2 storage is an explicit immutable in-memory authority for deterministic tests. No filesystem append is needed in this milestone.
+
+Use these public interfaces unless implementation discovers a frozen-contract impossibility:
+
+```python
+@dataclass(frozen=True, slots=True)
+class InMemoryLedgerStore:
+    ledger_records: tuple[bytes, ...]
+
+def append_ledger_record(store: InMemoryLedgerStore, ledger_record: bytes) -> InMemoryLedgerStore: ...
+
+@dataclass(frozen=True, slots=True)
+class AccountingTransition:
+    store: InMemoryLedgerStore
+    portfolio_state_record: bytes
+    ledger_record: bytes | None
+    reconciliation_receipt_record: bytes
+
+def initialize_accounting(
+    verified: ContractVerifiedRunInputs,
+    *,
+    quote_mint: str,
+    quote_decimals: int,
+    starting_quote_atoms: int,
+) -> AccountingTransition: ...
+
+def reserve_intent(
+    verified: ContractVerifiedRunInputs,
+    store: InMemoryLedgerStore,
+    portfolio_state_record: bytes,
+    intent_record: bytes,
+) -> AccountingTransition: ...
+
+def apply_fill_receipt(
+    verified: ContractVerifiedRunInputs,
+    store: InMemoryLedgerStore,
+    portfolio_state_record: bytes,
+    intent_record: bytes,
+    fill_receipt_record: bytes,
+) -> AccountingTransition: ...
+```
+
+`append_ledger_record` must validate/seal the frozen ledger record, require `ledger_sequence == len(store.ledger_records)`, require `previous_ledger_record_id` to match the current head or null at sequence zero, reject duplicate ledger IDs, and return a new immutable store. `initialize_accounting` creates a PASS `GENESIS` reconciliation receipt and a state-sequence-zero portfolio with one quote balance. `reserve_intent` updates only reservations/open intent IDs and appends one balanced `SIMULATED_INTENT` ledger record. `apply_fill_receipt` updates balances, positions, fees, P&L, equity, reservations, and open intents from the frozen intent/fill pair, then appends one balanced `SIMULATED_FILL` ledger record. Exact duplicate replay from the same inputs must be byte-identical; a second fill for an already-applied intent in the same store must halt through idempotency reconciliation rather than double-applying.
 
 - [ ] **Step 3: Implement independent reconciliation**
 
 Recompute ledger and portfolio arithmetic from retained records using a separate code path. A mismatch emits failure evidence and prevents successful closure.
+
+Use this public interface:
+
+```python
+def reconcile_transition(
+    verified: ContractVerifiedRunInputs,
+    *,
+    kind: Literal["GENESIS", "INTENT_RESERVATION", "FILL_TRANSITION"],
+    portfolio_state_before_record: bytes | None,
+    portfolio_state_after_record: bytes,
+    ledger_record: bytes | None,
+    causation_records: Sequence[bytes],
+) -> bytes: ...
+```
+
+The reconciliation receipt must be a frozen `trading.reconciliation-receipt/v1` record. PASS receipts have empty reasons and zero residuals. KILLED receipts use the exact frozen reason owner and precedence rules, including `RECONCILIATION_IDEMPOTENCY_CONFLICT` + `RECONCILIATION_MISMATCH` for duplicate fill intent IDs and `RECONCILIATION_ARITHMETIC_RANGE` + `RECONCILIATION_MISMATCH` for arithmetic overflow. The accounting module may call this function, but reconciliation must not trust accounting's computed summaries; recompute independently from retained bytes. Do not implement group mark-to-market, residual close retries, final run-end closure, execution quarantine, model attempt integrity, or filesystem persistence in Task 10.
 
 - [ ] **Step 4: Verify and commit**
 
