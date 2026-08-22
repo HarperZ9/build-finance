@@ -211,7 +211,8 @@ class EventGroup:
     group_sequence: str
     event_ids: tuple[str, ...]
     availability_slot: str
-    decision_group_manifest_record: bytes
+    event_records: tuple[bytes, ...]
+    normalization_receipt_record: bytes
 
 def group_committed_events(verified: ContractVerifiedRunInputs) -> tuple[EventGroup, ...]: ...
 ```
@@ -220,8 +221,6 @@ def group_committed_events(verified: ContractVerifiedRunInputs) -> tuple[EventGr
 # build_finance/live_paper/features.py
 def derive_feature_snapshot(
     committed_history: Sequence[EventGroup],
-    prior_portfolio_state_record: bytes,
-    feature_profile_record: bytes,
 ) -> bytes:
     """Return one sealed canonical trading.feature-snapshot/v1 record."""
 ```
@@ -494,15 +493,15 @@ Commit message: `feat(live-paper): normalize admitted evidence offline`.
 
 - [ ] **Step 1: Write failing causal-order tests**
 
-Pin unsigned UTF-8 tie-breaking, availability-before-use, corrections/retractions, duplicate idempotence, deterministic group boundaries, warm-up, stale inputs, missing intervals, and no future group access.
+Pin one two-group causal vertical, caller-order invariance, and one revision lifecycle/fail-closed target case. Rely on the frozen run-input verifier for duplicate rejection and exact global/per-source/availability rank validation rather than duplicating its mutation matrix.
 
 - [ ] **Step 2: Implement grouping**
 
-Group only `verified.bundle.normalized_events` using the verified availability schedule and canonical source position. Emit and verify one sealed `trading.decision-group-manifest/v1` per group. Do not consult wall clock.
+Group only `verified.bundle.normalized_events` using the verified availability schedule and already-verified ingest rank. Retain exact canonical RawEvent records and emit one group-total `trading.normalization-receipt/v1`. Do not consult wall clock. A final `trading.decision-group-manifest/v1` cannot be sealed here because its closed schema requires nonempty algorithm and fusion IDs; Task 7 seals it after those records exist.
 
 - [ ] **Step 3: Implement integer/fixed-point features**
 
-Start with the smallest approved feature set needed by the vertical slice: return/momentum, spread/liquidity proxy, realized range/volatility proxy, data age, and warm-up flags. Every feature binds input IDs and formula/profile versions.
+Start with the smallest approved feature set needed by the vertical slice: exact integer mid price, one-period return, liquidity, route impact, causal age, and warm-up/missing-feature flags. Use the frozen `trading.feature-snapshot/v1` contract and bind the verified run receipt's `feature_code_sha256`; do not introduce portfolio authority or a new feature-profile schema in G2.
 
 - [ ] **Step 4: Verify and commit**
 
