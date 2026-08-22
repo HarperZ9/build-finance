@@ -93,9 +93,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     events: list[str] = []
     exit_code = 0
     error: str | None = None
+    self_test = "PENDING"
     try:
         with deny_network(events):
             _prove_shim(events)
+            self_test = "PASS"
             sys.path.insert(0, str(ROOT))
             if mode == "--import":
                 importlib.import_module(args[0])
@@ -113,7 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "error": error,
         "exit_code": exit_code,
         "network": "DENIED",
-        "self_test": "PASS",
+        "self_test": self_test,
     }
     print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
     return exit_code

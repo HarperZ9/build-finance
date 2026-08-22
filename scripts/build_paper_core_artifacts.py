@@ -68,10 +68,15 @@ def _copy_verified_sources(staging: Path, manifest: Mapping[str, Any]) -> tuple[
     if not isinstance(rows, list) or not rows:
         raise BuildError("paper-core manifest files must be a non-empty list")
     copied: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise BuildError("paper-core manifest file row must be an object")
         relative = _validate_source_path(row.get("path"))
+        relative_name = relative.as_posix()
+        if relative_name in seen:
+            raise BuildError(f"duplicate manifest source path: {relative_name}")
+        seen.add(relative_name)
         source = ROOT / relative
         payload = source.read_bytes()
         if row.get("sha256") != _sha256(payload):
@@ -79,7 +84,7 @@ def _copy_verified_sources(staging: Path, manifest: Mapping[str, Any]) -> tuple[
         destination = staging / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(payload)
-        copied.append(relative.as_posix())
+        copied.append(relative_name)
 
     manifest_destination = staging / MANIFEST_PATH.relative_to(ROOT)
     manifest_destination.parent.mkdir(parents=True, exist_ok=True)

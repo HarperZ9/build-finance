@@ -113,3 +113,13 @@ jobs:
         run: |
           python scripts/verify_crypto_replay_artifacts.py --wheel "${{ steps.paper_core_artifacts.outputs.wheel }}" --sdist "${{ steps.paper_core_artifacts.outputs.sdist }}"
           python scripts/verify_live_paper_artifacts.py --wheel "${{ steps.paper_core_artifacts.outputs.wheel }}" --sdist "${{ steps.paper_core_artifacts.outputs.sdist }}"
+      - name: Prove byte-identical rebuild
+        run: |
+          python scripts/build_paper_core_artifacts.py --out-dir .artifacts/paper-core/rebuild
+          cmp "${{ steps.paper_core_artifacts.outputs.wheel }}" .artifacts/paper-core/rebuild/*.whl
+          cmp "${{ steps.paper_core_artifacts.outputs.sdist }}" .artifacts/paper-core/rebuild/*.tar.gz
+      - name: Import the exact wheel without dependencies
+        run: |
+          python -m venv .artifacts/paper-core/import-venv
+          .artifacts/paper-core/import-venv/bin/python -m pip install --no-index --no-deps "${{ steps.paper_core_artifacts.outputs.wheel }}"
+          .artifacts/paper-core/import-venv/bin/python -I -c "import build_finance.live_paper.kernel"
