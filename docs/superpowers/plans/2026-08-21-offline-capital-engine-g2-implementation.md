@@ -269,14 +269,18 @@ def fuse_signal_evidence(
 
 ```python
 # build_finance/live_paper/risk.py
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RiskEvaluation:
+    fusion_decision_id: str
     risk_decision_record: bytes
     simulated_order_intent_record: bytes | None
 
 def evaluate_risk(
-    fusion_decision_record: bytes,
+    event_group: EventGroup,
     feature_snapshot_record: bytes,
+    algorithm_candidate_records: Sequence[bytes],
+    model_evidence: ValidatedModelEvidence,
+    fusion_result: FusionResult,
     portfolio_state_record: bytes,
     risk_config_record: bytes,
 ) -> RiskEvaluation: ...
@@ -598,11 +602,21 @@ Commit message: `feat(live-paper): fuse closed signal evidence`.
 
 - [ ] **Step 1: Write failing risk tests**
 
-Pin long-or-flat enforcement, fixed-point sizing, minimum liquidity, maximum position/exposure, cooldown, stale mark rejection, deterministic stop/take-profit/trailing-stop policy, daily-loss breaker, drawdown breaker, kill switch, duplicate idempotency, exit precedence, and fail-closed arithmetic overflow. Mark and breaker authority must be derived from sealed `FeatureSnapshot` and `PortfolioState`; no undefined standalone mark/breaker record is permitted.
+Add exactly three qualitative test functions:
+
+1. an approved flat-to-long entry that independently pins integer sizing, quote-liquidity participation, impact/concentration/balance/notional gates, deterministic fixed stop/take levels, evidence closure, stable reservation/intent identity, and byte-for-byte repeatability;
+2. a long-position mandatory full exit where kill, session-end, stop, and take conditions overlap, pinning the frozen reason-code precedence and full base reservation; and
+3. a fail-closed suppression test covering a stale attempted entry plus killed/loss-latched flat state, with no intent emitted and arithmetic overflow rejected.
+
+Mark and breaker authority must be derived from sealed `FeatureSnapshot` and `PortfolioState`; no undefined standalone mark/breaker record is permitted. Derive expected fixed-point values by hand in the tests rather than by reusing production helpers.
 
 - [ ] **Step 2: Implement risk evaluation**
 
-Risk consumes fusion evidence plus the exact sealed `FeatureSnapshot`, authoritative `PortfolioState`, and risk-config records. It verifies that the fusion decision binds that feature snapshot. Current mark and breaker authority are derived from the sealed `FeatureSnapshot` and sealed `PortfolioState`; there are no standalone mark/breaker inputs. It always emits a sealed `RiskDecision`; it emits a `SimulatedOrderIntent` only when approved. Stops and exits are deterministic records, not model suggestions.
+Risk receives the full `EventGroup` / `FeatureSnapshot` / fixed algorithm candidates / validated disabled-model evidence / `FusionResult` closure plus authoritative `PortfolioState` and risk-config records. It must recompute `fuse_signal_evidence(...)` and require exact `FusionResult` equality before granting sizing authority; a self-addressed or resealed standalone fusion record is insufficient. Because the frozen `RiskDecision` contract has no fusion field, return the exact FusionDecision ID in immutable in-memory `RiskEvaluation` alongside the sealed records.
+
+Implement only the controls representable in the frozen admitted records: long-or-flat operation, integer target sizing, quote-liquidity participation, impact/concentration/staleness/balance/notional gates, fixed stop/take levels, mandatory stop/take/session-end/kill exits, session-loss/drawdown and existing kill latches, pending-intent suppression, deterministic reservation identity, and fail-closed bounded arithmetic. Use `ceil(target_notional * 10000 / liquidity_quote_atoms)` as the explicitly named G2 quote-liquidity participation proxy. Map `OPEN_LONG` to `ENTER_LONG`, `CLOSE_LONG` to `EXIT_LONG`, and neutral fusion to `HOLD`. Always emit one sealed `RiskDecision`; emit a sealed `SimulatedOrderIntent` only for an approved entry or exit. Mandatory exits are deterministic risk overrides, not model suggestions.
+
+Do not add a schema, plug-in/profile framework, live interface, or ambient state. Cooldown, trailing-stop high-water logic, loss streaks, lot-size controls, explicit minimum-volume fields, concurrent-position caps, external kill requests, route-capacity participation, run-scoped typed reservation keys, and a separate authoritative intent counter are explicit post-1.0 deferrals because the frozen inputs cannot represent their required authority. For G2, derive a domain-separated deterministic opaque reservation digest from the exact accepted evidence and use `intent_sequence=decision_sequence`; document that this proves decision-group determinism, not a stronger run-global counter.
 
 - [ ] **Step 3: Verify and commit**
 
