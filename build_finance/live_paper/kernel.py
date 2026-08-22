@@ -137,9 +137,16 @@ class _BoundaryFailure(Exception):
         self.error = error
 
 
-def _at_boundary(boundary: str, reason_code: str, operation: Callable[[], Any]) -> Any:
+def _at_boundary(
+    boundary: str,
+    reason_code: str,
+    operation: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     try:
-        return operation()
+        return operation(*args, **kwargs)
     except Exception as error:  # noqa: BLE001 - the kernel converts boundary failures to inert evidence.
         raise _BoundaryFailure(boundary, reason_code, error) from error
 
@@ -338,28 +345,32 @@ def run_offline_paper_kernel(
         evidence.groups = _at_boundary(
             "GROUPING",
             "KERNEL_GROUPING_FAILED",
-            lambda: group_committed_events(verified),
+            group_committed_events,
+            verified,
         )
         quote_mint, quote_decimals, starting_quote_atoms = _at_boundary(
             "PROFILE_VALIDATION",
             "KERNEL_PROFILE_INVALID",
-            lambda: _profile_inputs(verified, profiles, profile_snapshot),
+            _profile_inputs,
+            verified,
+            profiles,
+            profile_snapshot,
         )
         genesis = _at_boundary(
             "ACCOUNTING_INITIALIZATION",
             "KERNEL_ACCOUNTING_FAILED",
-            lambda: initialize_accounting(
-                verified,
-                quote_mint=quote_mint,
-                quote_decimals=quote_decimals,
-                starting_quote_atoms=starting_quote_atoms,
-            ),
+            initialize_accounting,
+            verified,
+            quote_mint=quote_mint,
+            quote_decimals=quote_decimals,
+            starting_quote_atoms=starting_quote_atoms,
         )
         evidence.reconciliations.append(genesis.reconciliation_receipt_record)
         _at_boundary(
             "RECONCILIATION",
             "KERNEL_RECONCILIATION_FAILED",
-            lambda: _require_reconciliation_pass(genesis.reconciliation_receipt_record),
+            _require_reconciliation_pass,
+            genesis.reconciliation_receipt_record,
         )
         evidence.store = genesis.store
         evidence.current_state = genesis.portfolio_state_record
@@ -369,27 +380,36 @@ def run_offline_paper_kernel(
             snapshot = _at_boundary(
                 "FEATURE_DERIVATION",
                 "KERNEL_FEATURE_FAILED",
-                lambda group_index=index: derive_feature_snapshot(evidence.groups[: group_index + 1]),
+                derive_feature_snapshot,
+                evidence.groups[: index + 1],
             )
             evidence.feature_snapshots.append(snapshot)
             candidates = _at_boundary(
                 "ALGORITHM_DERIVATION",
                 "KERNEL_ALGORITHM_FAILED",
-                lambda group=group, snapshot=snapshot: derive_algorithm_candidates(group, snapshot),
+                derive_algorithm_candidates,
+                group,
+                snapshot,
             )
             evidence.algorithm_candidates.append(candidates)
             model = _at_boundary(
                 "MODEL_VALIDATION",
                 "KERNEL_MODEL_VALIDATION_FAILED",
-                lambda snapshot=snapshot: validate_model_signal(None, None, None, snapshot),
+                validate_model_signal,
+                None,
+                None,
+                None,
+                snapshot,
             )
             evidence.model_dispositions.append((group.group_sequence, model.disposition, model.reason_code))
             fusion = _at_boundary(
                 "FUSION",
                 "KERNEL_FUSION_FAILED",
-                lambda group=group, snapshot=snapshot, candidates=candidates, model=model: fuse_signal_evidence(
-                    group, snapshot, candidates, model
-                ),
+                fuse_signal_evidence,
+                group,
+                snapshot,
+                candidates,
+                model,
             )
             evidence.fusion_decisions.append(fusion.fusion_decision_record)
             evidence.decision_manifests.append(fusion.decision_group_manifest_record)
@@ -397,15 +417,14 @@ def run_offline_paper_kernel(
             risk = _at_boundary(
                 "RISK_EVALUATION",
                 "KERNEL_RISK_FAILED",
-                lambda group=group, snapshot=snapshot, candidates=candidates, model=model, fusion=fusion: evaluate_risk(
-                    group,
-                    snapshot,
-                    candidates,
-                    model,
-                    fusion,
-                    evidence.current_state,
-                    profile_snapshot.risk_config_record,
-                ),
+                evaluate_risk,
+                group,
+                snapshot,
+                candidates,
+                model,
+                fusion,
+                evidence.current_state,
+                profile_snapshot.risk_config_record,
             )
             evidence.risk_decisions.append(risk.risk_decision_record)
             intent = risk.simulated_order_intent_record
@@ -415,15 +434,18 @@ def run_offline_paper_kernel(
             reserved = _at_boundary(
                 "INTENT_RESERVATION",
                 "KERNEL_RESERVATION_FAILED",
-                lambda intent=intent: reserve_intent(
-                    verified, evidence.store, cast(bytes, evidence.current_state), intent
-                ),
+                reserve_intent,
+                verified,
+                evidence.store,
+                cast(bytes, evidence.current_state),
+                intent,
             )
             evidence.reconciliations.append(reserved.reconciliation_receipt_record)
             _at_boundary(
                 "RECONCILIATION",
                 "KERNEL_RECONCILIATION_FAILED",
-                lambda reserved=reserved: _require_reconciliation_pass(reserved.reconciliation_receipt_record),
+                _require_reconciliation_pass,
+                reserved.reconciliation_receipt_record,
             )
             evidence.store = reserved.store
             evidence.current_state = reserved.portfolio_state_record
@@ -432,31 +454,30 @@ def run_offline_paper_kernel(
             fill = _at_boundary(
                 "FILL_SIMULATION",
                 "KERNEL_FILL_FAILED",
-                lambda intent=intent, selected_group=selected_group: simulate_terminal_fill(
-                    verified,
-                    intent,
-                    cast(bytes, evidence.current_state),
-                    selected_group,
-                    resolver,
-                ),
+                simulate_terminal_fill,
+                verified,
+                intent,
+                cast(bytes, evidence.current_state),
+                selected_group,
+                resolver,
             )
             evidence.fills.append(fill.fill_receipt_record)
             applied = _at_boundary(
                 "FILL_ACCOUNTING",
                 "KERNEL_ACCOUNTING_FAILED",
-                lambda intent=intent, fill=fill: apply_fill_receipt(
-                    verified,
-                    evidence.store,
-                    cast(bytes, evidence.current_state),
-                    intent,
-                    fill.fill_receipt_record,
-                ),
+                apply_fill_receipt,
+                verified,
+                evidence.store,
+                cast(bytes, evidence.current_state),
+                intent,
+                fill.fill_receipt_record,
             )
             evidence.reconciliations.append(applied.reconciliation_receipt_record)
             _at_boundary(
                 "RECONCILIATION",
                 "KERNEL_RECONCILIATION_FAILED",
-                lambda applied=applied: _require_reconciliation_pass(applied.reconciliation_receipt_record),
+                _require_reconciliation_pass,
+                applied.reconciliation_receipt_record,
             )
             evidence.store = applied.store
             evidence.current_state = applied.portfolio_state_record
