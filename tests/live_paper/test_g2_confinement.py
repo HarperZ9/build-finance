@@ -28,6 +28,13 @@ DETERMINISTIC_STDLIB_IMPORT_PREFIXES = (
     "types",
     "typing",
 )
+ALLOWED_FROZEN_REPLAY_IMPORTS = (
+    "build_finance.crypto_replay.admission",
+    "build_finance.crypto_replay.canonical",
+    "build_finance.crypto_replay.content_ids",
+    "build_finance.crypto_replay.run_inputs",
+    "build_finance.crypto_replay.schema_registry",
+)
 FORBIDDEN_BUILD_FINANCE_IMPORTS = (
     "build_finance.autotrader",
     "build_finance.backtest",
@@ -182,6 +189,8 @@ def _matches_module_prefix(module: str, prefixes: tuple[str, ...]) -> bool:
 def _is_forbidden_build_finance_import(module: str, package_prefix: str) -> bool:
     if module == package_prefix or module.startswith(f"{package_prefix}."):
         return False
+    if _matches_module_prefix(module, ALLOWED_FROZEN_REPLAY_IMPORTS):
+        return False
     return module.startswith("build_finance.") or module in FORBIDDEN_BUILD_FINANCE_IMPORTS
 
 
@@ -193,6 +202,9 @@ class _ImportTimeCallVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         call_module, call_name = _call_path(node, self._aliases)
+        if (call_module, call_name) == ("dataclasses", "dataclass"):
+            self.generic_visit(node)
+            return
         self.failures.append(f"{self._module}:import-time call {call_module}.{call_name}")
         self.generic_visit(node)
 
@@ -343,6 +355,43 @@ def test_ast_scan_flags_import_time_calls_in_control_class_decorator_and_default
     assert "isolated_live_paper.class_body:import-time call builtins.method_body_call" not in failures
     assert "isolated_live_paper.decorator_default:import-time call builtins.function_body_call" not in failures
     assert "isolated_live_paper.top_if:import-time call builtins.body_call" not in failures
+
+
+def test_frozen_replay_import_boundary_allows_only_audited_contract_modules() -> None:
+    """Only the frozen replay contract modules required by G2 live-paper production are permitted."""
+
+    for module in ALLOWED_FROZEN_REPLAY_IMPORTS:
+        assert not _is_forbidden_build_finance_import(module, PACKAGE_PREFIX)
+        assert not _is_forbidden_build_finance_import(f"{module}.NamedContract", PACKAGE_PREFIX)
+
+    for module in (
+        "build_finance.crypto_replay",
+        "build_finance.crypto_replay.jupiter_fixture",
+        "build_finance.crypto_replay.local_fixture",
+        "build_finance.crypto_replay.schema_definitions",
+        "build_finance.crypto_replay.source_tree",
+        "build_finance.market_data",
+        "build_finance.broker",
+        "build_finance.broker.AlpacaBroker",
+    ):
+        assert _is_forbidden_build_finance_import(module, PACKAGE_PREFIX)
+
+
+def test_ast_scan_allows_frozen_slotted_dataclass_carrier(tmp_path: Path) -> None:
+    """A deterministic frozen/slotted dataclass carrier is definition-time structure, not capability."""
+
+    package_root = tmp_path / "isolated_live_paper"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text('"""Synthetic package for dataclass confinement."""\n')
+    (package_root / "carrier.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class Carrier:\n"
+        "    value: int\n"
+    )
+
+    assert _ast_confinement_failures(package_root, "isolated_live_paper") == ()
 
 
 def test_live_paper_runtime_ast_denies_forbidden_imports_calls_urls_and_side_effects() -> None:
