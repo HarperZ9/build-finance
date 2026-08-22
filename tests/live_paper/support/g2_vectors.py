@@ -255,6 +255,15 @@ def _g2_payloads(vector: T02Vector) -> tuple[bytes, bytes]:
                 "schema": "build-finance.live-paper.synthetic-normalization-input/v1",
                 "event_kind": event["event_kind"],
                 "market": copy.deepcopy(event["market"]),
+                "source_position": copy.deepcopy(event["source_position"]),
+                "revision": copy.deepcopy(event["revision"]),
+                "event_time": event["event_time"],
+                "executable": event["executable"],
+                "quality_flags": copy.deepcopy(event["quality_flags"]),
+                "source_sequence": event["source_sequence"],
+                "ingest_sequence": event["ingest_sequence"],
+                "equal_time_group": event["equal_time_group"],
+                "replay_clock_ns": event["replay_clock_ns"],
             }
         )
         for event in vector.raw_events

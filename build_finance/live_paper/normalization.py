@@ -10,7 +10,6 @@ from typing import Any, cast
 from build_finance.crypto_replay.admission import ParsedSourceCandidate
 from build_finance.crypto_replay.canonical import (
     JsonObject,
-    JsonValue,
     parse_canonical_json,
     parse_canonical_record,
 )
@@ -31,7 +30,20 @@ from build_finance.live_paper.resolver import EvidenceResolver
 
 _NORMALIZATION_CODE_SHA256 = "52d2a97d33ca73d5619f7422fe275e0a4a37bec6b9b025ac257cce36dca03c25"
 _PAYLOAD_SCHEMA = "build-finance.live-paper.synthetic-normalization-input/v1"
-_PAYLOAD_FIELDS = ("event_kind", "market", "schema")
+_PAYLOAD_FIELDS = (
+    "equal_time_group",
+    "event_kind",
+    "event_time",
+    "executable",
+    "ingest_sequence",
+    "market",
+    "quality_flags",
+    "replay_clock_ns",
+    "revision",
+    "schema",
+    "source_position",
+    "source_sequence",
+)
 _MARKET_FIELDS = (
     "base_amount_atoms",
     "liquidity_quote_atoms",
@@ -103,10 +115,10 @@ def _candidate_receipt_binding(candidate: ParsedSourceCandidate, receipt: Mappin
         raise ValueError("the compact G2 normalization profile requires provider event time")
 
 
-def _fixture_rows(
+def _fixture_market(
     profile: Mapping[str, Any],
     receipt: Mapping[str, Any],
-) -> tuple[Mapping[str, Any], Mapping[str, Any], int, int]:
+) -> Mapping[str, Any]:
     files_value = profile["files"]
     markets_value = profile["allowed_markets"]
     if not isinstance(files_value, list) or not isinstance(markets_value, list):
@@ -123,12 +135,28 @@ def _fixture_rows(
     matching_markets = [row for row in markets_value if isinstance(row, Mapping) and row.get("market_id") == receipt["market_id"]]
     if len(matching_markets) != 1:
         raise ValueError("source receipt does not select exactly one fixture market")
+    return matching_markets[0]
 
-    source_sequence = files.index(fixture_file) + 1
-    slots = sorted({int(cast(str, row["availability_slot"])) for row in files})
-    availability_slot = int(cast(str, fixture_file["availability_slot"]))
-    equal_time_group = slots.index(availability_slot) + 1
-    return fixture_file, matching_markets[0], source_sequence, equal_time_group
+
+def _candidate_payload_binding(candidate: ParsedSourceCandidate, payload: Mapping[str, Any]) -> None:
+    if payload["source_position"] != candidate.source_position:
+        raise ValueError("candidate source_position does not match exact payload authority")
+    if payload["revision"] != candidate.revision:
+        raise ValueError("candidate revision does not match exact payload authority")
+    if payload["event_time"] != candidate.event_time:
+        raise ValueError("candidate event_time does not match exact payload authority")
+
+    if not isinstance(payload["source_position"], Mapping) or not isinstance(payload["revision"], Mapping):
+        raise ValueError("normalization payload position and revision must be closed objects")
+    if not isinstance(payload["event_time"], str) or type(payload["executable"]) is not bool:
+        raise ValueError("normalization payload event time and executable disposition have invalid types")
+    if not isinstance(payload["quality_flags"], list) or not all(
+        isinstance(flag, str) for flag in payload["quality_flags"]
+    ):
+        raise ValueError("normalization payload quality flags must be an array of strings")
+    for field in ("source_sequence", "ingest_sequence", "equal_time_group", "replay_clock_ns"):
+        if not isinstance(payload[field], str):
+            raise ValueError(f"normalization payload {field} must be canonical numeric text")
 
 
 def _raw_event_document(
@@ -137,12 +165,9 @@ def _raw_event_document(
     profile: Mapping[str, Any],
     payload: Mapping[str, Any],
 ) -> JsonObject:
-    _fixture_file, market_profile, source_sequence, equal_time_group = _fixture_rows(profile, receipt)
+    market_profile = _fixture_market(profile, receipt)
     market = payload["market"]
     assert isinstance(market, Mapping)
-    source_position = cast(Mapping[str, JsonValue], candidate.source_position)
-    revision = cast(Mapping[str, JsonValue], candidate.revision)
-    replay_clock_ns = (equal_time_group - 1) * int(cast(str, profile["replay_tick_ns"]))
     document: JsonObject = {
         "schema": "trading.raw-event/v1",
         "fixture_manifest_sha256": cast(str, profile["fixture_manifest_sha256"]),
@@ -159,18 +184,18 @@ def _raw_event_document(
         "base_decimals": cast(int, market_profile["base_decimals"]),
         "quote_decimals": cast(int, market_profile["quote_decimals"]),
         "admission_sequence": candidate.admission_sequence,
-        "source_sequence": str(source_sequence),
-        "ingest_sequence": str(source_sequence),
-        "equal_time_group": str(equal_time_group),
-        "replay_clock_ns": str(replay_clock_ns),
-        "event_time": candidate.event_time,
+        "source_sequence": cast(str, payload["source_sequence"]),
+        "ingest_sequence": cast(str, payload["ingest_sequence"]),
+        "equal_time_group": cast(str, payload["equal_time_group"]),
+        "replay_clock_ns": cast(str, payload["replay_clock_ns"]),
+        "event_time": cast(str, payload["event_time"]),
         "observed_at": candidate.observed_at,
         "ingested_at": candidate.ingested_at,
-        "source_position": deepcopy(dict(source_position)),
-        "revision": deepcopy(dict(revision)),
+        "source_position": deepcopy(dict(cast(Mapping[str, Any], payload["source_position"]))),
+        "revision": deepcopy(dict(cast(Mapping[str, Any], payload["revision"]))),
         "event_kind": cast(str, payload["event_kind"]),
-        "executable": True,
-        "quality_flags": [],
+        "executable": cast(bool, payload["executable"]),
+        "quality_flags": deepcopy(payload["quality_flags"]),
         "market": deepcopy(dict(market)),
     }
     sealed = seal_replay_content_id(document)
@@ -239,6 +264,7 @@ def normalize_admitted_candidate(
     if not isinstance(market, Mapping):
         raise ValueError("normalization payload market must be a closed object")
     _require_exact_keys(market, _MARKET_FIELDS, "normalization market")
+    _candidate_payload_binding(candidate, payload)
 
     raw_event = _raw_event_document(candidate, receipt, profile, payload)
     event_id = cast(str, raw_event["event_id"])

@@ -224,7 +224,7 @@ def test_root_and_resolved_evidence_fail_closed(case: str) -> None:
         _build(vector, run=run, resolver=resolver)
 
 
-@pytest.mark.parametrize("case", ("candidate_identity", "source_set", "model_enabled"))
+@pytest.mark.parametrize("case", ("candidate_identity", "candidate_position", "source_set", "model_enabled"))
 def test_candidate_source_set_and_model_disabled_authority_close(case: str) -> None:
     vector = build_g2_vector()
     builder = _symbol("run_input_builder", "build_verified_run_inputs")
@@ -233,6 +233,19 @@ def test_candidate_source_set_and_model_disabled_authority_close(case: str) -> N
     receipts = vector.source_receipt_records
     if case == "candidate_identity":
         candidates = (replace(candidates[0], source_revision="tampered-revision"), *candidates[1:])
+    elif case == "candidate_position":
+        assert candidates[0].source_position is not None
+        changed_position = dict(candidates[0].source_position)
+        changed_position["source_native_event_id"] = "tampered-native-event"
+        candidates = (replace(candidates[0], source_position=changed_position), *candidates[1:])
+        with pytest.raises(ValueError):
+            _symbol("normalization", "normalize_admitted_candidate")(
+                candidates[0],
+                receipts[0],
+                vector.resolver,
+                vector.fixture_manifest_record,
+            )
+        return
     elif case == "source_set":
         candidates = candidates[:-1]
         receipts = dropped_source_receipt_records(vector)
