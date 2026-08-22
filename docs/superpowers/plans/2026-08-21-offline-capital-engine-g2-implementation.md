@@ -228,8 +228,8 @@ def derive_feature_snapshot(
 ```python
 # build_finance/live_paper/algorithms.py
 def derive_algorithm_candidates(
+    event_group: EventGroup,
     feature_snapshot_record: bytes,
-    algorithm_profile_records: Sequence[bytes],
 ) -> tuple[bytes, ...]:
     """Return sealed non-authoritative trading.algorithm-candidate/v1 records."""
 ```
@@ -521,11 +521,11 @@ Commit message: `feat(live-paper): derive causal feature snapshots`.
 
 - [ ] **Step 1: Write failing algorithm-evidence tests**
 
-Pin at least three deliberately simple, auditable candidates: momentum, mean-reversion guard, and liquidity/data-quality veto. Cover insufficient warm-up, stale data, disagreement, deterministic score bounds, and absence of order/risk fields.
+Pin three deliberately simple, auditable candidates: momentum, mean-reversion guard, and liquidity/data-quality veto. Use one positive vertical, one warm-up/veto vertical, and one evidence-binding failure; do not duplicate scalar boundary matrices already enforced by the Task 2 registry.
 
 - [ ] **Step 2: Implement candidate derivation**
 
-Algorithms may emit directional/ABSTAIN evidence, score, horizon, reasons, input IDs, and formula version only.
+Algorithms consume the exact `EventGroup` plus its frozen FeatureSnapshot so every candidate can bind the group-total normalization receipt and decision sequence. G2 algorithms are fixed/non-configurable and may emit directional/ABSTAIN evidence, score, horizon, reasons, input IDs, and formula version only. Opaque synthetic algorithm-profile sentinels remain inert in 1.0.0.
 
 - [ ] **Step 3: Verify and commit**
 
