@@ -355,6 +355,7 @@ def run_offline_paper_kernel(
                 starting_quote_atoms=starting_quote_atoms,
             ),
         )
+        evidence.reconciliations.append(genesis.reconciliation_receipt_record)
         _at_boundary(
             "RECONCILIATION",
             "KERNEL_RECONCILIATION_FAILED",
@@ -363,7 +364,6 @@ def run_offline_paper_kernel(
         evidence.store = genesis.store
         evidence.current_state = genesis.portfolio_state_record
         evidence.portfolio_states.append(genesis.portfolio_state_record)
-        evidence.reconciliations.append(genesis.reconciliation_receipt_record)
 
         for index, group in enumerate(evidence.groups):
             snapshot = _at_boundary(
@@ -419,6 +419,7 @@ def run_offline_paper_kernel(
                     verified, evidence.store, cast(bytes, evidence.current_state), intent
                 ),
             )
+            evidence.reconciliations.append(reserved.reconciliation_receipt_record)
             _at_boundary(
                 "RECONCILIATION",
                 "KERNEL_RECONCILIATION_FAILED",
@@ -427,7 +428,6 @@ def run_offline_paper_kernel(
             evidence.store = reserved.store
             evidence.current_state = reserved.portfolio_state_record
             evidence.portfolio_states.append(reserved.portfolio_state_record)
-            evidence.reconciliations.append(reserved.reconciliation_receipt_record)
             selected_group = evidence.groups[index + 1] if index + 1 < len(evidence.groups) else None
             fill = _at_boundary(
                 "FILL_SIMULATION",
@@ -452,6 +452,7 @@ def run_offline_paper_kernel(
                     fill.fill_receipt_record,
                 ),
             )
+            evidence.reconciliations.append(applied.reconciliation_receipt_record)
             _at_boundary(
                 "RECONCILIATION",
                 "KERNEL_RECONCILIATION_FAILED",
@@ -460,7 +461,6 @@ def run_offline_paper_kernel(
             evidence.store = applied.store
             evidence.current_state = applied.portfolio_state_record
             evidence.portfolio_states.append(applied.portfolio_state_record)
-            evidence.reconciliations.append(applied.reconciliation_receipt_record)
     except _BoundaryFailure as failure:
         return _result(
             evidence,

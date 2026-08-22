@@ -17,6 +17,7 @@ from build_finance.crypto_replay.content_ids import seal_content_id as seal_repl
 from build_finance.crypto_replay.content_ids import verify_content_id as verify_replay_content_id
 from build_finance.crypto_replay.run_inputs import ContractVerifiedRunInputs
 from build_finance.crypto_replay.schema_registry import require_valid_contract as require_valid_replay_contract
+from build_finance.live_paper.accounting import apply_fill_receipt, initialize_accounting, reserve_intent
 from build_finance.live_paper.fills import TerminalFillEvidence, simulate_terminal_fill
 from build_finance.live_paper.grouping import EventGroup, group_committed_events
 from build_finance.live_paper.profiles import PaperKernelProfiles
@@ -241,6 +242,48 @@ def test_causal_fill_rejects_decision_group_uses_later_group_and_is_byte_stable(
     assert non_later_ingest["fill_event_id"] == non_later_ingest_group.event_ids[0]
     assert non_later_ingest["fill_equal_time_group"] == "2"
     assert non_later_ingest["fill_ingest_sequence"] == "1"
+
+
+def test_reserved_state_is_accepted_as_fill_and_accounting_before_state() -> None:
+    """Breaks if the S0-bound intent cannot advance through reserved S1 to a terminal fill."""
+    vector, verified, groups = _verified_groups()
+    genesis = initialize_accounting(
+        verified,
+        quote_mint="synthetic-quote",
+        quote_decimals=6,
+        starting_quote_atoms=1_000_000,
+    )
+    intent_record = _intent_record(
+        vector=vector,
+        portfolio_state_record=genesis.portfolio_state_record,
+        decision_group=groups[0],
+    )
+    reserved = reserve_intent(verified, genesis.store, genesis.portfolio_state_record, intent_record)
+
+    fill = simulate_terminal_fill(
+        verified,
+        intent_record,
+        reserved.portfolio_state_record,
+        groups[1],
+        _resolver_for(groups[1]),
+    )
+    fill_receipt = _receipt(fill)
+    applied = apply_fill_receipt(
+        verified,
+        reserved.store,
+        reserved.portfolio_state_record,
+        intent_record,
+        fill.fill_receipt_record,
+    )
+    reserved_state = parse_canonical_record(reserved.portfolio_state_record)
+    final_state = parse_canonical_record(applied.portfolio_state_record)
+    reconciliation = parse_canonical_record(applied.reconciliation_receipt_record)
+
+    assert fill_receipt["portfolio_state_before_id"] == reserved_state["portfolio_state_id"]
+    assert fill_receipt["status"] == "FILLED"
+    assert reconciliation["status"] == "PASS"
+    assert final_state["open_intent_ids"] == []
+    assert len(applied.store.ledger_records) == 2
 
 
 def test_terminal_fill_arithmetic_pins_full_partial_and_no_next_event() -> None:

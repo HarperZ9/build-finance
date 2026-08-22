@@ -179,6 +179,56 @@ def _reservation_release(intent: Mapping[str, Any]) -> tuple[int, int]:
     return 0, _u64_text(intent["reserved_base_atoms"], field="reserved_base_atoms")
 
 
+def _require_portfolio_binding(intent: Mapping[str, Any], portfolio: Mapping[str, Any]) -> None:
+    """Accept S0 or prove that S1 is the exact reservation descendant of S0."""
+    if intent["portfolio_state_before_id"] == portfolio["portfolio_state_id"]:
+        return
+    intent_id = intent["intent_id"]
+    if (
+        portfolio["previous_portfolio_state_id"] != intent["portfolio_state_before_id"]
+        or portfolio["causation_schema"] != "trading.simulated-order-intent/v1"
+        or portfolio["causation_id"] != intent_id
+        or portfolio["open_intent_ids"] != [intent_id]
+        or portfolio["as_of_ingest_sequence"] != intent["decision_ingest_sequence"]
+        or portfolio["equal_time_group"] != intent["decision_equal_time_group"]
+        or portfolio["replay_clock_ns"] != intent["created_replay_clock_ns"]
+        or portfolio["config_admission_receipt_id"] != intent["config_admission_receipt_id"]
+        or portfolio["validated_config_sha256"] != intent["validated_config_sha256"]
+        or portfolio["quote_mint"] != intent["quote_mint"]
+        or portfolio["quote_decimals"] != intent["quote_decimals"]
+        or _u64_text(portfolio["state_sequence"], field="portfolio.state_sequence") == 0
+    ):
+        _fail("portfolio state is not the intent's exact reservation descendant")
+
+    balances = {
+        row["mint"]: row
+        for row in cast(list[Mapping[str, Any]], portfolio["balances"])
+        if isinstance(row.get("mint"), str)
+    }
+    if intent["action"] == "OPEN_LONG":
+        quote = balances.get(intent["quote_mint"])
+        if quote is None or quote["reserved_atoms"] != intent["reserved_quote_atoms"]:
+            _fail("reserved portfolio does not carry the intent's exact quote reservation")
+        return
+
+    base = balances.get(intent["base_mint"])
+    position = next(
+        (
+            row
+            for row in cast(list[Mapping[str, Any]], portfolio["positions"])
+            if row.get("market_id") == intent["market_id"]
+        ),
+        None,
+    )
+    if (
+        base is None
+        or position is None
+        or base["reserved_atoms"] != intent["reserved_base_atoms"]
+        or position["reserved_base_atoms"] != intent["reserved_base_atoms"]
+    ):
+        _fail("reserved portfolio does not carry the intent's exact base reservation")
+
+
 def _draw_evidence(
     *,
     run_receipt: Mapping[str, object],
@@ -529,8 +579,7 @@ def simulate_terminal_fill(
         bytes(portfolio_state_before_fill_record),
         expected_schema="trading.portfolio-state/v1",
     )
-    if intent["portfolio_state_before_id"] != portfolio["portfolio_state_id"]:
-        _fail("intent portfolio_state_before_id does not match supplied portfolio state before fill")
+    _require_portfolio_binding(intent, portfolio)
 
     if selected_event_group is None:
         return _terminal_denial(

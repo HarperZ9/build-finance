@@ -217,16 +217,12 @@ def build_kernel_projection(
         for content_id in (_content_id(document) for document in reconciliation_documents)
         if content_id is not None
     )
-    reconciliation_reasons = tuple(
-        sorted(
-            {reason for document in reconciliation_documents for reason in _strings(document.get("reason_codes"))},
-            key=lambda value: value.encode("utf-8"),
-        )
+    terminal_reconciliation = reconciliation_documents[-1] if reconciliation_documents else None
+    reconciliation_reasons = (
+        () if terminal_reconciliation is None else _strings(terminal_reconciliation.get("reason_codes"))
     )
     reconciliation_status = (
-        "PASS"
-        if reconciliation_documents and all(document.get("status") == "PASS" for document in reconciliation_documents)
-        else "FAILED"
+        "NOT_RUN" if terminal_reconciliation is None else str(terminal_reconciliation.get("status", "UNKNOWN"))
     )
     final_state_id = state.get("portfolio_state_id")
     return PaperKernelProjection(
