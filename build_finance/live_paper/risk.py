@@ -417,6 +417,7 @@ def _intent_record(
 
 def _zero_authority(
     *,
+    fusion_decision_id: str,
     snapshot: Mapping[str, Any],
     portfolio: Mapping[str, Any],
     config: Mapping[str, Any],
@@ -443,7 +444,11 @@ def _zero_authority(
         reserved_quote_atoms=0,
         reserved_base_atoms=0,
     )
-    return RiskEvaluation(fusion_decision_id="", risk_decision_record=record, simulated_order_intent_record=None)
+    return RiskEvaluation(
+        fusion_decision_id=fusion_decision_id,
+        risk_decision_record=record,
+        simulated_order_intent_record=None,
+    )
 
 
 def _flat_kill_reasons(portfolio: Mapping[str, Any], *, session_loss: bool, drawdown: bool) -> tuple[str, ...]:
@@ -493,6 +498,7 @@ def _entry_evaluation(
             base_decimals=cast(int, snapshot["base_decimals"]),
             quote_decimals=cast(int, snapshot["quote_decimals"]),
         )
+        zero_quantity_or_notional = quantity == 0 or actual_notional == 0
         participation = _checked_bps(_ceil_div(_checked_mul(target_notional, 10_000), liquidity))
         reserved_quote = _reserved_quote(
             target_notional,
@@ -502,7 +508,13 @@ def _entry_evaluation(
         concentration = _checked_bps(_ceil_div(_checked_mul(actual_notional, 10_000), equity))
         stop, take = _entry_levels(price_q18=price, config=config)
     except _ArithmeticRange:
-        return _zero_authority(snapshot=snapshot, portfolio=portfolio, config=config, reason="RISK_ARITHMETIC_RANGE")
+        return _zero_authority(
+            fusion_decision_id=fusion_decision_id,
+            snapshot=snapshot,
+            portfolio=portfolio,
+            config=config,
+            reason="RISK_ARITHMETIC_RANGE",
+        )
 
     quote_balance = _balance_by_mint(portfolio).get(cast(str, snapshot["quote_mint"]))
     available_quote = 0 if quote_balance is None else _u64_text(quote_balance["available_atoms"], field="available_quote")
@@ -512,6 +524,8 @@ def _entry_evaluation(
     if reserved_quote > available_quote:
         reasons.append("RISK_INSUFFICIENT_BALANCE")
     if target_notional < _u64_text(config["min_notional_quote_atoms"], field="min_notional_quote_atoms"):
+        reasons.append("RISK_MIN_NOTIONAL")
+    if zero_quantity_or_notional and "RISK_MIN_NOTIONAL" not in reasons:
         reasons.append("RISK_MIN_NOTIONAL")
     if target_notional > _u64_text(config["max_notional_quote_atoms"], field="max_notional_quote_atoms"):
         reasons.append("RISK_MAX_NOTIONAL")
@@ -1036,7 +1050,7 @@ def evaluate_risk(
         )
         return RiskEvaluation(cast(str, fusion["fusion_decision_id"]), record, None)
 
-    if _u64_text(snapshot["replay_clock_ns"], field="replay_clock_ns") > _u64_text(
+    if _u64_text(snapshot["replay_clock_ns"], field="replay_clock_ns") >= _u64_text(
         config["session_end_replay_clock_ns"], field="session_end_replay_clock_ns"
     ):
         record = _risk_decision_record(

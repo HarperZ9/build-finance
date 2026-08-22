@@ -69,6 +69,17 @@ def _risk_config_record(vector: G2Vector, **changes: Any) -> bytes:
     return canonical_record_bytes(sealed)
 
 
+def _feature_snapshot_record(snapshot_record: bytes, **features: Any) -> bytes:
+    document = copy.deepcopy(parse_canonical_record(snapshot_record))
+    document.pop("snapshot_id")
+    feature_map = document["features"]
+    assert isinstance(feature_map, dict)
+    feature_map.update(features)
+    sealed = seal_replay_content_id(document)
+    require_valid_replay_contract(sealed, expected_schema="trading.feature-snapshot/v1")
+    return canonical_record_bytes(sealed)
+
+
 def _causal_digest(label: str) -> str:
     return hashlib.sha256(f"G2 RISK TEST STATE:{label}".encode("ascii")).hexdigest()
 
@@ -257,12 +268,13 @@ def _reservation_id(
 
 def test_flat_to_long_entry_sizes_gates_seals_identity_and_rejects_substituted_fusion() -> None:
     _RiskEvaluation, evaluate_risk = _risk_api()
-    vector, group, snapshot_record, candidates, model_evidence, fusion_result, config_record = _case()
+    vector, group, snapshot_record, candidates, model_evidence, fusion_result, _config_record = _case()
+    config_record = _risk_config_record(vector, session_end_replay_clock_ns="1000000001")
+    config = parse_canonical_record(config_record)
     snapshot = parse_canonical_record(snapshot_record)
     fusion = parse_live_record(fusion_result.fusion_decision_record)
-    portfolio_state_record = _flat_portfolio_state_record(vector)
+    portfolio_state_record = _flat_portfolio_state_record(vector, config_sha256=str(config["config_sha256"]))
     portfolio = parse_canonical_record(portfolio_state_record)
-    config = parse_canonical_record(config_record)
 
     evaluation = evaluate_risk(
         group,
@@ -470,8 +482,30 @@ def test_overlapping_kill_session_stop_and_take_exit_reserves_full_base_with_pre
 
 def test_stale_or_latched_flat_entries_emit_no_intent_and_overflow_fails_closed() -> None:
     _RiskEvaluation, evaluate_risk = _risk_api()
-    vector, group, snapshot_record, candidates, model_evidence, fusion_result, _config_record = _case()
-    stale_config_record = _risk_config_record(vector, stale_after_ns="0")
+    vector, group, snapshot_record, candidates, model_evidence, fusion_result, config_record = _case()
+    fusion = parse_live_record(fusion_result.fusion_decision_record)
+    boundary_state_record = _flat_portfolio_state_record(vector)
+    boundary_evaluation = evaluate_risk(
+        group,
+        snapshot_record,
+        candidates,
+        model_evidence,
+        fusion_result,
+        boundary_state_record,
+        config_record,
+    )
+    boundary_decision, boundary_intent = _documents(boundary_evaluation)
+    assert boundary_evaluation.fusion_decision_id == fusion["fusion_decision_id"]
+    assert boundary_intent is None
+    assert boundary_decision["verdict"] == "REJECT"
+    assert boundary_decision["effective_action"] == "HOLD"
+    assert boundary_decision["reason_codes"] == ["RISK_SESSION_CLOSED"]
+
+    stale_config_record = _risk_config_record(
+        vector,
+        stale_after_ns="0",
+        session_end_replay_clock_ns="1000000001",
+    )
     stale_config = parse_canonical_record(stale_config_record)
     flat_state_record = _flat_portfolio_state_record(vector, config_sha256=str(stale_config["config_sha256"]))
 
@@ -535,6 +569,7 @@ def test_stale_or_latched_flat_entries_emit_no_intent_and_overflow_fails_closed(
         vector,
         target_entry_notional_quote_atoms=str(_MAX_U64),
         max_notional_quote_atoms=str(_MAX_U64),
+        session_end_replay_clock_ns="1000000001",
     )
     overflow_config = parse_canonical_record(overflow_config_record)
     overflow_state_record = _flat_portfolio_state_record(
@@ -552,6 +587,7 @@ def test_stale_or_latched_flat_entries_emit_no_intent_and_overflow_fails_closed(
         overflow_config_record,
     )
     overflow_decision, overflow_intent = _documents(overflow_evaluation)
+    assert overflow_evaluation.fusion_decision_id == fusion["fusion_decision_id"]
     assert overflow_intent is None
     assert overflow_decision["verdict"] == "KILL"
     assert overflow_decision["effective_action"] == "HOLD"
@@ -570,3 +606,41 @@ def test_stale_or_latched_flat_entries_emit_no_intent_and_overflow_fails_closed(
         "session_pnl_quote_atoms": None,
         "stale_age_ns": None,
     }
+
+    zero_quantity_snapshot_record = _feature_snapshot_record(
+        snapshot_record,
+        mid_price_q18="200000000000000000000000000",
+    )
+    zero_quantity_config_record = _risk_config_record(vector, session_end_replay_clock_ns="1000000001")
+    zero_quantity_config = parse_canonical_record(zero_quantity_config_record)
+    zero_quantity_state_record = _flat_portfolio_state_record(
+        vector,
+        config_sha256=str(zero_quantity_config["config_sha256"]),
+    )
+    zero_quantity_candidates = derive_algorithm_candidates(group, zero_quantity_snapshot_record)
+    zero_quantity_model = validate_model_signal(None, None, None, zero_quantity_snapshot_record)
+    zero_quantity_fusion = fuse_signal_evidence(
+        group,
+        zero_quantity_snapshot_record,
+        zero_quantity_candidates,
+        zero_quantity_model,
+    )
+    zero_quantity_fusion_doc = parse_live_record(zero_quantity_fusion.fusion_decision_record)
+    zero_quantity_evaluation = evaluate_risk(
+        group,
+        zero_quantity_snapshot_record,
+        zero_quantity_candidates,
+        zero_quantity_model,
+        zero_quantity_fusion,
+        zero_quantity_state_record,
+        zero_quantity_config_record,
+    )
+    zero_quantity_decision, zero_quantity_intent = _documents(zero_quantity_evaluation)
+    assert zero_quantity_evaluation.fusion_decision_id == zero_quantity_fusion_doc["fusion_decision_id"]
+    assert zero_quantity_intent is None
+    assert zero_quantity_decision["verdict"] == "REJECT"
+    assert zero_quantity_decision["effective_action"] == "HOLD"
+    assert zero_quantity_decision["reason_codes"] == ["RISK_MIN_NOTIONAL"]
+    assert zero_quantity_decision["requested_base_atoms"] == "0"
+    assert zero_quantity_decision["approved_base_atoms"] == "0"
+    assert zero_quantity_decision["approved_notional_quote_atoms"] == "0"
