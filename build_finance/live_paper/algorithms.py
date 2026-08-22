@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from build_finance.crypto_replay.canonical import parse_canonical_record
+from build_finance.crypto_replay.content_ids import verify_content_id as verify_replay_content_id
 from build_finance.crypto_replay.schema_registry import require_valid_contract as require_valid_replay_contract
 from build_finance.live_paper.content_ids import canonical_record_bytes, seal_content_id
 from build_finance.live_paper.grouping import EventGroup
@@ -23,11 +24,17 @@ def _parse_inputs(event_group: EventGroup, feature_snapshot_record: bytes) -> tu
         raise ValueError("algorithm evidence requires an EventGroup")
     receipt = cast(dict[str, Any], parse_canonical_record(event_group.normalization_receipt_record))
     require_valid_live_contract(receipt, expected_schema="trading.normalization-receipt/v1")
+    if receipt["status"] != "PASS" or receipt["reason_codes"] != []:
+        raise ValueError("group normalization receipt must record an unqualified PASS")
+    if receipt["source_batch_id"] != f"g2-decision-group-{event_group.group_sequence}":
+        raise ValueError("group normalization receipt batch identity does not match the event group")
     if receipt["normalized_event_ids"] != list(event_group.event_ids):
         raise ValueError("group normalization receipt does not bind the exact event group")
 
     snapshot = cast(dict[str, Any], parse_canonical_record(bytes(feature_snapshot_record)))
     require_valid_replay_contract(snapshot, expected_schema="trading.feature-snapshot/v1")
+    if not verify_replay_content_id(snapshot):
+        raise ValueError("feature snapshot ID does not match its retained record")
     if snapshot["decision_sequence"] != event_group.group_sequence:
         raise ValueError("feature snapshot decision sequence does not match the event group")
     if snapshot["equal_time_group"] != event_group.group_sequence:

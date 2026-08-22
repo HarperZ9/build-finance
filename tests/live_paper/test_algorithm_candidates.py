@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -12,6 +13,8 @@ from build_finance.crypto_replay.canonical import canonical_record_bytes, parse_
 from build_finance.crypto_replay.content_ids import seal_content_id as seal_replay_content_id
 from build_finance.live_paper.algorithms import derive_algorithm_candidates
 from build_finance.live_paper.content_ids import canonical_json_bytes as live_canonical_json_bytes
+from build_finance.live_paper.content_ids import canonical_record_bytes as live_canonical_record_bytes
+from build_finance.live_paper.content_ids import seal_content_id as seal_live_content_id
 from build_finance.live_paper.features import derive_feature_snapshot
 from build_finance.live_paper.grouping import EventGroup, group_committed_events
 from build_finance.live_paper.profiles import PaperKernelProfiles
@@ -161,10 +164,26 @@ def test_warmup_abstains_and_one_low_liquidity_snapshot_vetoes() -> None:
     )
 
 
-def test_valid_snapshot_from_another_group_is_rejected() -> None:
+def test_stale_or_cross_group_evidence_bindings_are_rejected() -> None:
     vector = build_g2_vector()
     groups = _groups(vector)
     first_snapshot = derive_feature_snapshot(groups[:1])
+    second_snapshot = derive_feature_snapshot(groups)
+
+    stale_snapshot = copy.deepcopy(parse_canonical_record(second_snapshot))
+    stale_snapshot["snapshot_id"] = "0" * 64
+    with pytest.raises(ValueError, match="snapshot"):
+        derive_algorithm_candidates(groups[1], canonical_record_bytes(stale_snapshot))
+
+    miskeyed_receipt = parse_live_record(groups[1].normalization_receipt_record)
+    miskeyed_receipt.pop("normalization_receipt_id")
+    miskeyed_receipt["source_batch_id"] = "g2-decision-group-1"
+    miskeyed_group = replace(
+        groups[1],
+        normalization_receipt_record=live_canonical_record_bytes(seal_live_content_id(miskeyed_receipt)),
+    )
+    with pytest.raises(ValueError, match="group"):
+        derive_algorithm_candidates(miskeyed_group, second_snapshot)
 
     with pytest.raises(ValueError, match="group"):
         derive_algorithm_candidates(groups[1], first_snapshot)
