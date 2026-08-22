@@ -560,8 +560,6 @@ def simulate_terminal_fill(
             fill_event=fill_event,
         )
     if fill_ingest <= decision_ingest:
-        same_or_earlier_event = dict(fill_event)
-        same_or_earlier_event["equal_time_group"] = intent["decision_equal_time_group"]
         return _terminal_denial(
             run_receipt=run_receipt,
             public_seed=public_seed,
@@ -569,7 +567,7 @@ def simulate_terminal_fill(
             portfolio=portfolio,
             status="REJECTED",
             reason="FILL_SAME_OR_EARLIER_EVENT",
-            fill_event=same_or_earlier_event,
+            fill_event=fill_event,
         )
     if selected_group != decision_group + 1:
         _fail("STRICT_NEXT_EVENT/ONE_EVENT_GROUP requires the immediate next event group")

@@ -239,7 +239,7 @@ def test_causal_fill_rejects_decision_group_uses_later_group_and_is_byte_stable(
     assert non_later_ingest["status"] == "REJECTED"
     assert non_later_ingest["reason_codes"] == ["FILL_SAME_OR_EARLIER_EVENT"]
     assert non_later_ingest["fill_event_id"] == non_later_ingest_group.event_ids[0]
-    assert non_later_ingest["fill_equal_time_group"] == "1"
+    assert non_later_ingest["fill_equal_time_group"] == "2"
     assert non_later_ingest["fill_ingest_sequence"] == "1"
 
 
