@@ -12,10 +12,10 @@ from pathlib import Path
 
 try:
     from scripts.capture_live_paper_gate import _normalize_output
-    from scripts.verify_live_paper_artifacts import _derived_promotion
+    from scripts.verify_live_paper_artifacts import PRESCRIBED_GATE_COMMANDS, _derived_promotion
 except ModuleNotFoundError:  # Direct ``python scripts/...`` execution.
     from capture_live_paper_gate import _normalize_output
-    from verify_live_paper_artifacts import _derived_promotion
+    from verify_live_paper_artifacts import PRESCRIBED_GATE_COMMANDS, _derived_promotion
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = Path(".artifacts/paper-core/dist")
@@ -26,45 +26,13 @@ RECEIPT = Path("docs/live-paper/evidence/G2-green.json")
 PROMOTION = Path("docs/live-paper/promotion-status.json")
 
 
-def _python(*args: str) -> tuple[list[str], list[str]]:
-    return ["python", *args], [sys.executable, *args]
-
-
 def _commands() -> list[tuple[list[str], list[str]]]:
-    wheel = WHEEL.as_posix()
-    sdist = SDIST.as_posix()
-    return [
-        _python("-m", "pytest", "tests/live_paper", "tests/crypto_replay", "-q", "-p", "no:cacheprovider"),
-        _python(
-            "scripts/run_network_denied.py",
-            "--pytest",
-            "tests/live_paper",
-            "tests/crypto_replay",
-            "-q",
-            "-p",
-            "no:cacheprovider",
-        ),
-        _python("scripts/run_network_denied.py", "--import", "build_finance.live_paper.kernel"),
-        _python("-m", "build_finance.crypto_replay.schema_codegen", "--scope", "full", "--check"),
-        _python("-m", "build_finance.live_paper.registry", "--check"),
-        _python(
-            "-m",
-            "ruff",
-            "check",
-            "build_finance/live_paper",
-            "tests/live_paper",
-            "scripts/capture_live_paper_gate.py",
-            "scripts/capture_paper_core_gate.py",
-            "scripts/verify_live_paper_artifacts.py",
-            "scripts/run_network_denied.py",
-            "scripts/build_paper_core_artifacts.py",
-        ),
-        _python("-m", "mypy", "build_finance/live_paper"),
-        _python("scripts/build_paper_core_artifacts.py", "--out-dir", DIST.as_posix()),
-        _python("scripts/verify_crypto_replay_artifacts.py", "--wheel", wheel, "--sdist", sdist),
-        _python("scripts/verify_live_paper_artifacts.py", "--wheel", wheel, "--sdist", sdist),
-        (["git", "diff", "--check"], ["git", "diff", "--check"]),
-    ]
+    commands: list[tuple[list[str], list[str]]] = []
+    for prescribed in PRESCRIBED_GATE_COMMANDS:
+        command_args = list(prescribed)
+        executable_args = [sys.executable, *prescribed[1:]] if prescribed[0] == "python" else command_args.copy()
+        commands.append((command_args, executable_args))
+    return commands
 
 
 def _sha256(payload: bytes) -> str:

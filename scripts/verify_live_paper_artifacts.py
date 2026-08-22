@@ -139,6 +139,42 @@ CRITICAL_IMPLEMENTATION_PATHS = (
     "scripts/verify_live_paper_artifacts.py",
     "tests/live_paper",
 )
+PAPER_CORE_WHEEL = ".artifacts/paper-core/dist/build_finance_paper_core-1.0.1-py3-none-any.whl"
+PAPER_CORE_SDIST = ".artifacts/paper-core/dist/build_finance_paper_core-1.0.1.tar.gz"
+PRESCRIBED_GATE_COMMANDS = (
+    ("python", "-m", "pytest", "tests/live_paper", "tests/crypto_replay", "-q", "-p", "no:cacheprovider"),
+    (
+        "python",
+        "scripts/run_network_denied.py",
+        "--pytest",
+        "tests/live_paper",
+        "tests/crypto_replay",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+    ),
+    ("python", "scripts/run_network_denied.py", "--import", "build_finance.live_paper.kernel"),
+    ("python", "-m", "build_finance.crypto_replay.schema_codegen", "--scope", "full", "--check"),
+    ("python", "-m", "build_finance.live_paper.registry", "--check"),
+    (
+        "python",
+        "-m",
+        "ruff",
+        "check",
+        "build_finance/live_paper",
+        "tests/live_paper",
+        "scripts/capture_live_paper_gate.py",
+        "scripts/capture_paper_core_gate.py",
+        "scripts/verify_live_paper_artifacts.py",
+        "scripts/run_network_denied.py",
+        "scripts/build_paper_core_artifacts.py",
+    ),
+    ("python", "-m", "mypy", "build_finance/live_paper"),
+    ("python", "scripts/build_paper_core_artifacts.py", "--out-dir", ".artifacts/paper-core/dist"),
+    ("python", "scripts/verify_crypto_replay_artifacts.py", "--wheel", PAPER_CORE_WHEEL, "--sdist", PAPER_CORE_SDIST),
+    ("python", "scripts/verify_live_paper_artifacts.py", "--wheel", PAPER_CORE_WHEEL, "--sdist", PAPER_CORE_SDIST),
+    ("git", "diff", "--check"),
+)
 
 
 def _sha256(payload: bytes) -> str:
@@ -208,6 +244,9 @@ def verify_gate_evidence(
     transcript_commands = transcript.get("commands")
     if transcript.get("implementation_sha") != implementation_sha or not isinstance(transcript_commands, list):
         raise VerificationError("gate transcript implementation or commands are invalid")
+    command_args = [row.get("command_args") if isinstance(row, dict) else None for row in transcript_commands]
+    if command_args != [list(command) for command in PRESCRIBED_GATE_COMMANDS]:
+        raise VerificationError("gate transcript does not contain the exact prescribed Task 13 command list")
     verified_commands: list[dict[str, object]] = []
     for index, row in enumerate(transcript_commands):
         if not isinstance(row, dict) or not isinstance(row.get("output"), str):
@@ -389,6 +428,11 @@ def _expression_path(node: ast.AST, aliases: dict[str, str]) -> str | None:
     return ".".join((root, *reversed(parts)))
 
 
+def _is_capability_alias(path: str) -> bool:
+    root = path.split(".", 1)[0]
+    return root in {"__builtins__", "builtins", "importlib", "os", "runpy"} or _is_forbidden_import(path)
+
+
 def _resolve_import_from(module: str, source_name: str, node: ast.ImportFrom) -> str | None:
     if node.level == 0:
         return node.module
@@ -415,6 +459,24 @@ def _import_aliases(tree: ast.AST, module: str, source_name: str) -> dict[str, s
             for alias in node.names:
                 if alias.name != "*":
                     aliases[alias.asname or alias.name] = f"{imported}.{alias.name}"
+    assignments: list[tuple[ast.Name, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            assignments.extend((target, node.value) for target in node.targets if isinstance(target, ast.Name))
+        elif (
+            isinstance(node, (ast.AnnAssign, ast.NamedExpr))
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            assignments.append((node.target, node.value))
+    changed = True
+    while changed:
+        changed = False
+        for target, value in assignments:
+            resolved = _expression_path(value, aliases)
+            if resolved is not None and _is_capability_alias(resolved) and aliases.get(target.id) != resolved:
+                aliases[target.id] = resolved
+                changed = True
     return aliases
 
 
@@ -455,6 +517,10 @@ def _verify_ast_closure(wheel: ArchiveMembers) -> None:
             if isinstance(node, ast.Call):
                 call_path = _expression_path(node.func, aliases)
                 if call_path in {
+                    "__builtins__.__import__",
+                    "__builtins__.compile",
+                    "__builtins__.eval",
+                    "__builtins__.exec",
                     "builtins.__import__",
                     "builtins.compile",
                     "builtins.eval",

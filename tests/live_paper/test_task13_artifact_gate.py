@@ -16,6 +16,7 @@ from scripts.run_network_denied import NetworkDenied, deny_network
 from scripts.run_network_denied import main as network_denied_main
 from scripts.verify_crypto_replay_artifacts import ArchiveMembers, VerificationError
 from scripts.verify_live_paper_artifacts import (
+    PRESCRIBED_GATE_COMMANDS,
     _derived_promotion,
     _verify_ast_closure,
     _verify_complete_member_sets,
@@ -95,9 +96,11 @@ def test_wheel_record_rejects_a_payload_hash_mismatch() -> None:
     (
         "import importlib as loader\nloader.import_module('requests')\n",
         "from importlib import import_module as load\nload('requests')\n",
+        "__builtins__.__import__('socket')\n",
         "from build_finance import broker\n",
         "from ... import broker\n",
         "import os as process\nvalue = process.environ\n",
+        "import os\nprocess = os\nvalue = process.getenv('TOKEN')\n",
         "from os import environ as process_environment\nvalue = process_environment\n",
         "from os import getenv as read_env\nvalue = read_env('TOKEN')\n",
     ),
@@ -161,6 +164,10 @@ def _write_json(path: Path, value: object) -> None:
     path.write_bytes(json.dumps(value, separators=(",", ":"), sort_keys=True).encode() + b"\n")
 
 
+def _prescribed_gate_commands() -> list[list[str]]:
+    return [list(command) for command in PRESCRIBED_GATE_COMMANDS]
+
+
 def test_gate_evidence_verifies_transcript_artifacts_and_derived_promotion(tmp_path: Path) -> None:
     implementation_sha = "a" * 40
     wheel = tmp_path / ".artifacts/paper-core/dist/paper.whl"
@@ -171,16 +178,16 @@ def test_gate_evidence_verifies_transcript_artifacts_and_derived_promotion(tmp_p
     transcript_path = tmp_path / "docs/live-paper/evidence/G2-command-transcript.json"
     receipt_path = tmp_path / "docs/live-paper/evidence/G2-green.json"
     promotion_path = tmp_path / "docs/live-paper/promotion-status.json"
-    output = "all focused gates passed\n"
-    output_digest = hashlib.sha256(output.encode()).hexdigest()
+    outputs = [f"gate {index} passed\n" for index, _command in enumerate(_prescribed_gate_commands())]
     transcript = {
         "commands": [
             {
-                "command_args": ["python", "-m", "pytest", "tests/live_paper"],
+                "command_args": command,
                 "exit_code": 0,
                 "output": output,
-                "stdout_sha256": output_digest,
+                "stdout_sha256": hashlib.sha256(output.encode()).hexdigest(),
             }
+            for command, output in zip(_prescribed_gate_commands(), outputs, strict=True)
         ],
         "implementation_sha": implementation_sha,
         "schema": "build-finance.live-paper.g2-command-transcript/v1",
@@ -200,10 +207,11 @@ def test_gate_evidence_verifies_transcript_artifacts_and_derived_promotion(tmp_p
         },
         "commands": [
             {
-                "command_args": ["python", "-m", "pytest", "tests/live_paper"],
+                "command_args": command,
                 "exit_code": 0,
-                "stdout_sha256": output_digest,
+                "stdout_sha256": hashlib.sha256(output.encode()).hexdigest(),
             }
+            for command, output in zip(_prescribed_gate_commands(), outputs, strict=True)
         ],
         "implementation_sha": implementation_sha,
         "paper_core_manifest_sha256": "b" * 64,
@@ -228,6 +236,44 @@ def test_gate_evidence_verifies_transcript_artifacts_and_derived_promotion(tmp_p
         repo_root=tmp_path,
         verify_git=False,
     )
+
+    valid_transcript = json.loads(json.dumps(transcript))
+    valid_receipt = json.loads(json.dumps(receipt))
+    arbitrary_output = "arbitrary command passed\n"
+    transcript["commands"] = [
+        {
+            "command_args": ["python", "-c", "print('not the gate')"],
+            "exit_code": 0,
+            "output": arbitrary_output,
+            "stdout_sha256": hashlib.sha256(arbitrary_output.encode()).hexdigest(),
+        }
+    ]
+    _write_json(transcript_path, transcript)
+    receipt["commands"] = [
+        {
+            "command_args": transcript["commands"][0]["command_args"],
+            "exit_code": 0,
+            "stdout_sha256": transcript["commands"][0]["stdout_sha256"],
+        }
+    ]
+    receipt["transcript"]["sha256"] = hashlib.sha256(transcript_path.read_bytes()).hexdigest()
+    _write_json(receipt_path, receipt)
+    with pytest.raises(VerificationError, match="prescribed Task 13 command list"):
+        verify_gate_evidence(
+            receipt_path=receipt_path,
+            promotion_path=promotion_path,
+            transcript_path=transcript_path,
+            wheel=wheel,
+            sdist=sdist,
+            manifest_sha256="b" * 64,
+            repo_root=tmp_path,
+            verify_git=False,
+        )
+
+    transcript = valid_transcript
+    receipt = valid_receipt
+    _write_json(transcript_path, transcript)
+    _write_json(receipt_path, receipt)
 
     promotion["g2"] = "RED"
     _write_json(promotion_path, promotion)
