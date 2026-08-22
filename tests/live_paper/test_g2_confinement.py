@@ -121,17 +121,20 @@ def _resolve_import_from_module(module: str, path: Path, node: ast.ImportFrom) -
     return ".".join(base_parts)
 
 
-def _imported_modules(tree: ast.AST, module: str, path: Path) -> tuple[str, ...]:
-    modules: list[str] = []
+def _imported_modules(tree: ast.AST, module: str, path: Path) -> tuple[tuple[str, bool], ...]:
+    modules: list[tuple[str, bool]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names)
+            modules.extend((alias.name, False) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             imported = _resolve_import_from_module(module, path, node)
             if imported is None:
                 continue
-            modules.append(imported)
-            modules.extend(f"{imported}.{alias.name}" for alias in node.names if alias.name != "*")
+            modules.append((imported, False))
+            allow_named_object = imported in ALLOWED_FROZEN_REPLAY_IMPORTS
+            modules.extend(
+                (f"{imported}.{alias.name}", allow_named_object) for alias in node.names if alias.name != "*"
+            )
     return tuple(modules)
 
 
@@ -186,10 +189,17 @@ def _matches_module_prefix(module: str, prefixes: tuple[str, ...]) -> bool:
     return any(module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes)
 
 
-def _is_forbidden_build_finance_import(module: str, package_prefix: str) -> bool:
+def _is_forbidden_build_finance_import(
+    module: str,
+    package_prefix: str,
+    *,
+    allow_allowed_module_member: bool = False,
+) -> bool:
     if module == package_prefix or module.startswith(f"{package_prefix}."):
         return False
-    if _matches_module_prefix(module, ALLOWED_FROZEN_REPLAY_IMPORTS):
+    if module in ALLOWED_FROZEN_REPLAY_IMPORTS:
+        return False
+    if allow_allowed_module_member and _matches_module_prefix(module, ALLOWED_FROZEN_REPLAY_IMPORTS):
         return False
     return module.startswith("build_finance.") or module in FORBIDDEN_BUILD_FINANCE_IMPORTS
 
@@ -202,11 +212,19 @@ class _ImportTimeCallVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         call_module, call_name = _call_path(node, self._aliases)
-        if (call_module, call_name) == ("dataclasses", "dataclass"):
-            self.generic_visit(node)
-            return
         self.failures.append(f"{self._module}:import-time call {call_module}.{call_name}")
         self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            if not self._is_allowed_frozen_slotted_dataclass_decorator(decorator):
+                self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword)
+        for statement in node.body:
+            self.visit(statement)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function_signature(node)
@@ -216,6 +234,22 @@ class _ImportTimeCallVisitor(ast.NodeVisitor):
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         self._visit_arguments(node.args)
+
+    def _is_allowed_frozen_slotted_dataclass_decorator(self, node: ast.expr) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        if _call_path_from_func(node.func, self._aliases) != ("dataclasses", "dataclass"):
+            return False
+        if node.args or len(node.keywords) != 2:
+            return False
+        literal_keywords: dict[str, bool] = {}
+        for keyword in node.keywords:
+            if keyword.arg not in {"frozen", "slots"} or not isinstance(keyword.value, ast.Constant):
+                return False
+            if keyword.value.value is not True:
+                return False
+            literal_keywords[keyword.arg] = True
+        return literal_keywords == {"frozen": True, "slots": True}
 
     def _visit_function_signature(self, node: ast.AsyncFunctionDef | ast.FunctionDef) -> None:
         for decorator in node.decorator_list:
@@ -258,8 +292,12 @@ def _ast_confinement_failures(
     for module, path in _discovered_runtime_modules(package_root, package_prefix):
         tree = ast.parse(path.read_bytes(), filename=str(path))
         aliases = _import_aliases(tree, module, path)
-        for imported in _imported_modules(tree, module, path):
-            if _is_forbidden_build_finance_import(imported, package_prefix):
+        for imported, allow_allowed_module_member in _imported_modules(tree, module, path):
+            if _is_forbidden_build_finance_import(
+                imported,
+                package_prefix,
+                allow_allowed_module_member=allow_allowed_module_member,
+            ):
                 failures.append(f"{module}:forbidden build_finance import {imported}")
             elif not _is_allowed_import(imported, package_prefix):
                 failures.append(f"{module}:forbidden import {imported}")
@@ -342,11 +380,38 @@ def test_ast_scan_flags_import_time_calls_in_control_class_decorator_and_default
         "def decide(quantity=default_quantity()):\n"
         "    return function_body_call(quantity)\n"
     )
+    (package_root / "dataclass_assignment.py").write_text(
+        "from dataclasses import dataclass\n"
+        "Carrier = dataclass(frozen=True, slots=True)(object)\n"
+    )
+    (package_root / "dataclass_control_flow.py").write_text(
+        "from dataclasses import dataclass\n"
+        "if enabled:\n"
+        "    dataclass(frozen=True, slots=True)\n"
+    )
+    (package_root / "dataclass_empty_decorator.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass()\n"
+        "class Carrier:\n"
+        "    value: int\n"
+    )
+    (package_root / "dataclass_mutable_decorator.py").write_text(
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=False, slots=True)\n"
+        "class Carrier:\n"
+        "    value: int\n"
+    )
 
     failures = set(_ast_confinement_failures(package_root, "isolated_live_paper"))
 
     assert {
         "isolated_live_paper.class_body:import-time call builtins.class_body_call",
+        "isolated_live_paper.dataclass_assignment:import-time call dataclasses.dataclass",
+        "isolated_live_paper.dataclass_control_flow:import-time call dataclasses.dataclass",
+        "isolated_live_paper.dataclass_empty_decorator:import-time call dataclasses.dataclass",
+        "isolated_live_paper.dataclass_mutable_decorator:import-time call dataclasses.dataclass",
         "isolated_live_paper.decorator_default:import-time call builtins.decorator_factory",
         "isolated_live_paper.decorator_default:import-time call builtins.default_quantity",
         "isolated_live_paper.top_if:import-time call builtins.danger",
@@ -357,15 +422,16 @@ def test_ast_scan_flags_import_time_calls_in_control_class_decorator_and_default
     assert "isolated_live_paper.top_if:import-time call builtins.body_call" not in failures
 
 
-def test_frozen_replay_import_boundary_allows_only_audited_contract_modules() -> None:
+def test_frozen_replay_import_boundary_allows_only_audited_contract_modules(tmp_path: Path) -> None:
     """Only the frozen replay contract modules required by G2 live-paper production are permitted."""
 
     for module in ALLOWED_FROZEN_REPLAY_IMPORTS:
         assert not _is_forbidden_build_finance_import(module, PACKAGE_PREFIX)
-        assert not _is_forbidden_build_finance_import(f"{module}.NamedContract", PACKAGE_PREFIX)
 
     for module in (
         "build_finance.crypto_replay",
+        "build_finance.crypto_replay.admission.unlisted_submodule",
+        "build_finance.crypto_replay.canonical.provider_escape",
         "build_finance.crypto_replay.jupiter_fixture",
         "build_finance.crypto_replay.local_fixture",
         "build_finance.crypto_replay.schema_definitions",
@@ -375,6 +441,35 @@ def test_frozen_replay_import_boundary_allows_only_audited_contract_modules() ->
         "build_finance.broker.AlpacaBroker",
     ):
         assert _is_forbidden_build_finance_import(module, PACKAGE_PREFIX)
+
+    package_root = tmp_path / "isolated_live_paper"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text('"""Synthetic package for frozen replay import confinement."""\n')
+    (package_root / "allowed.py").write_text(
+        "from build_finance.crypto_replay.admission import ParsedSourceCandidate\n"
+        "from build_finance.crypto_replay.canonical import canonical_json_bytes\n"
+        "from build_finance.crypto_replay.content_ids import compute_content_id\n"
+        "from build_finance.crypto_replay.run_inputs import ContractVerifiedRunInputs\n"
+        "from build_finance.crypto_replay.schema_registry import require_valid_contract\n"
+    )
+    (package_root / "escaped.py").write_text(
+        "import build_finance.crypto_replay.admission.unlisted_submodule\n"
+        "from build_finance.crypto_replay.canonical.provider_escape import Provider\n"
+    )
+
+    failures = set(_ast_confinement_failures(package_root, "isolated_live_paper"))
+
+    assert "isolated_live_paper.allowed:forbidden build_finance import" not in "\n".join(failures)
+    assert {
+        (
+            "isolated_live_paper.escaped:forbidden build_finance import "
+            "build_finance.crypto_replay.admission.unlisted_submodule"
+        ),
+        (
+            "isolated_live_paper.escaped:forbidden build_finance import "
+            "build_finance.crypto_replay.canonical.provider_escape"
+        ),
+    }.issubset(failures)
 
 
 def test_ast_scan_allows_frozen_slotted_dataclass_carrier(tmp_path: Path) -> None:
