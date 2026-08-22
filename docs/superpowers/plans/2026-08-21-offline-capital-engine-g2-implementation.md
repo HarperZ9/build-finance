@@ -636,11 +636,41 @@ Commit message: `feat(live-paper): add fail-closed deterministic risk authority`
 
 - [ ] **Step 1: Write failing fill tests**
 
-Cover intent-before-market causality, same-group prohibition, later-group eligibility, market/limit/stop transitions, partial/no fill, slippage/fee fixed-point arithmetic, deterministic public seed, one terminal receipt per intent, duplicate replay, impossible transition, and explicit estimate labelling.
+Add exactly three qualitative test functions:
+
+1. causal byte-stability: a valid intent cannot fill in its decision group, fills against the earliest eligible later group, verifies retained event records through the resolver, and duplicate replay emits byte-identical receipt/draw evidence;
+2. terminal arithmetic: full fill, partial fill, and no-next-event expiry pin fixed-point price/fee/cash-delta/release arithmetic by hand without production helper reuse; and
+3. authority binding: tampered intent, portfolio-before-fill, event bytes, event self-ID, seed/draw key, or schema self-ID fails closed without filesystem/network/broker/wallet/signer/order capability.
+
+Do not test venue-native limit, stop, queue, retry, or time-in-force transitions in G2 1.0.0. Version 1 supports only frozen long-only spot `MARKET` intent semantics through `trading.simulated-order-intent/v1`; stops/takes are upstream risk triggers that create `CLOSE_LONG` intents and are not venue orders. Explicit estimate labelling is represented by the frozen `trading.simulated-fill-receipt/v1` schema itself; do not add a field.
 
 - [ ] **Step 2: Implement fill state machine**
 
-The fill engine has no broker-shaped `submit_order` interface and no I/O. It consumes an already-created intent, a later committed event group, and an explicit in-memory `EvidenceResolver` for the group's committed event records, then returns exactly one terminal simulated-fill receipt.
+The fill engine has no broker-shaped `submit_order` interface and no I/O. It consumes an already-created frozen intent, the portfolio state before fill application, the selected later committed event group or `None`, and an explicit in-memory `EvidenceResolver` for the group's committed event records, then returns exactly one terminal simulated-fill receipt plus deterministic adverse-draw evidence.
+
+Use this exact public interface:
+
+```python
+@dataclass(frozen=True, slots=True)
+class TerminalFillEvidence:
+    fill_receipt_record: bytes
+    adverse_fill_draw_key_bytes: bytes
+    adverse_fill_draw_bytes: bytes
+
+def simulate_terminal_fill(
+    verified: ContractVerifiedRunInputs,
+    intent_record: bytes,
+    portfolio_state_before_fill_record: bytes,
+    selected_event_group: EventGroup | None,
+    resolver: EvidenceResolver,
+) -> TerminalFillEvidence: ...
+```
+
+Validate and self-ID-check the frozen `trading.simulated-order-intent/v1`, `trading.portfolio-state/v1`, selected `trading.raw-event/v1` records, and emitted `trading.simulated-fill-receipt/v1` through the existing replay registry/sealer. Verify every `selected_event_group.event_id` resolves to the exact retained record bytes before using the group. Set `portfolio_state_before_id` from the supplied portfolio record. Set `receipt_sequence=intent_sequence`.
+
+If `selected_event_group is None`, emit `EXPIRED` with `FILL_NO_NEXT_EVENT`, null fill coordinates, zero fill arithmetic, and release the full remaining reservation. If the selected group is the decision group or earlier by group/ingest coordinate, emit `REJECTED` with `FILL_SAME_OR_EARLIER_EVENT`. Enforce `STRICT_NEXT_EVENT` / `ONE_EVENT_GROUP` as immediate next-group semantics for G2; nonzero latency, retry residuals, queue priority, limit crossing, spread fields, live transport, broker adapters, wallets/signers, and venue-native stops are explicit deferrals.
+
+Derive the event price as `floor(quote_amount_atoms * 10**(base_decimals + 18) / (base_amount_atoms * 10**quote_decimals))`. Capacity is `min(route_capacity_base_atoms, floor(route_capacity_base_atoms * max_participation_bps / 10000))`; filled base atoms are `min(requested_base_atoms, capacity)`. `FILLED`, `PARTIAL`, `REJECTED`, and `EXPIRED` are terminal for the intent. Use deterministic public-seed adverse draw bytes from the frozen `trading.adverse-fill-draw/v1` formula and a canonical `trading.adverse-fill-draw-key/v1` object; for G2 set `adverse_fill_bps=0` unless a bounded draw is explicitly implemented and pinned by tests. Buy execution adds impact/adverse bps and rounds up; sell execution subtracts them and rounds down. Fee proration uses ceiling from event venue/priority fee atoms to the filled fraction; `simulation_fee_quote_atoms=0`. Release quote reservation for `OPEN_LONG` and base reservation for `CLOSE_LONG` according to the frozen fill semantics.
 
 - [ ] **Step 3: Verify and commit**
 
