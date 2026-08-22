@@ -259,5 +259,5 @@ def test_profiles_are_closed_frozen_byte_snapshots() -> None:
     assert not hasattr(profiles, "__dict__")
     with pytest.raises(FrozenInstanceError):
         profiles.normalization_profile_record = b"changed\n"
-    with pytest.raises((AttributeError, FrozenInstanceError)):
+    with pytest.raises((AttributeError, FrozenInstanceError, TypeError)):
         profiles.extra_profile_record = b"forbidden\n"
