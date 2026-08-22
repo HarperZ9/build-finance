@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
 from typing import Any, get_type_hints
 
 import pytest
 
 from build_finance.crypto_replay.canonical import (
+    canonical_json_bytes,
     canonical_record_bytes,
     parse_canonical_json,
     parse_canonical_record,
@@ -159,8 +161,12 @@ def test_complete_root_normalizes_once_and_is_copy_stable() -> None:
     copied = _build(second, run=bytes(second.run_receipt_record))
     assert type(verified) is ContractVerifiedRunInputs
     assert verified == copied
-    assert tuple(dict(event) for event in verified.bundle.normalized_events) == tuple(
-        parse_canonical_record(case.raw_event_record) for case in first.normalization_cases
+    assert tuple(
+        canonical_json_bytes(json.loads(json.dumps(event, default=dict)))
+        for event in verified.bundle.normalized_events
+    ) == tuple(
+        canonical_json_bytes(parse_canonical_record(case.raw_event_record))
+        for case in first.normalization_cases
     )
     assert set(first.resolver.record_hits) == set(first.required_record_content_ids)
     assert set(first.resolver.byte_hits) == set(first.required_byte_sha256s)
