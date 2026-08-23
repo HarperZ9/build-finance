@@ -4,7 +4,7 @@
 
 **Goal:** Turn the verified G2 offline paper kernel and Build Engine shell into a reproducible, positive, disk-backed PAPER ONLY evaluation workflow without adding any live-data, credential, broker, wallet, signer, or order-transport capability.
 
-**Architecture:** Build Finance owns a small explicit disk adapter that loads the exact run receipt, content-addressed evidence, and immutable paper profiles already required by `build_verified_run_inputs`; it does not mint or repair authority. A deterministic development exporter materializes one synthetic evaluation bundle from the reviewed G2 vectors, and the dedicated paper-core artifact is resealed around the new loader. Build Engine remains a thin product shell that lazily binds the loader, runs the real paper core, and emits a stable evaluator receipt.
+**Architecture:** Build Finance owns a small explicit disk adapter that loads the exact run receipt, content-addressed evidence, and immutable paper profiles already required by `build_verified_run_inputs`; it does not mint or repair authority. The existing pure normalizer gains one exact versioned synthetic Jupiter payload shape so the production admission parser and G2 normalization path share the same retained bytes. A deterministic development exporter materializes that synthetic evaluation bundle, and the dedicated paper-core artifact is resealed around the loader. Build Engine remains a thin product shell that lazily binds the loader, runs the real paper core, and emits a stable evaluator receipt.
 
 **Tech Stack:** Python 3.10+, pathlib, dataclasses, existing Build Finance canonical/content-ID contracts, pytest, Ruff, mypy, setuptools/build.
 
@@ -35,6 +35,7 @@
 ### Build Finance
 
 - Create `build_finance/paper_core_loader.py`: strict disk adapter, confined resolver, immutable `ReplayEnvelopeContext`; it sits outside the pure `live_paper` core because that package intentionally forbids filesystem reads.
+- Modify `build_finance/live_paper/normalization.py`: accept one closed canonical synthetic Jupiter-to-G2 payload while preserving the existing compact G2 vector path.
 - Create `tests/live_paper/test_replay_envelope.py`: positive vertical and representative fail-closed cases.
 - Create `tests/live_paper/support/g2_disk_bundle.py`: test/development-only deterministic materializer built from existing G2 vectors and synthetic local-fixture helpers.
 - Create `scripts/export_g2_evaluation_bundle.py`: source-checkout exporter that writes a complete synthetic bundle and a checksum manifest; it is not included in paper-core.
@@ -86,6 +87,7 @@ The loader derives the normalization profile from the exact captured fixture-man
 **Files:**
 
 - Create: `build_finance/paper_core_loader.py`
+- Modify: `build_finance/live_paper/normalization.py`
 - Create: `tests/live_paper/test_replay_envelope.py`
 - Create: `tests/live_paper/support/g2_disk_bundle.py`
 
@@ -109,10 +111,12 @@ def load_replay_envelope_context(
 - [ ] Run only that test and confirm RED because the public loader is absent.
 - [ ] Write a compact parameterized failure test covering a digest-mismatched `bytes/<sha256>.bin`, a content-mismatched `records/<content-id>.json`, a linked/reparse envelope member where supported, and any non-`DISABLED` envelope mode. Assert failure before kernel execution.
 - [ ] Run the failure test and confirm RED for the missing behavior, not test setup.
+- [ ] Materialize admitted payloads as exact canonical `build-finance.live-paper.synthetic-jupiter-normalization-input/v1` objects. They retain the identity/asset/position/revision/route/liquidity/fee fields consumed by `parse_jupiter_fixture_payload` and add the deterministic event facts required by G2: event kind, executable flag, quality flags, source/ingest/equal-time/replay-clock text, base/quote atoms, and route impact bps.
+- [ ] Extend the pure normalizer with one exact-key decoder for that versioned synthetic payload. Recompute the existing compact internal market/event view from those exact bytes, verify identity and market bindings against the admitted candidate and fixture profile, and preserve the existing compact payload behavior byte-for-byte.
 - [ ] Implement the minimum strict loader and resolver. Validate exact `Path`/captured-root binding, admitted status, fixed canonical envelope bytes, current paper-core version, lowercase 64-hex keys, no-follow regular files, bounded reads, record LF/canonical form, record ContentID, byte digest, and profile snapshots.
 - [ ] Do not enumerate records/bytes, add a generic path field, search for another run, import test support from production, or add provider/network behavior.
 - [ ] Run `python -m pytest tests/live_paper/test_replay_envelope.py tests/live_paper/test_kernel_determinism.py tests/live_paper/test_g2_confinement.py -q -p no:cacheprovider`.
-- [ ] Run `python -m ruff check build_finance/paper_core_loader.py tests/live_paper/test_replay_envelope.py tests/live_paper/support/g2_disk_bundle.py` and `python -m mypy build_finance/paper_core_loader.py build_finance/live_paper`.
+- [ ] Run `python -m ruff check build_finance/paper_core_loader.py build_finance/live_paper/normalization.py tests/live_paper/test_replay_envelope.py tests/live_paper/support/g2_disk_bundle.py` and `python -m mypy build_finance/paper_core_loader.py build_finance/live_paper`.
 - [ ] Commit the task and write the SDD report with explicit RED/GREEN evidence.
 
 ## Task 2: Export and Reseal the Reproducible Evaluation Bundle
