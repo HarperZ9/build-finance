@@ -34,12 +34,11 @@
 
 ### Build Finance
 
-- Create `build_finance/live_paper/replay_envelope.py`: strict disk loader, confined resolver, immutable `ReplayEnvelopeContext`.
-- Modify `build_finance/live_paper/__init__.py`: export the loader/context only.
+- Create `build_finance/paper_core_loader.py`: strict disk adapter, confined resolver, immutable `ReplayEnvelopeContext`; it sits outside the pure `live_paper` core because that package intentionally forbids filesystem reads.
 - Create `tests/live_paper/test_replay_envelope.py`: positive vertical and representative fail-closed cases.
 - Create `tests/live_paper/support/g2_disk_bundle.py`: test/development-only deterministic materializer built from existing G2 vectors and synthetic local-fixture helpers.
 - Create `scripts/export_g2_evaluation_bundle.py`: source-checkout exporter that writes a complete synthetic bundle and a checksum manifest; it is not included in paper-core.
-- Modify `build_finance/live_paper/paper_core_manifest.json`, artifact tests/scripts, and evidence files only as required to include and reseal `replay_envelope.py`.
+- Modify `build_finance/live_paper/paper_core_manifest.json`, artifact tests/scripts, and evidence files only as required to include and reseal `paper_core_loader.py`.
 - Create `docs/live-paper/evaluation/README.md`: Build Finance fixture/export/verification instructions and explicit limitations.
 
 ### Build Engine
@@ -86,8 +85,7 @@ The loader derives the normalization profile from the exact captured fixture-man
 
 **Files:**
 
-- Create: `build_finance/live_paper/replay_envelope.py`
-- Modify: `build_finance/live_paper/__init__.py`
+- Create: `build_finance/paper_core_loader.py`
 - Create: `tests/live_paper/test_replay_envelope.py`
 - Create: `tests/live_paper/support/g2_disk_bundle.py`
 
@@ -114,7 +112,7 @@ def load_replay_envelope_context(
 - [ ] Implement the minimum strict loader and resolver. Validate exact `Path`/captured-root binding, admitted status, fixed canonical envelope bytes, current paper-core version, lowercase 64-hex keys, no-follow regular files, bounded reads, record LF/canonical form, record ContentID, byte digest, and profile snapshots.
 - [ ] Do not enumerate records/bytes, add a generic path field, search for another run, import test support from production, or add provider/network behavior.
 - [ ] Run `python -m pytest tests/live_paper/test_replay_envelope.py tests/live_paper/test_kernel_determinism.py tests/live_paper/test_g2_confinement.py -q -p no:cacheprovider`.
-- [ ] Run `python -m ruff check build_finance/live_paper/replay_envelope.py tests/live_paper/test_replay_envelope.py tests/live_paper/support/g2_disk_bundle.py` and `python -m mypy build_finance/live_paper`.
+- [ ] Run `python -m ruff check build_finance/paper_core_loader.py tests/live_paper/test_replay_envelope.py tests/live_paper/support/g2_disk_bundle.py` and `python -m mypy build_finance/paper_core_loader.py build_finance/live_paper`.
 - [ ] Commit the task and write the SDD report with explicit RED/GREEN evidence.
 
 ## Task 2: Export and Reseal the Reproducible Evaluation Bundle
@@ -129,7 +127,7 @@ def load_replay_envelope_context(
 - Refresh only generated local artifacts/evidence required by the prescribed gate.
 
 - [ ] Write a failing test that exports the same G2 bundle twice into separate temporary directories and asserts a byte-identical sorted checksum manifest and identical positive kernel projection bytes.
-- [ ] Write a failing artifact-closure assertion that the built paper-core includes `build_finance/live_paper/replay_envelope.py` and still excludes broker, autotrader, provider SDK, wallet, signer, credential, and order-transport members.
+- [ ] Write a failing artifact-closure assertion that the built paper-core includes `build_finance/paper_core_loader.py` and still excludes broker, autotrader, provider SDK, wallet, signer, credential, and order-transport members.
 - [ ] Run both focused tests and confirm the expected RED causes.
 - [ ] Implement the minimal explicit exporter by reusing the existing test/development materializer. It must refuse a non-empty destination, write only synthetic data, produce a sorted SHA-256 manifest, and never contact a provider.
 - [ ] Document the export, inspect, replay, verify, and cleanup commands. Label data SYNTHETIC and results PAPER ONLY / SIMULATED; state that no profitability claim is made.
@@ -177,4 +175,3 @@ def load_replay_envelope_context(
 - One rights-approved real read-only provider adapter and protected credential workflow.
 - Optional isolated local-model signal worker.
 - Soak/performance campaign and paper-only publication promotion.
-
