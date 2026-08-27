@@ -49,11 +49,19 @@ No `Compare-Object` output means the exported file hashes are identical.
 
 Verify strict checksum closure using the reusable source-checkout verifier. It
 rejects malformed, unsafe, unsorted, duplicate, missing, or extra paths before
-validating every digest:
+validating every digest. Manifest bytes and member hashes are consumed with
+bounded streaming reads from retained no-follow descriptors; root, directory
+prefix, and final-member identities must remain stable through open and read:
 
 ```powershell
 python scripts/export_g2_evaluation_bundle.py --verify .artifacts/g2-evaluation
 ```
+
+The source-only evaluation format is intentionally small: at most 64 filesystem
+files including `SHA256SUMS`, 16 KiB of checksum-manifest bytes, 1 MiB per
+sealed member, and 8 MiB total. The synthetic bundle has 42 sealed members plus
+the checksum manifest. Exceeding any limit is a verification failure, not a
+request to allocate or follow a replacement path.
 
 The dedicated installable paper-core artifacts can be rebuilt and checked with:
 

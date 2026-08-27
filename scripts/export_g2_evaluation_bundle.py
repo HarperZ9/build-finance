@@ -33,7 +33,19 @@ from tests.live_paper.support.g2_disk_bundle import write_g2_disk_bundle
 CHECKSUM_MANIFEST_NAME = "SHA256SUMS"
 KERNEL_PROJECTION_NAME = "kernel-projection.json"
 BUILD_FINANCE_ROOT = Path(cast(str, build_finance.__file__)).resolve().parent
+_MAX_CHECKSUM_MANIFEST_BYTES = 16 * 1024
+_MAX_FILE_BYTES = 1024 * 1024
+_MAX_BUNDLE_BYTES = 8 * 1024 * 1024
+_MAX_BUNDLE_FILE_COUNT = 64
+_READ_CHUNK_SIZE = 64 * 1024
+_O_BINARY = int(vars(os).get("O_BINARY", 0))
+_O_CLOEXEC = int(vars(os).get("O_CLOEXEC", 0))
+_O_DIRECTORY = int(vars(os).get("O_DIRECTORY", 0))
+_O_NOFOLLOW = int(vars(os).get("O_NOFOLLOW", 0))
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_OPEN_SUPPORTS_DIR_FD = os.open in getattr(os, "supports_dir_fd", set())
+_STAT_SUPPORTS_DIR_FD = os.stat in getattr(os, "supports_dir_fd", set())
+_STAT_SUPPORTS_NOFOLLOW = os.stat in getattr(os, "supports_follow_symlinks", set())
 
 
 class ExportError(RuntimeError):
@@ -48,6 +60,36 @@ class EvaluationBundleExport:
     fixture_root: Path
     checksum_manifest: Path
     kernel_projection: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FileIdentity:
+    device: int
+    inode: int
+    mode_type: int
+    size: int
+    modified_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PrefixIdentity:
+    relative_path: str
+    identity: _FileIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscoveredFile:
+    relative_path: str
+    absolute_path: str
+    identity: _FileIdentity
+    prefix_identities: tuple[_PrefixIdentity, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BundleSnapshot:
+    root_path: str
+    root_identity: _FileIdentity
+    files: Mapping[str, _DiscoveredFile]
 
 
 def _empty_destination(destination: Path) -> Path:
@@ -102,14 +144,18 @@ def _projection_document(result_payload: JsonObject) -> JsonObject:
 
 def _write_checksum_manifest(destination: Path) -> Path:
     manifest = destination / CHECKSUM_MANIFEST_NAME
-    rows: list[tuple[str, Path]] = []
-    for path in destination.rglob("*"):
-        if path.is_file() and path != manifest:
-            rows.append((path.relative_to(destination).as_posix(), path))
-    payload = b"".join(
-        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}\n".encode()
-        for relative, path in sorted(rows)
-    )
+    snapshot = _bundle_snapshot(destination)
+    if CHECKSUM_MANIFEST_NAME in snapshot.files:
+        raise ExportError("evaluation bundle checksum manifest already exists")
+    rows: list[bytes] = []
+    payload_size = 0
+    for relative, discovered in sorted(snapshot.files.items()):
+        row = f"{_hash_discovered_file(snapshot, discovered, limit=_MAX_FILE_BYTES)}  {relative}\n".encode()
+        payload_size += len(row)
+        if payload_size > _MAX_CHECKSUM_MANIFEST_BYTES:
+            raise ExportError("checksum manifest exceeds the bounded read size")
+        rows.append(row)
+    payload = b"".join(rows)
     manifest.write_bytes(payload)
     return manifest
 
@@ -156,40 +202,289 @@ def _checksum_rows(payload: bytes) -> list[tuple[str, str]]:
     return rows
 
 
-def _regular_exported_files(destination: Path) -> dict[str, Path]:
-    files: dict[str, Path] = {}
-    for current, directory_names, file_names in os.walk(destination, followlinks=False):
+def _bundle_snapshot(destination: Path) -> _BundleSnapshot:
+    root_path = os.path.abspath(os.fspath(destination))
+    try:
+        root_metadata = os.lstat(root_path)
+    except OSError as error:
+        raise ExportError(f"evaluation bundle destination cannot be classified: {error}") from error
+    if _is_link_or_reparse(root_metadata) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise ExportError(f"evaluation bundle destination must be a real directory: {destination}")
+    root_identity = _identity(root_metadata)
+    files: dict[str, _DiscoveredFile] = {}
+    normalized_paths: set[str] = set()
+    total_bytes = 0
+    for current, directory_names, file_names in os.walk(root_path, followlinks=False):
+        directory_names.sort()
+        file_names.sort()
         current_path = Path(current)
         for name in directory_names:
             path = current_path / name
-            metadata = os.lstat(path)
+            try:
+                metadata = os.lstat(path)
+            except OSError as error:
+                raise ExportError(f"evaluation bundle directory cannot be classified: {path}: {error}") from error
             if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
                 raise ExportError(f"evaluation bundle contains a linked/reparse directory: {path}")
         for name in file_names:
             path = current_path / name
-            metadata = os.lstat(path)
+            try:
+                metadata = os.lstat(path)
+            except OSError as error:
+                raise ExportError(f"evaluation bundle file cannot be classified: {path}: {error}") from error
             if _is_link_or_reparse(metadata) or not stat.S_ISREG(metadata.st_mode):
                 raise ExportError(f"evaluation bundle contains a non-regular file: {path}")
             relative = path.relative_to(destination).as_posix()
-            files[relative] = path
-    return files
+            if relative != CHECKSUM_MANIFEST_NAME:
+                _safe_checksum_path(relative)
+            normalized = os.path.normcase(relative)
+            if normalized in normalized_paths:
+                raise ExportError(f"evaluation bundle contains a duplicate normalized path: {relative}")
+            normalized_paths.add(normalized)
+            identity = _identity(metadata)
+            total_bytes += identity.size
+            if len(files) + 1 > _MAX_BUNDLE_FILE_COUNT:
+                raise ExportError("evaluation bundle file count exceeds the configured limit")
+            if total_bytes > _MAX_BUNDLE_BYTES:
+                raise ExportError("evaluation bundle total bytes exceed the configured limit")
+            components = tuple(relative.split("/"))
+            files[relative] = _DiscoveredFile(
+                relative_path=relative,
+                absolute_path=os.path.abspath(os.fspath(path)),
+                identity=identity,
+                prefix_identities=_snapshot_prefixes(root_path, components),
+            )
+    _require_root_identity(root_path, root_identity, "after discovery")
+    return _BundleSnapshot(root_path, root_identity, files)
+
+
+def _hash_discovered_file(snapshot: _BundleSnapshot, discovered: _DiscoveredFile, *, limit: int) -> str:
+    _payload, digest = _read_or_hash_discovered_file(snapshot, discovered, limit=limit, retain_payload=False)
+    return digest
+
+
+def _read_discovered_file(snapshot: _BundleSnapshot, discovered: _DiscoveredFile, *, limit: int) -> bytes:
+    payload, _digest = _read_or_hash_discovered_file(snapshot, discovered, limit=limit, retain_payload=True)
+    if payload is None:  # Defensive: retain_payload=True always returns exact chunks.
+        raise ExportError(f"evaluation bundle member {discovered.relative_path} was not retained")
+    return payload
+
+
+def _read_or_hash_discovered_file(
+    snapshot: _BundleSnapshot,
+    discovered: _DiscoveredFile,
+    *,
+    limit: int,
+    retain_payload: bool,
+) -> tuple[bytes | None, str]:
+    fd = _open_discovered_file(snapshot, discovered)
+    chunks: list[bytes] = []
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        _require_root_identity(snapshot.root_path, snapshot.root_identity, "after open")
+        _revalidate_prefixes(snapshot.root_path, discovered.prefix_identities, "after open")
+        opened_metadata = os.fstat(fd)
+        if not stat.S_ISREG(opened_metadata.st_mode) or _identity(opened_metadata) != discovered.identity:
+            raise ExportError(f"evaluation bundle member {discovered.relative_path} changed identity before read")
+        if int(opened_metadata.st_size) > limit:
+            raise ExportError(f"evaluation bundle member {discovered.relative_path} exceeds the bounded read size")
+        while True:
+            try:
+                chunk = os.read(fd, min(_READ_CHUNK_SIZE, limit + 1 - byte_count))
+            except OSError as error:
+                raise ExportError(
+                    f"evaluation bundle member {discovered.relative_path} cannot be read stably: {error}"
+                ) from error
+            if not chunk:
+                break
+            byte_count += len(chunk)
+            if byte_count > limit:
+                raise ExportError(f"evaluation bundle member {discovered.relative_path} exceeds the bounded read size")
+            digest.update(chunk)
+            if retain_payload:
+                chunks.append(chunk)
+        after_open = os.fstat(fd)
+        if _identity(after_open) != discovered.identity or byte_count != int(after_open.st_size):
+            raise ExportError(f"evaluation bundle member {discovered.relative_path} changed while being read")
+    finally:
+        os.close(fd)
+
+    _require_root_identity(snapshot.root_path, snapshot.root_identity, "after read")
+    _revalidate_prefixes(snapshot.root_path, discovered.prefix_identities, "after read")
+    try:
+        after = os.lstat(discovered.absolute_path)
+    except OSError as error:
+        raise ExportError(
+            f"evaluation bundle member {discovered.relative_path} disappeared after read: {error}"
+        ) from error
+    if (
+        _is_link_or_reparse(after)
+        or not stat.S_ISREG(after.st_mode)
+        or _identity(after) != discovered.identity
+    ):
+        raise ExportError(f"evaluation bundle member {discovered.relative_path} changed identity after read")
+    return (b"".join(chunks) if retain_payload else None), digest.hexdigest()
+
+
+def _open_discovered_file(snapshot: _BundleSnapshot, discovered: _DiscoveredFile) -> int:
+    _require_root_identity(snapshot.root_path, snapshot.root_identity, "before open")
+    _revalidate_prefixes(snapshot.root_path, discovered.prefix_identities, "before open")
+    if _can_use_openat():
+        return _open_discovered_file_openat(snapshot, discovered)
+    return _open_discovered_file_by_path(snapshot, discovered)
+
+
+def _can_use_openat() -> bool:
+    return (
+        os.name != "nt"
+        and _OPEN_SUPPORTS_DIR_FD
+        and _STAT_SUPPORTS_DIR_FD
+        and _STAT_SUPPORTS_NOFOLLOW
+        and _O_DIRECTORY != 0
+    )
+
+
+def _open_discovered_file_openat(snapshot: _BundleSnapshot, discovered: _DiscoveredFile) -> int:
+    directory_flags = os.O_RDONLY | _O_CLOEXEC | _O_DIRECTORY | _O_NOFOLLOW
+    file_flags = os.O_RDONLY | _O_BINARY | _O_CLOEXEC | _O_NOFOLLOW
+    components = tuple(discovered.relative_path.split("/"))
+    try:
+        current_fd = os.open(snapshot.root_path, directory_flags)
+    except OSError as error:
+        raise ExportError(f"evaluation bundle root cannot be opened without following links: {error}") from error
+    try:
+        root_metadata = os.fstat(current_fd)
+        if not stat.S_ISDIR(root_metadata.st_mode) or _identity(root_metadata) != snapshot.root_identity:
+            raise ExportError("evaluation bundle root identity changed before member open")
+        for component, expected_prefix in zip(
+            components[:-1], discovered.prefix_identities, strict=True
+        ):
+            try:
+                next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            except OSError as error:
+                raise ExportError(
+                    f"evaluation bundle path prefix {expected_prefix.relative_path} cannot be opened "
+                    f"without following links: {error}"
+                ) from error
+            os.close(current_fd)
+            current_fd = next_fd
+            prefix_metadata = os.fstat(current_fd)
+            if (
+                not stat.S_ISDIR(prefix_metadata.st_mode)
+                or _identity(prefix_metadata) != expected_prefix.identity
+            ):
+                raise ExportError(
+                    f"evaluation bundle path prefix {expected_prefix.relative_path} changed identity before open"
+                )
+        try:
+            fd = os.open(components[-1], file_flags, dir_fd=current_fd)
+        except OSError as error:
+            raise ExportError(
+                f"evaluation bundle member {discovered.relative_path} cannot be opened without following links: {error}"
+            ) from error
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or _identity(metadata) != discovered.identity:
+            os.close(fd)
+            raise ExportError(f"evaluation bundle member {discovered.relative_path} changed identity before open")
+        return fd
+    finally:
+        os.close(current_fd)
+
+
+def _open_discovered_file_by_path(snapshot: _BundleSnapshot, discovered: _DiscoveredFile) -> int:
+    try:
+        before = os.lstat(discovered.absolute_path)
+    except OSError as error:
+        raise ExportError(
+            f"evaluation bundle member {discovered.relative_path} cannot be classified before open: {error}"
+        ) from error
+    if (
+        _is_link_or_reparse(before)
+        or not stat.S_ISREG(before.st_mode)
+        or _identity(before) != discovered.identity
+    ):
+        raise ExportError(f"evaluation bundle member {discovered.relative_path} changed identity before open")
+    flags = os.O_RDONLY | _O_BINARY | _O_CLOEXEC | _O_NOFOLLOW
+    try:
+        fd = os.open(discovered.absolute_path, flags)
+    except OSError as error:
+        raise ExportError(
+            f"evaluation bundle member {discovered.relative_path} cannot be opened without following links: {error}"
+        ) from error
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode) or _identity(metadata) != discovered.identity:
+        os.close(fd)
+        raise ExportError(f"evaluation bundle member {discovered.relative_path} changed identity before read")
+    return fd
+
+
+def _snapshot_prefixes(root_path: str, components: tuple[str, ...]) -> tuple[_PrefixIdentity, ...]:
+    prefix_identities: list[_PrefixIdentity] = []
+    prefix_path = root_path
+    for index, component in enumerate(components[:-1]):
+        prefix_path = os.path.abspath(os.path.join(prefix_path, component))
+        prefix_relative = "/".join(components[: index + 1])
+        try:
+            metadata = os.lstat(prefix_path)
+        except OSError as error:
+            raise ExportError(f"evaluation bundle path prefix cannot be classified: {error}") from error
+        if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode):
+            raise ExportError(f"evaluation bundle path prefix {prefix_relative} is a link/reparse member")
+        prefix_identities.append(_PrefixIdentity(prefix_relative, _identity(metadata)))
+    return tuple(prefix_identities)
+
+
+def _revalidate_prefixes(
+    root_path: str,
+    prefix_identities: tuple[_PrefixIdentity, ...],
+    phase: str,
+) -> None:
+    for prefix in prefix_identities:
+        absolute_path = os.path.abspath(os.path.join(root_path, *prefix.relative_path.split("/")))
+        try:
+            metadata = os.lstat(absolute_path)
+        except OSError as error:
+            raise ExportError(f"evaluation bundle path prefix disappeared {phase}: {error}") from error
+        if (
+            _is_link_or_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or _identity(metadata) != prefix.identity
+        ):
+            raise ExportError(f"evaluation bundle path prefix {prefix.relative_path} changed identity {phase}")
+
+
+def _require_root_identity(root_path: str, expected: _FileIdentity, phase: str) -> None:
+    try:
+        metadata = os.lstat(root_path)
+    except OSError as error:
+        raise ExportError(f"evaluation bundle root cannot be reclassified {phase}: {error}") from error
+    if _is_link_or_reparse(metadata) or not stat.S_ISDIR(metadata.st_mode) or _identity(metadata) != expected:
+        raise ExportError(f"evaluation bundle root identity changed {phase}")
+
+
+def _identity(metadata: os.stat_result) -> _FileIdentity:
+    return _FileIdentity(
+        device=int(metadata.st_dev),
+        inode=int(metadata.st_ino),
+        mode_type=stat.S_IFMT(metadata.st_mode),
+        size=int(metadata.st_size),
+        modified_ns=int(metadata.st_mtime_ns),
+    )
 
 
 def verify_g2_evaluation_bundle(destination: Path) -> int:
     """Verify exact sorted checksum closure for one exported evaluation bundle."""
 
     destination = destination.absolute()
-    try:
-        root_metadata = os.lstat(destination)
-    except FileNotFoundError as error:
-        raise ExportError(f"evaluation bundle destination does not exist: {destination}") from error
-    if _is_link_or_reparse(root_metadata) or not stat.S_ISDIR(root_metadata.st_mode):
-        raise ExportError(f"evaluation bundle destination must be a real directory: {destination}")
-    files = _regular_exported_files(destination)
-    manifest = files.pop(CHECKSUM_MANIFEST_NAME, None)
+    snapshot = _bundle_snapshot(destination)
+    manifest = snapshot.files.get(CHECKSUM_MANIFEST_NAME)
     if manifest is None:
         raise ExportError("evaluation bundle checksum manifest is missing")
-    rows = _checksum_rows(manifest.read_bytes())
+    rows = _checksum_rows(
+        _read_discovered_file(snapshot, manifest, limit=_MAX_CHECKSUM_MANIFEST_BYTES)
+    )
+    files = {relative: discovered for relative, discovered in snapshot.files.items() if relative != CHECKSUM_MANIFEST_NAME}
     claimed = {relative: digest for digest, relative in rows}
     if set(claimed) != set(files):
         raise ExportError(
@@ -197,7 +492,7 @@ def verify_g2_evaluation_bundle(destination: Path) -> int:
             f"missing={sorted(set(files) - set(claimed))!r} extra={sorted(set(claimed) - set(files))!r}"
         )
     for relative, expected in claimed.items():
-        if hashlib.sha256(files[relative].read_bytes()).hexdigest() != expected:
+        if _hash_discovered_file(snapshot, files[relative], limit=_MAX_FILE_BYTES) != expected:
             raise ExportError(f"checksum mismatch: {relative}")
     return len(files)
 

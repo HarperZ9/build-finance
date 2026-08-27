@@ -212,6 +212,105 @@ def test_g2_evaluation_checksum_verifier_requires_exact_file_set(tmp_path: Path,
 
 
 @pytest.mark.parametrize(
+    ("limit_name", "protected_kind"),
+    (
+        ("_MAX_CHECKSUM_MANIFEST_BYTES", "manifest"),
+        ("_MAX_FILE_BYTES", "member"),
+    ),
+)
+def test_g2_evaluation_verifier_rejects_oversized_inputs_before_path_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    protected_kind: str,
+) -> None:
+    """Breaks if an oversized manifest or member reaches an unbounded path-based allocation."""
+
+    import scripts.export_g2_evaluation_bundle as exporter
+
+    exported = exporter.export_g2_evaluation_bundle(tmp_path / protected_kind)
+    original_read_bytes = Path.read_bytes
+
+    def reject_unbounded_read(path: Path) -> bytes:
+        is_manifest = path == exported.checksum_manifest
+        if (protected_kind == "manifest" and is_manifest) or (
+            protected_kind == "member" and path.is_relative_to(exported.destination) and not is_manifest
+        ):
+            pytest.fail(f"oversized {protected_kind} reached Path.read_bytes")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(exporter, limit_name, 1, raising=False)
+    monkeypatch.setattr(Path, "read_bytes", reject_unbounded_read)
+
+    with pytest.raises(exporter.ExportError, match="exceeds the bounded read size"):
+        exporter.verify_g2_evaluation_bundle(exported.destination)
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "expected_fragment"),
+    (
+        ("_MAX_BUNDLE_FILE_COUNT", "file count"),
+        ("_MAX_BUNDLE_BYTES", "total bytes"),
+    ),
+)
+def test_g2_evaluation_verifier_enforces_small_bundle_resource_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    expected_fragment: str,
+) -> None:
+    """Breaks if file-count or total-byte ceilings require a large exhaustion fixture to exercise."""
+
+    import scripts.export_g2_evaluation_bundle as exporter
+
+    exported = exporter.export_g2_evaluation_bundle(tmp_path / expected_fragment.replace(" ", "-"))
+    monkeypatch.setattr(exporter, limit_name, 1, raising=False)
+
+    with pytest.raises(exporter.ExportError, match=expected_fragment):
+        exporter.verify_g2_evaluation_bundle(exported.destination)
+
+
+def test_g2_evaluation_verifier_rejects_parent_link_swap_before_member_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Breaks if classification can be followed by opening a member through a swapped linked parent."""
+
+    import scripts.export_g2_evaluation_bundle as exporter
+
+    exported = exporter.export_g2_evaluation_bundle(tmp_path / "parent-swap")
+    profiles_root = exported.fixture_root / "replay-envelope" / "profiles"
+    member = profiles_root / "algorithm-0.bin"
+    outside_profiles = tmp_path / "outside-profiles"
+    shutil.copytree(profiles_root, outside_profiles)
+    outside_member = outside_profiles / member.name
+    outside_member.unlink()
+    try:
+        os.link(member, outside_member)
+    except OSError as error:
+        pytest.skip(f"hard-link creation unavailable: {type(error).__name__}: {error}")
+
+    monkeypatch.setattr(exporter, "_can_use_openat", lambda: False, raising=False)
+    original_open = exporter.os.open
+    member_key = os.path.normcase(os.path.abspath(member))
+    swapped = False
+
+    def swap_parent_before_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal swapped
+        if not swapped and isinstance(path, (str, bytes, os.PathLike)):
+            candidate = os.path.normcase(os.path.abspath(os.fsdecode(path)))
+            if candidate == member_key:
+                _replace_directory_with_link(profiles_root, outside_profiles)
+                swapped = True
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(exporter.os, "open", swap_parent_before_open)
+    with pytest.raises(exporter.ExportError, match="prefix|link|reparse|identity"):
+        exporter.verify_g2_evaluation_bundle(exported.destination)
+    assert swapped
+
+
+@pytest.mark.parametrize(
     "model_rows",
     (
         [
