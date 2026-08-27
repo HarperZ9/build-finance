@@ -28,6 +28,7 @@ from scripts.verify_live_paper_artifacts import (
     _verify_ast_closure,
     _verify_complete_member_sets,
     _verify_wheel_record,
+    verify_artifacts,
     verify_gate_evidence,
 )
 
@@ -122,6 +123,7 @@ def test_built_paper_core_includes_loader_and_excludes_execution_capability_memb
             name for name in archive.members if any(token in name.lower() for token in forbidden_tokens)
         )
         assert forbidden_members == []
+    verify_artifacts(wheel=wheel_path, sdist=sdist_path)
 
 
 def test_wheel_record_rejects_a_payload_hash_mismatch() -> None:

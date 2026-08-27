@@ -6,7 +6,6 @@ import json
 import os
 import stat
 from dataclasses import dataclass
-from importlib import resources
 from pathlib import Path
 from typing import cast
 
@@ -257,7 +256,7 @@ def _require_candidate_receipt_identity(candidate: ParsedSourceCandidate, receip
 
 
 def _require_current_paper_core_version() -> None:
-    manifest_path = resources.files("build_finance.live_paper").joinpath("paper_core_manifest.json")
+    manifest_path = Path(__file__).with_name("live_paper") / "paper_core_manifest.json"
     manifest = json.loads(manifest_path.read_bytes().decode("utf-8"))
     if not isinstance(manifest, dict):
         raise ValueError("paper-core manifest is malformed")
