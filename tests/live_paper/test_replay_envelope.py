@@ -7,6 +7,7 @@ import importlib
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,24 @@ def test_g2_evaluation_export_refuses_a_non_empty_destination(tmp_path: Path) ->
         export_g2_evaluation_bundle(destination)
 
     assert marker.read_text(encoding="utf-8") == "user-owned\n"
+
+
+def test_g2_evaluation_export_cli_loads_the_source_checkout(tmp_path: Path) -> None:
+    """Breaks if direct script execution resolves an unrelated installed Build Finance package."""
+
+    root = Path(__file__).resolve().parents[2]
+    destination = tmp_path / "cli-export"
+    completed = subprocess.run(
+        [sys.executable, "scripts/export_g2_evaluation_bundle.py", str(destination)],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert destination.joinpath("SHA256SUMS").is_file()
+    assert destination.joinpath("kernel-projection.json").is_file()
 
 
 def test_replay_envelope_loader_rejects_admission_from_another_captured_fixture(tmp_path: Path) -> None:

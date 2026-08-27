@@ -1,5 +1,7 @@
 """Export one reproducible synthetic G2 PAPER ONLY evaluation bundle."""
 
+# ruff: noqa: E402 - direct script execution must prefer this source checkout.
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from build_finance.crypto_replay.admission import admit_local_fixture
 from build_finance.crypto_replay.canonical import JsonObject, canonical_record_bytes, parse_canonical_json
