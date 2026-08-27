@@ -22,6 +22,7 @@ from scripts.verify_crypto_replay_artifacts import (
     _read_wheel_members,
 )
 from scripts.verify_live_paper_artifacts import (
+    CRITICAL_IMPLEMENTATION_PATHS,
     PAPER_CORE_DIST_INFO,
     PRESCRIBED_GATE_COMMANDS,
     _derived_promotion,
@@ -31,6 +32,20 @@ from scripts.verify_live_paper_artifacts import (
     verify_artifacts,
     verify_gate_evidence,
 )
+
+
+def test_gate_freshness_and_static_checks_cover_loader_and_evaluation_exporter() -> None:
+    """Breaks if evidence can survive drift or static checks omit either changed implementation surface."""
+
+    changed_surfaces = {
+        "build_finance/paper_core_loader.py",
+        "scripts/export_g2_evaluation_bundle.py",
+    }
+    assert changed_surfaces <= set(CRITICAL_IMPLEMENTATION_PATHS)
+    ruff_command = next(command for command in PRESCRIBED_GATE_COMMANDS if "ruff" in command)
+    mypy_command = next(command for command in PRESCRIBED_GATE_COMMANDS if "mypy" in command)
+    assert changed_surfaces <= set(ruff_command)
+    assert changed_surfaces <= set(mypy_command)
 
 
 def _record_payload(members: dict[str, bytes], record_name: str) -> bytes:

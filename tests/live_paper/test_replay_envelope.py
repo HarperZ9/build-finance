@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -149,20 +150,124 @@ def test_g2_evaluation_export_refuses_a_non_empty_destination(tmp_path: Path) ->
     assert marker.read_text(encoding="utf-8") == "user-owned\n"
 
 
+def test_g2_evaluation_export_refuses_a_file_symlink_destination(tmp_path: Path) -> None:
+    """Breaks if a linked destination can redirect export writes outside the owned path."""
+
+    from scripts.export_g2_evaluation_bundle import ExportError, export_g2_evaluation_bundle
+
+    target = tmp_path / "outside.txt"
+    target.write_text("user-owned\n", encoding="utf-8")
+    destination = tmp_path / "linked-export"
+    try:
+        destination.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"file symlink creation unavailable: {type(error).__name__}: {error}")
+
+    with pytest.raises(ExportError):
+        export_g2_evaluation_bundle(destination)
+
+    assert target.read_text(encoding="utf-8") == "user-owned\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory-junction regression")
+def test_g2_evaluation_export_refuses_an_empty_directory_junction(tmp_path: Path) -> None:
+    """Breaks if a Windows reparse directory can redirect an apparently empty export."""
+
+    from scripts.export_g2_evaluation_bundle import ExportError, export_g2_evaluation_bundle
+
+    destination = tmp_path / "junction-export"
+    destination.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _replace_directory_with_link(destination, outside)
+
+    with pytest.raises(ExportError, match="link|reparse"):
+        export_g2_evaluation_bundle(destination)
+
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing_row", "unexpected_file"),
+)
+def test_g2_evaluation_checksum_verifier_requires_exact_file_set(tmp_path: Path, mutation: str) -> None:
+    """Breaks if verification trusts an incomplete manifest or ignores an unsealed file."""
+
+    from scripts.export_g2_evaluation_bundle import (
+        ExportError,
+        export_g2_evaluation_bundle,
+        verify_g2_evaluation_bundle,
+    )
+
+    exported = export_g2_evaluation_bundle(tmp_path / mutation)
+    if mutation == "missing_row":
+        rows = exported.checksum_manifest.read_bytes().splitlines(keepends=True)
+        exported.checksum_manifest.write_bytes(b"".join(rows[1:]))
+    else:
+        exported.destination.joinpath("unexpected.txt").write_text("not sealed\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="file set"):
+        verify_g2_evaluation_bundle(exported.destination)
+
+
+@pytest.mark.parametrize(
+    "model_rows",
+    (
+        [
+            {"disposition": "ABSTAIN", "reason_code": "WRONG_REASON"},
+            {"disposition": "ABSTAIN", "reason_code": "MODEL_DISABLED"},
+        ],
+        [
+            {"disposition": "ABSTAIN", "reason_code": "MODEL_DISABLED"},
+            "not-a-mapping",
+        ],
+    ),
+)
+def test_g2_projection_seal_requires_exact_disabled_model_rows(model_rows: list[object]) -> None:
+    """Breaks if DISABLED_ABSTAIN can be claimed from wrong reasons or non-mapping rows."""
+
+    from scripts.export_g2_evaluation_bundle import ExportError, _projection_document
+
+    result_payload = {
+        "closure": {"reason_codes": [], "status": "CLOSED"},
+        "projection": {"model_validation": model_rows},
+    }
+
+    with pytest.raises(ExportError, match="model abstention"):
+        _projection_document(result_payload)  # type: ignore[arg-type]
+
+
 def test_g2_evaluation_export_cli_loads_the_source_checkout(tmp_path: Path) -> None:
     """Breaks if direct script execution resolves an unrelated installed Build Finance package."""
 
     root = Path(__file__).resolve().parents[2]
     destination = tmp_path / "cli-export"
+    poison = tmp_path / "poison"
+    poison_package = poison / "build_finance"
+    poison_package.mkdir(parents=True)
+    poison_marker = tmp_path / "poison-imported.txt"
+    poison_package.joinpath("__init__.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({os.fspath(poison_marker)!r}).write_text('poisoned\\n', encoding='utf-8')\n"
+        "raise RuntimeError('poisoned build_finance imported')\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join((os.fspath(poison), os.fspath(root)))
     completed = subprocess.run(
         [sys.executable, "scripts/export_g2_evaluation_bundle.py", str(destination)],
         cwd=root,
+        env=environment,
         check=False,
         capture_output=True,
         text=True,
     )
 
     assert completed.returncode == 0, completed.stderr
+    summary = json.loads(completed.stdout)
+    assert Path(summary["build_finance_root"]).resolve() == root / "build_finance"
+    assert not poison_marker.exists()
     assert destination.joinpath("SHA256SUMS").is_file()
     assert destination.joinpath("kernel-projection.json").is_file()
 

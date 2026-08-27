@@ -47,20 +47,12 @@ No `Compare-Object` output means the exported file hashes are identical.
 
 ## Verify
 
-Verify every manifest row against its local file using only the Python standard
-library:
+Verify strict checksum closure using the reusable source-checkout verifier. It
+rejects malformed, unsafe, unsorted, duplicate, missing, or extra paths before
+validating every digest:
 
 ```powershell
-@'
-from hashlib import sha256
-from pathlib import Path
-
-root = Path(".artifacts/g2-evaluation")
-for row in root.joinpath("SHA256SUMS").read_text(encoding="utf-8").splitlines():
-    expected, relative = row.split("  ", 1)
-    assert sha256(root.joinpath(relative).read_bytes()).hexdigest() == expected, relative
-print("SHA256SUMS: PASS")
-'@ | python -
+python scripts/export_g2_evaluation_bundle.py --verify .artifacts/g2-evaluation
 ```
 
 The dedicated installable paper-core artifacts can be rebuilt and checked with:
