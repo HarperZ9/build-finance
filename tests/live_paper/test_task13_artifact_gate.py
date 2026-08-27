@@ -12,9 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from scripts.build_paper_core_artifacts import build_artifacts
 from scripts.run_network_denied import NetworkDenied, deny_network
 from scripts.run_network_denied import main as network_denied_main
-from scripts.verify_crypto_replay_artifacts import ArchiveMembers, VerificationError
+from scripts.verify_crypto_replay_artifacts import (
+    ArchiveMembers,
+    VerificationError,
+    _read_sdist_members,
+    _read_wheel_members,
+)
 from scripts.verify_live_paper_artifacts import (
     PAPER_CORE_DIST_INFO,
     PRESCRIBED_GATE_COMMANDS,
@@ -82,6 +88,40 @@ def test_complete_archive_closure_rejects_non_allowlisted_members(
 
     with pytest.raises(VerificationError, match="archive allowlist mismatch"):
         _verify_complete_member_sets(wheel, sdist, expected)
+
+
+def test_built_paper_core_includes_loader_and_excludes_execution_capability_members(tmp_path: Path) -> None:
+    """Breaks if the dedicated artifact omits replay loading or gains live execution surfaces."""
+
+    wheel_path, sdist_path = build_artifacts(tmp_path / "dist")
+    archives = (_read_wheel_members(wheel_path), _read_sdist_members(sdist_path))
+    forbidden_tokens = (
+        "aiohttp",
+        "alpaca",
+        "autotrader",
+        "binance",
+        "broker",
+        "ccxt",
+        "coinbase",
+        "credential",
+        "ibapi",
+        "kraken",
+        "order-transport",
+        "order_transport",
+        "provider",
+        "requests",
+        "signer",
+        "wallet",
+        "web3",
+        "websocket",
+    )
+
+    for archive in archives:
+        assert "build_finance/paper_core_loader.py" in archive.members
+        forbidden_members = sorted(
+            name for name in archive.members if any(token in name.lower() for token in forbidden_tokens)
+        )
+        assert forbidden_members == []
 
 
 def test_wheel_record_rejects_a_payload_hash_mismatch() -> None:

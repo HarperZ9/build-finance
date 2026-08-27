@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
 import shutil
@@ -24,6 +25,15 @@ from tests.live_paper.support.g2_disk_bundle import (
     rewrite_envelope_mode,
     write_g2_disk_bundle,
 )
+
+
+def _checksum_rows(payload: bytes) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for line in payload.decode("utf-8").splitlines():
+        digest, relative_path = line.split("  ", 1)
+        assert len(digest) == 64
+        rows.append((digest, relative_path))
+    return rows
 
 
 def _paper_core_loader() -> Any:
@@ -81,6 +91,61 @@ def test_replay_envelope_loader_builds_positive_g2_context(tmp_path: Path) -> No
         "MODEL_DISABLED",
         "MODEL_DISABLED",
     )
+
+
+def test_g2_evaluation_export_is_reproducible_and_contains_positive_projection(tmp_path: Path) -> None:
+    """Breaks if the synthetic exporter varies bytes, reaches a provider, or omits the positive replay."""
+
+    from scripts.export_g2_evaluation_bundle import export_g2_evaluation_bundle
+    from scripts.run_network_denied import deny_network
+
+    blocked_calls: list[str] = []
+    with deny_network(blocked_calls):
+        first = export_g2_evaluation_bundle(tmp_path / "first")
+        second = export_g2_evaluation_bundle(tmp_path / "second")
+
+    assert blocked_calls == []
+    first_checksums = first.checksum_manifest.read_bytes()
+    assert first_checksums == second.checksum_manifest.read_bytes()
+    checksum_rows = _checksum_rows(first_checksums)
+    relative_paths = [relative_path for _digest, relative_path in checksum_rows]
+    assert relative_paths == sorted(relative_paths)
+    assert "SHA256SUMS" not in relative_paths
+    for digest, relative_path in checksum_rows:
+        assert hashlib.sha256(first.destination.joinpath(relative_path).read_bytes()).hexdigest() == digest
+
+    projection_bytes = first.kernel_projection.read_bytes()
+    assert projection_bytes == second.kernel_projection.read_bytes()
+    projection = parse_canonical_record(projection_bytes)
+    assert projection["data_classification"] == "SYNTHETIC"
+    assert projection["execution"] == "SIMULATED"
+    assert projection["mode"] == "PAPER_ONLY"
+    assert projection["profitability_claim"] is False
+    assert projection["closure_status"] == "CLOSED"
+    assert [row["disposition"] for row in projection["projection"]["model_validation"]] == [
+        "ABSTAIN",
+        "ABSTAIN",
+    ]
+    assert [row["reason_code"] for row in projection["projection"]["model_validation"]] == [
+        "MODEL_DISABLED",
+        "MODEL_DISABLED",
+    ]
+
+
+def test_g2_evaluation_export_refuses_a_non_empty_destination(tmp_path: Path) -> None:
+    """Breaks if export can overwrite or mingle with material outside its owned empty directory."""
+
+    from scripts.export_g2_evaluation_bundle import ExportError, export_g2_evaluation_bundle
+
+    destination = tmp_path / "occupied"
+    destination.mkdir()
+    marker = destination / "keep.txt"
+    marker.write_text("user-owned\n", encoding="utf-8")
+
+    with pytest.raises(ExportError, match="empty"):
+        export_g2_evaluation_bundle(destination)
+
+    assert marker.read_text(encoding="utf-8") == "user-owned\n"
 
 
 def test_replay_envelope_loader_rejects_admission_from_another_captured_fixture(tmp_path: Path) -> None:

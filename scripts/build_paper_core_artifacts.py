@@ -56,7 +56,8 @@ def _validate_source_path(raw_path: object) -> Path:
         raise BuildError(f"unsafe manifest path: {raw_path!r}")
     if path.parts[0] != "build_finance":
         raise BuildError(f"manifest source is outside build_finance: {raw_path}")
-    if len(path.parts) == 2 and path.as_posix() != "build_finance/__init__.py":
+    allowed_root_sources = {"build_finance/__init__.py", "build_finance/paper_core_loader.py"}
+    if len(path.parts) == 2 and path.as_posix() not in allowed_root_sources:
         raise BuildError(f"manifest source is not the package root marker: {raw_path}")
     if len(path.parts) > 2 and path.parts[1] not in {"crypto_replay", "live_paper"}:
         raise BuildError(f"manifest source escapes paper-core packages: {raw_path}")
