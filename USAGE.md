@@ -19,16 +19,24 @@ not documented for 1.0.1, so install from the checked release wheel unless you
 are working from source.
 
 ```powershell
-Invoke-WebRequest `
-  -Uri https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/build_finance-1.0.1-py3-none-any.whl `
-  -OutFile build_finance-1.0.1-py3-none-any.whl
-
-(Get-FileHash .\build_finance-1.0.1-py3-none-any.whl -Algorithm SHA256).Hash.ToLower()
-# expected: 6597fbbbc13d26cb63a1c123a929a21e512fefb19d156c9d2786364108b3b515
-
-python -m pip install .\build_finance-1.0.1-py3-none-any.whl
-build-finance --help
+& {
+  $ErrorActionPreference = 'Stop'
+  $wheel = 'build_finance-1.0.1-py3-none-any.whl'
+  $expected = '6597fbbbc13d26cb63a1c123a929a21e512fefb19d156c9d2786364108b3b515'
+  Invoke-WebRequest `
+    -Uri "https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/$wheel" `
+    -OutFile $wheel
+  $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected) {
+    throw "SHA-256 mismatch for $wheel. Expected $expected, got $actual."
+  }
+  python -m pip install ".\$wheel"
+  build-finance --help
+}
 ```
+
+In other shells, download the wheel, compare its SHA-256 to the expected value
+above, and install it only if the digest matches.
 
 Release assets:
 
