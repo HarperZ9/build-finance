@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 test support only.
+    import tomli as tomllib
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -53,18 +58,22 @@ def test_promotion_status_records_honest_blocked_replay_state() -> None:
 def test_project_metadata_keeps_replay_runtime_dependencies_offline() -> None:
     """Catches package metadata drift that adds replay-relevant provider/broker deps."""
 
-    import tomllib
-
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
 
     assert project["dependencies"] == ["numpy>=1.24", "pandas>=2.0", "scipy>=1.10"]
     optional_dependencies = project["optional-dependencies"]
-    assert optional_dependencies["test"] == ["pytest>=8.0", "pytest-cov>=5", "jsonschema>=4.23,<5"]
+    assert optional_dependencies["test"] == [
+        "pytest>=8.0",
+        "pytest-cov>=5",
+        "jsonschema>=4.23,<5",
+        "tomli>=2; python_version < '3.11'",
+    ]
     assert optional_dependencies["dev"] == [
         "pytest>=8.0",
         "pytest-cov>=5",
         "jsonschema>=4.23,<5",
+        "tomli>=2; python_version < '3.11'",
         "ruff>=0.6",
         "mypy>=1.10",
         "build>=1.2",
@@ -77,8 +86,6 @@ def test_project_metadata_keeps_replay_runtime_dependencies_offline() -> None:
 
 def test_crypto_replay_package_data_declares_authority_resources() -> None:
     """Catches wheels that drop generated schemas, bundle digests, or formula resources."""
-
-    import tomllib
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
