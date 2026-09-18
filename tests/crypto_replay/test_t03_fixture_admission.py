@@ -32,6 +32,7 @@ from tests.crypto_replay.support.synthetic_local_fixture import (
     SYNTHETIC_SOURCE_ID,
     SYNTHETIC_TERMS_PREFIX,
     SYNTHETICEventSpec,
+    SYNTHETICLocalFixture,
     reseal_SYNTHETIC_manifest,
     rewrite_SYNTHETIC_rights,
     rewrite_SYNTHETIC_witness,
@@ -123,8 +124,13 @@ _SYNTHETIC_SECOND_TARGET_EVENT_ID = "2" * 64
 
 def _assert_rejected_for_reparse_or_not_local(captured, batch) -> None:
     assert captured.capture_issues
-    assert batch.status == "REJECTED"
-    assert "ADMISSION_NOT_LOCAL" in _reason_codes(batch) or "ADMISSION_MANIFEST_MISMATCH" in _reason_codes(batch)
+    reason_codes = _reason_codes(batch)
+    if "ADMISSION_SET_NOT_CLOSED" in reason_codes:
+        assert batch.status == "QUARANTINED"
+    else:
+        assert batch.status == "REJECTED"
+    assert "ADMISSION_NOT_LOCAL" in reason_codes or "ADMISSION_MANIFEST_MISMATCH" in reason_codes
+    assert batch.candidates == ()
 
 
 def _replace_file_bytes(path: Path, payload: bytes) -> None:
@@ -918,9 +924,12 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
     from build_finance.crypto_replay import local_fixture
 
     payload_path = fixture.payload_paths[0]
-    target = os.path.normcase(os.fspath(payload_path))
+    target_paths = _local_fixture_open_targets(fixture, payload_path)
     replacement_payload = fixture.payloads[0] + f"\nSYNTHETIC_{stage.upper()}_REPLACEMENT\n".encode("ascii")
     replaced = False
+
+    def is_payload_open(path: str | os.PathLike[str]) -> bool:
+        return _matches_local_fixture_open_target(path, target_paths)
 
     def replace_once() -> None:
         nonlocal replaced
@@ -932,7 +941,7 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
         original_lstat = local_fixture.os.lstat
 
         def lstat_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
-            if os.path.normcase(os.fspath(path)) == target:
+            if is_payload_open(path):
                 replace_once()
             return original_lstat(path, *args, **kwargs)
 
@@ -941,7 +950,7 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
         original_open = local_fixture.os.open
 
         def open_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
-            if os.path.normcase(os.fspath(path)) == target:
+            if is_payload_open(path):
                 replace_once()
             return original_open(path, *args, **kwargs)
 
@@ -953,7 +962,7 @@ def test_payload_replacement_race_is_rejected_at_pre_open_and_post_identity_chec
 
         def open_hook(path: str | os.PathLike[str], *args: Any, **kwargs: Any):
             fd = original_open(path, *args, **kwargs)
-            if os.path.normcase(os.fspath(path)) == target:
+            if is_payload_open(path):
                 opened_payload_fds.add(fd)
             return fd
 
@@ -984,7 +993,7 @@ def test_payload_identity_mismatch_does_not_return_replacement_bytes(
     from build_finance.crypto_replay import local_fixture
 
     payload_path = fixture.payload_paths[0]
-    target = os.path.normcase(os.fspath(payload_path))
+    target_paths = _local_fixture_open_targets(fixture, payload_path)
     replacement_payload = fixture.payloads[0] + b"\nSYNTHETIC_IDENTITY_MISMATCH_REPLACEMENT\n"
     replacement_path = tmp_path / "replacement-payload.json"
     replacement_path.write_bytes(replacement_payload)
@@ -995,7 +1004,7 @@ def test_payload_identity_mismatch_does_not_return_replacement_bytes(
 
     def open_hook(path: str | os.PathLike[str], flags: int, *args: Any, **kwargs: Any) -> int:
         nonlocal replacement_fd
-        if os.path.normcase(os.fspath(path)) == target:
+        if _matches_local_fixture_open_target(path, target_paths):
             replacement_fd = original_open(replacement_path, flags, *args, **kwargs)
             return replacement_fd
         return original_open(path, flags, *args, **kwargs)
@@ -1016,6 +1025,30 @@ def test_payload_identity_mismatch_does_not_return_replacement_bytes(
     assert captured.files[0].byte_length is None
     assert sha256_hex(replacement_payload) not in {file.sha256 for file in captured.files}
     assert any(issue.code == "ADMISSION_MANIFEST_MISMATCH" for issue in captured.capture_issues)
+
+
+def _local_fixture_open_targets(fixture: SYNTHETICLocalFixture, payload_path: Path) -> frozenset[str]:
+    relative_path = str(fixture.manifest["files"][0]["relative_path"])
+    return frozenset(
+        {
+            _normalized_probe_path(payload_path),
+            _normalized_probe_path(os.path.abspath(os.fspath(payload_path))),
+            _normalized_probe_path(relative_path),
+            _normalized_probe_path(Path(relative_path).name),
+        }
+    )
+
+
+def _matches_local_fixture_open_target(path: str | os.PathLike[str], target_paths: frozenset[str]) -> bool:
+    raw_path = os.fspath(path)
+    candidates = {_normalized_probe_path(raw_path)}
+    if os.path.isabs(raw_path):
+        candidates.add(_normalized_probe_path(os.path.abspath(raw_path)))
+    return not candidates.isdisjoint(target_paths)
+
+
+def _normalized_probe_path(path: str | os.PathLike[str]) -> str:
+    return os.path.normcase(os.fspath(path).replace("\\", "/"))
 
 
 def test_stable_receipts_across_roots(tmp_path: Path) -> None:

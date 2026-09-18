@@ -61,7 +61,7 @@ See `promotion-status.json`. Current machine state is intentionally blocked:
 - P0: `BLOCKED`
 - P1: `PASS`
 - P2: `FAIL_ZERO_ADMITTED_FIXTURE`
-- P5: `FAIL_WHOLE_REPOSITORY`
+- P5: `PASS` for the offline whole-repository software gate; see `evidence/P5-whole-repository-pass.json`.
 - replay subpackage confinement: `PASS`
 - real fixture manifest: `null`
 - next authorized node: `null`

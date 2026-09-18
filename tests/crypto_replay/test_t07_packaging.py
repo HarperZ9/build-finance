@@ -18,15 +18,36 @@ def test_promotion_status_records_honest_blocked_replay_state() -> None:
 
     status = json.loads((ROOT / "docs" / "crypto-replay" / "promotion-status.json").read_text(encoding="utf-8"))
 
-    assert status == {
-        "p0": "BLOCKED",
-        "p1": "PASS",
-        "p2": "FAIL_ZERO_ADMITTED_FIXTURE",
-        "p5": "FAIL_WHOLE_REPOSITORY",
-        "replay_subpackage_confinement": "PASS",
-        "real_fixture_manifest_sha256": None,
-        "next_authorized_node": None,
+    assert status["p0"] == "BLOCKED"
+    assert status["p1"] == "PASS"
+    assert status["p2"] == "FAIL_ZERO_ADMITTED_FIXTURE"
+    assert status["p5"] == "PASS"
+    assert status["replay_subpackage_confinement"] == "PASS"
+    assert status["real_fixture_manifest_sha256"] is None
+    assert status["next_authorized_node"] is None
+
+    receipt_path = ROOT / status["p5_receipt"]
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["receipt"] == "crypto-replay-p5-whole-repository"
+    assert receipt["outcome"] == "pass"
+    assert receipt["does_not_prove"] == [
+        "real fixture admission",
+        "T04 or live/paper engine behavior",
+        "profitability",
+        "publication approval",
+        "trading authority",
+    ]
+    command_results = {command["name"]: command["result"] for command in receipt["commands"]}
+    expected_results = {
+        "ruff check": "PASS",
+        "ruff format check": "PASS",
+        "mypy": "PASS",
+        "pytest full repository": "PASS",
+        "exact artifact verification": "PASS",
+        "exact offline wheel import": "PASS",
     }
+    assert expected_results.items() <= command_results.items()
+    assert command_results["linux crypto replay package slice"] == "PASS"
 
 
 def test_project_metadata_keeps_replay_runtime_dependencies_offline() -> None:

@@ -232,6 +232,7 @@ def test_clean_process_imports_crypto_replay_without_transitive_live_or_external
     script = f"""
 import importlib
 import json
+import pathlib
 import pkgutil
 import sys
 

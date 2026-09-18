@@ -50,6 +50,7 @@ include = ["build_finance*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["build_finance"]

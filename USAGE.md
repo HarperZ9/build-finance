@@ -175,12 +175,14 @@ paper = PaperBroker(BrokerConfig(name="paper", paper_trading=True))
 # Alpaca -- paper by default; requires API key/secret supplied by the caller.
 # See docs/ALPACA_SETUP.md. Live execution requires paper_trading=False
 # explicitly; nothing in this library flips that on its own.
-alpaca = AlpacaBroker(BrokerConfig(
-    name="alpaca",
-    api_key="<your-key>",
-    api_secret="<your-secret>",
-    paper_trading=True,
-))
+alpaca = AlpacaBroker(
+    BrokerConfig(
+        name="alpaca",
+        api_key="<your-key>",
+        api_secret="<your-secret>",
+        paper_trading=True,
+    )
+)
 ```
 
 See [SECURITY.md](SECURITY.md) for the full credential-handling and

@@ -677,6 +677,7 @@ Do not commit a baseline failure. Diagnose any pre-existing failure before conti
   def canonical_record_bytes(value: JsonObject) -> bytes:
       return canonical_json_bytes(value) + b"\n"
 
+
   def parse_canonical_record(record: bytes) -> JsonObject:
       if not record.endswith(b"\n") or record.endswith(b"\n\n"):
           raise CanonicalJSONError("record requires exactly one LF")

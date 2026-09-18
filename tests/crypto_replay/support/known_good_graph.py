@@ -105,9 +105,7 @@ def build_known_good_graph() -> KnownGoodGraph:
         public_seed_hex=vector.public_seed_bytes.hex(),
         benchmark_authority="CONTRACT_ONLY_INELIGIBLE",
         execution_quarantine_receipt_id=cast(str, quarantine["execution_quarantine_receipt_id"]),
-        ledger_member_content_ids=(
-            compute_content_id(_primary_example("trading.ledger-record/v1")),
-        ),
+        ledger_member_content_ids=(compute_content_id(_primary_example("trading.ledger-record/v1")),),
     )
 
 
