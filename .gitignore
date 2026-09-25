@@ -41,3 +41,6 @@ node_modules/
 # direnv environment files (can hold exported secrets)
 .envrc
 .envrc.local
+
+# Crypto replay gate output
+.artifacts/crypto-replay/

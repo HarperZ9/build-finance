@@ -19,16 +19,60 @@
 > execution is explicit opt-in; the library custodies no funds. Read
 > [SECURITY.md](SECURITY.md) before connecting a real broker account.
 
-Algorithmic trading toolkit for stocks and crypto. Backtest strategies, auto-trade with paper or live brokers, optimize portfolios.
+Algorithmic trading toolkit for stocks and crypto. Backtest strategies, run
+paper-trading loops, optimize portfolios, and integrate broker execution only
+when explicitly configured.
 
 ## Quick Start
 
-```bash
-pip install ".[all]"
-build-finance
+Install the current GitHub release wheel, verify its checksum, and check the
+CLI entrypoint:
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $wheel = 'build_finance-1.0.1-py3-none-any.whl'
+  $expected = '6597fbbbc13d26cb63a1c123a929a21e512fefb19d156c9d2786364108b3b515'
+  Invoke-WebRequest `
+    -Uri "https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/$wheel" `
+    -OutFile $wheel
+  $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected) {
+    throw "SHA-256 mismatch for $wheel. Expected $expected, got $actual."
+  }
+  python -m pip install ".\$wheel"
+  build-finance --help
+}
 ```
 
-Launch the GUI, or use the CLI:
+In other shells, download the wheel, compare its SHA-256 to the expected value
+above, and install it only if the digest matches.
+
+The 1.0.1 release is published on GitHub at
+<https://github.com/HarperZ9/build-finance/releases/tag/v1.0.1>. PyPI
+publication is not documented for 1.0.1.
+
+For source development, clone the repository before using editable installs:
+
+```bash
+git clone https://github.com/HarperZ9/build-finance.git
+cd build-finance
+git checkout v1.0.1
+python -m pip install -e .
+build-finance --help
+```
+
+Add the optional GUI extras from a checkout when you need the PyQt6 interface:
+
+```bash
+python -m pip install -e ".[gui]"
+build-finance gui
+```
+
+Use paper trading and generated sample data until you intentionally configure
+broker credentials. No quickstart command places live orders.
+
+After installing, use the CLI:
 
 ```bash
 build-finance backtest --strategy momentum --days 252
@@ -83,7 +127,7 @@ Professional interface matching Calibrate Pro's design:
 
 - **Dashboard** — Account overview, quick actions, recent activity
 - **Backtest** — Run strategies with equity curve visualization and trade log
-- **Auto-Trader** — Start/stop live trading with real-time status and activity log
+- **Auto-Trader** — Start/stop the configured trading loop with real-time status and activity log
 - **Portfolio** — Optimize weights with visual allocation bars
 - **Market Data** — Fetch and visualize price charts
 - **Settings** — Broker API keys, default parameters

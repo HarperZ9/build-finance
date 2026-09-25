@@ -12,25 +12,76 @@ depend on external services and credentials; see
 
 ## Install
 
-```bash
-# Core library + CLI (numpy, pandas, scipy)
-pip install .
+### GitHub release wheel
 
-# Everything, including the GUI (+ matplotlib, ta-lib, PyQt6)
-pip install ".[all]"
+Build Finance 1.0.1 is published as GitHub release assets. PyPI publication is
+not documented for 1.0.1, so install from the checked release wheel unless you
+are working from source.
 
-# Just the GUI extras
-pip install ".[gui]"
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $wheel = 'build_finance-1.0.1-py3-none-any.whl'
+  $expected = '6597fbbbc13d26cb63a1c123a929a21e512fefb19d156c9d2786364108b3b515'
+  Invoke-WebRequest `
+    -Uri "https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/$wheel" `
+    -OutFile $wheel
+  $actual = (Get-FileHash ".\$wheel" -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $expected) {
+    throw "SHA-256 mismatch for $wheel. Expected $expected, got $actual."
+  }
+  python -m pip install ".\$wheel"
+  build-finance --help
+}
 ```
 
-This installs the `build-finance` console script (entry point
+In other shells, download the wheel, compare its SHA-256 to the expected value
+above, and install it only if the digest matches.
+
+Release assets:
+
+- Wheel:
+  <https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/build_finance-1.0.1-py3-none-any.whl>
+- sdist:
+  <https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/build_finance-1.0.1.tar.gz>
+- Checksums:
+  <https://github.com/HarperZ9/build-finance/releases/download/v1.0.1/SHA256SUMS.txt>
+
+Expected SHA-256 values:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `build_finance-1.0.1-py3-none-any.whl` | `6597fbbbc13d26cb63a1c123a929a21e512fefb19d156c9d2786364108b3b515` |
+| `build_finance-1.0.1.tar.gz` | `95f0212fa40541bae5fbf57cfd57debe2ae0b8d321dcb5399a4b9bb1d90bd468` |
+
+### Source checkout
+
+Clone the repository before using editable installs:
+
+```bash
+git clone https://github.com/HarperZ9/build-finance.git
+cd build-finance
+git checkout v1.0.1
+
+# Core library + CLI (numpy, pandas, scipy)
+python -m pip install -e .
+
+# Optional GUI extras from source (+ PyQt6 and build-ui)
+python -m pip install -e ".[gui]"
+```
+
+Both install routes expose the `build-finance` console script (entry point
 `build_finance.cli:main`). Requires Python 3.10+.
 
-Without installing, you can run the CLI directly from a checkout:
+Without installing, you can run the CLI directly from a source checkout:
 
 ```bash
 python -m build_finance.cli <command> ...
 ```
+
+The install and help commands do not place broker orders. Paper trading is the
+default; anything that reaches a live broker requires credentials and explicit
+live configuration by the caller.
 
 ## CLI
 
@@ -175,12 +226,14 @@ paper = PaperBroker(BrokerConfig(name="paper", paper_trading=True))
 # Alpaca -- paper by default; requires API key/secret supplied by the caller.
 # See docs/ALPACA_SETUP.md. Live execution requires paper_trading=False
 # explicitly; nothing in this library flips that on its own.
-alpaca = AlpacaBroker(BrokerConfig(
-    name="alpaca",
-    api_key="<your-key>",
-    api_secret="<your-secret>",
-    paper_trading=True,
-))
+alpaca = AlpacaBroker(
+    BrokerConfig(
+        name="alpaca",
+        api_key="<your-key>",
+        api_secret="<your-secret>",
+        paper_trading=True,
+    )
+)
 ```
 
 See [SECURITY.md](SECURITY.md) for the full credential-handling and
@@ -202,7 +255,8 @@ trader = AutoTrader(AutoTraderConfig(symbols=["AAPL", "BTC-USD"]))
 build-finance gui
 ```
 
-The GUI requires PyQt6 (`pip install ".[gui]"`) and provides a Dashboard,
+The GUI requires PyQt6. From a source checkout, install the optional GUI extras
+with `python -m pip install -e ".[gui]"`. The GUI provides a Dashboard,
 Backtest runner, Auto-Trader control panel, Portfolio view, Market Data view,
 and Settings page (broker API keys, default parameters). If the GUI import
 fails, the CLI reports that the GUI is unavailable rather than crashing.

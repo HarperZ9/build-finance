@@ -49,6 +49,7 @@ print(f"Equity: ${account.equity:.2f}")
 ## Step 4: Verify Connection
 ```python
 from build_finance.market_data import fetch_yahoo
+
 candles = fetch_yahoo("AAPL", period="5d", interval="1d")
 print(f"Got {len(candles)} candles")
 ```
