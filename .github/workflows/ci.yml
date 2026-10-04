@@ -78,3 +78,9 @@ jobs:
           python -m venv .artifacts/crypto-replay/import-venv
           .artifacts/crypto-replay/import-venv/bin/python -m pip install --no-index --no-deps "${{ steps.replay_artifacts.outputs.wheel }}"
           .artifacts/crypto-replay/import-venv/bin/python -I -c "import importlib,pkgutil,build_finance.crypto_replay as p; [importlib.import_module(m.name) for m in pkgutil.walk_packages(p.__path__,p.__name__+'.')]"
+  art-receipts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify art receipt digests
+        run: python3 scripts/check_art_receipts.py
