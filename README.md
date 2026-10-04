@@ -1,19 +1,18 @@
-<p align="center">
-  <img src=".github/assets/banner.png" alt="Build Finance, a Python algorithmic trading toolkit">
-</p>
-<!-- Project mark: docs/brand/build-finance-mark.svg -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/HarperZ9/build-finance/main/docs/art/hero-dark.svg">
+  <img src="https://raw.githubusercontent.com/HarperZ9/build-finance/main/docs/art/hero-light.svg" alt="build-finance: Backtest strategies, paper trade, and measure portfolio risk in Python. 6 wavering traces run from the left and narrow into a bright core over a row of tick marks." width="100%">
+</picture>
 
-# Build Finance
+# build-finance
 
-> Python algorithmic trading toolkit for technical indicators, strategy backtesting, risk metrics, portfolio optimization, position sizing, and paper/live broker execution.
+Backtest strategies, paper trade, and measure portfolio risk in Python.
+
+[![version: 1.0.1](https://img.shields.io/badge/version-1.0.1-e6e1d6?style=flat-square&labelColor=1a1712)](https://github.com/HarperZ9/build-finance/releases/latest)
+[![CI](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml/badge.svg)](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-FSL--1.1--MIT-e6e1d6?style=flat-square&labelColor=1a1712)](https://github.com/HarperZ9/build-finance/blob/main/LICENSE)
+![python 3.10+](https://img.shields.io/badge/python-3.10%2B-e6e1d6?style=flat-square&labelColor=1a1712)
 
 [Project Telos](https://harperz9.github.io) | [gather](https://github.com/HarperZ9/gather) | [crucible](https://github.com/HarperZ9/crucible) | [index](https://github.com/HarperZ9/index) | [forum](https://github.com/HarperZ9/forum) | [telos](https://github.com/HarperZ9/telos) | [emet](https://github.com/HarperZ9/emet) | [buildlang](https://github.com/HarperZ9/buildlang)
-
-[![CI](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml/badge.svg)](https://github.com/HarperZ9/build-finance/actions/workflows/ci.yml)
-![version: 1.0.1](https://img.shields.io/badge/version-1.0.1-informational.svg)
-![python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
-![core deps: numpy/pandas/scipy](https://img.shields.io/badge/core%20deps-numpy%2Fpandas%2Fscipy-success.svg)
-[![license: fair-source](https://img.shields.io/badge/license-fair--source-blue.svg)](LICENSE)
 
 > **Money-adjacent software.** Paper trading is the default; live broker
 > execution is explicit opt-in; the library custodies no funds. Read
