@@ -18,7 +18,7 @@ Build Finance is money-adjacent software. Before any other capability claim:
 - **Backtests do not guarantee live results.** Slippage, commission, latency, partial
   fills, and regime change are real gaps between a historical replay and a live market.
   Treat backtest output as a hypothesis, validate it in paper trading, and only then
-  consider live capital — and even then, at your own risk.
+  consider live capital, and even then, at your own risk.
 - **The library custodies no funds.** All money and positions live at the broker; this
   library only sends instructions to, and reads state from, that broker's API.
 
@@ -60,7 +60,7 @@ and does not count as a security issue.
 
 - **Runtime core:** `numpy`, `pandas`, `scipy`. Network access is confined to
   `market_data.py` (Yahoo Finance, CoinGecko) and `broker.py` (Alpaca), and only runs
-  when explicitly invoked — the indicator/strategy/risk/backtest/portfolio core performs
+  when explicitly invoked. The indicator/strategy/risk/backtest/portfolio core performs
   no network access on its own.
 - **Optional:** `matplotlib` (plotting), `ta-lib` (extra indicators), `PyQt6` (GUI). Each
   is isolated behind an extra so the core stays minimal.
@@ -68,7 +68,7 @@ and does not count as a security issue.
 
 ## Quality gates
 
-- `ruff check .` (style), `mypy` (types — the numeric and trading core is type-clean; the
+- `ruff check .` (style), `mypy` (types: the numeric and trading core is type-clean; the
   GUI adapter is boundary-typed), and `pytest` with coverage run in CI on every push and
   pull request.
 - No API token or broker credential is stored in the repository; broker keys are
