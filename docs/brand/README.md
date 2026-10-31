@@ -17,9 +17,9 @@ The record below describes the previous brand render and stays as it was written
 
 ## Previous render
 
-- `build-finance-mark.svg` — square logomark (candlestick ledger on a
+- `build-finance-mark.svg`: square logomark (candlestick ledger on a
   baseline). Use for avatars, favicons, and small placements.
-- `build-finance-hero.svg` — wide banner used at the top of the project README.
+- `build-finance-hero.svg`: wide banner used at the top of the project README.
 
 Palette: the marks use the Project Telos indigo (`#4636e8`) for the ledger
 baseline, with profit/loss accents (`#38d39f` / `#ff4d6d`) on a near-black

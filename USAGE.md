@@ -1,4 +1,4 @@
-# Build Finance — Usage Guide
+# Build Finance Usage Guide
 
 Build Finance is a Python algorithmic trading toolkit with a command-line
 interface (`build-finance`) and an optional PyQt6 GUI. This guide covers
@@ -172,7 +172,7 @@ Trades          :            0
 ```
 
 The CLI's built-in `momentum` demo strategy is a simple fast/slow moving-average
-crossover (10/30) and is intentionally minimal — on a given seeded sample it may
+crossover (10/30) and is intentionally minimal. On a given seeded sample it may
 produce zero crossovers, as above. It exists to exercise the `Backtester` wiring
 end to end; the `build_finance.strategies` module has the five full strategies
 (Momentum, Mean Reversion, Trend Following, Breakout, Ensemble) used by the
@@ -263,9 +263,9 @@ fails, the CLI reports that the GUI is unavailable rather than crashing.
 
 ## See also
 
-- `README.md` — project overview and feature list.
-- `SECURITY.md` — the paper/live trading boundary, credential handling, and
+- `README.md`: project overview and feature list.
+- `SECURITY.md`: the paper/live trading boundary, credential handling, and
   what does not custody funds.
-- `ARCHITECTURE.md` — module layering and the strategy/sizing/broker data flow.
-- `docs/ALPACA_SETUP.md` — step-by-step Alpaca paper (and live) account setup.
-- `docs/ENTERPRISE-READINESS.md` — risk posture, reproducibility, and quality gates.
+- `ARCHITECTURE.md`: module layering and the strategy/sizing/broker data flow.
+- `docs/ALPACA_SETUP.md`: step-by-step Alpaca paper (and live) account setup.
+- `docs/ENTERPRISE-READINESS.md`: risk posture, reproducibility, and quality gates.

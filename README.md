@@ -82,14 +82,14 @@ build-finance indicators
 ## Features
 
 ### Trading Strategies (5)
-- **Momentum** — EMA crossover + RSI filter
-- **Mean Reversion** — Bollinger Band bounce
-- **Trend Following** — MA crossover + ATR stops
-- **Breakout** — N-period high/low with volume confirmation
-- **Ensemble** — Weighted combination of all four (default)
+- **Momentum**: EMA crossover + RSI filter
+- **Mean Reversion**: Bollinger Band bounce
+- **Trend Following**: MA crossover + ATR stops
+- **Breakout**: N-period high/low with volume confirmation
+- **Ensemble**: Weighted combination of all four (default)
 
 ### Technical Indicators (10)
-SMA, EMA, RSI, MACD, Bollinger Bands, ATR, Stochastic, VWAP, ADX, OBV — all vectorized with numpy.
+SMA, EMA, RSI, MACD, Bollinger Bands, ATR, Stochastic, VWAP, ADX, OBV, all vectorized with numpy.
 
 ### Risk Metrics (14)
 Sharpe, Sortino, Max Drawdown, Calmar, VaR (parametric + historical), CVaR, Beta, Alpha, Information Ratio, Volatility, Profit Factor, Win Rate.
@@ -101,10 +101,10 @@ Sharpe, Sortino, Max Drawdown, Calmar, VaR (parametric + historical), CVaR, Beta
 - Equity curve tracking with drawdown analysis
 
 ### Portfolio Optimization
-- Mean-Variance (Markowitz) — max Sharpe, min variance, max return
-- Black-Litterman — combine market equilibrium with investor views
-- Hierarchical Risk Parity (HRP) — correlation-based clustering
-- Risk Parity — equal risk contribution
+- Mean-Variance (Markowitz): max Sharpe, min variance, max return
+- Black-Litterman: combine market equilibrium with investor views
+- Hierarchical Risk Parity (HRP): correlation-based clustering
+- Risk Parity: equal risk contribution
 
 ### Auto-Trading
 - Paper trading (simulated, no real money)
@@ -115,8 +115,8 @@ Sharpe, Sortino, Max Drawdown, Calmar, VaR (parametric + historical), CVaR, Beta
 - Runs both stocks and crypto simultaneously
 
 ### Market Data
-- Yahoo Finance — real-time and historical (no API key)
-- CoinGecko — crypto OHLC (no API key)
+- Yahoo Finance: real-time and historical (no API key)
+- CoinGecko: crypto OHLC (no API key)
 - CSV import/export (Yahoo, TradingView, generic)
 - Synthetic data generation for testing
 
@@ -124,12 +124,12 @@ Sharpe, Sortino, Max Drawdown, Calmar, VaR (parametric + historical), CVaR, Beta
 
 Professional interface matching Calibrate Pro's design:
 
-- **Dashboard** — Account overview, quick actions, recent activity
-- **Backtest** — Run strategies with equity curve visualization and trade log
-- **Auto-Trader** — Start/stop the configured trading loop with real-time status and activity log
-- **Portfolio** — Optimize weights with visual allocation bars
-- **Market Data** — Fetch and visualize price charts
-- **Settings** — Broker API keys, default parameters
+- **Dashboard**: Account overview, quick actions, recent activity
+- **Backtest**: Run strategies with equity curve visualization and trade log
+- **Auto-Trader**: Start/stop the configured trading loop with real-time status and activity log
+- **Portfolio**: Optimize weights with visual allocation bars
+- **Market Data**: Fetch and visualize price charts
+- **Settings**: Broker API keys, default parameters
 
 ## CLI Commands
 

@@ -7,7 +7,7 @@ release on the default branch is supported for fixes.
 
 ## Reporting a vulnerability
 
-Report suspected vulnerabilities privately via GitHub Security Advisories — the
+Report suspected vulnerabilities privately via GitHub Security Advisories: the
 "Security" tab of this repository, then "Report a vulnerability". Do NOT open a public
 issue for an unfixed vulnerability.
 
@@ -28,7 +28,7 @@ section is the honest statement of what that does and does not mean.
 - **Paper trading is the default.** `BrokerConfig.paper_trading` defaults to `True`, and
   the documented setup path (see [docs/ALPACA_SETUP.md](docs/ALPACA_SETUP.md)) tells you
   to test with paper trading first. Paper mode uses real market data against a simulated
-  account with fake money — no funds move.
+  account with fake money, so no funds move.
 - **Live execution requires explicit opt-in.** Placing a real order against a real
   brokerage account requires the caller to deliberately set `paper_trading=False` (or
   the equivalent live flag) and to supply live-account credentials. Nothing in this
@@ -38,14 +38,14 @@ section is the honest statement of what that does and does not mean.
   commission, and market impact, but a historical replay cannot fully capture live
   conditions: partial fills, order latency, liquidity gaps, data revisions, and
   regime change are all real risks a backtest does not fully price in. A strategy that
-  performs well in `backtest.py` is not a promise of live performance — treat backtest
+  performs well in `backtest.py` is not a promise of live performance. Treat backtest
   output as a hypothesis to validate in paper trading before ever considering live
   capital.
 - **The library custodies no funds.** Build Finance never holds, transfers, or has
   custody of money. All funds and positions live at the broker (Alpaca or your paper
   account); this library only sends instructions to and reads state from that broker's
   API. Loss of funds from live trading is a trading-risk and account-security matter
-  between you and your broker, not a defect this policy covers — but a vulnerability
+  between you and your broker, not a defect this policy covers, but a vulnerability
   that could cause the library to place unintended orders, leak credentials, or
   misreport account state is squarely in scope below.
 
